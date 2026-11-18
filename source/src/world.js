@@ -1,10 +1,11 @@
 // ============================================================================
-// Terra Primordia — 18-Biome World Generation, Noniv/abyssal-garden Set-Pieces,
+// REALISM — 18-Biome Earth-Scale World Generation, Abyssal Garden Set-Pieces,
 // Continuous Point-to-Point Creature Anatomy, Zero-Slide IK & Survival FSM
 // ============================================================================
 import {
   PI, TAU, sin, cos, abs, hypot, min, max, sqrt, floor, round, atan2, pow,
   clamp, saturate, lerp, smoothstep, smin, solveTwoBoneIK,
+  normAngle, lerpAngle, yawToForward, velocityToYaw,
   WORLD_SEED, seedRng, rnd, rr, noise2, fbm2, MeshBuilder
 } from './math.js';
 import {
@@ -13,7 +14,7 @@ import {
   CLEARING_POS, PLANTATION_POS, SAVANNA_POS, BAMBOO_POS, HIGHLAND_POS,
   BEACH_POS, REEF_POS, ABYSS_POS, ROOKERY_POS, POLAR_POS,
   FIRE_POS, VOLCANO_POS, FORGOTTEN_POS, DUNE_POS,
-  terrainAt
+  wrapCoord, wrapDelta, terrainAt, evaluateHazardAt
 } from './biomes.js';
 import { THIN, MAX_PARTICLES_BUDGET } from './quality.js';
 
@@ -162,14 +163,30 @@ function buildUnderstoryMesh() {
 
 function buildRockLogFungusMesh() {
   const m = new MeshBuilder();
-  m.ellipsoid(0, 0.25, 0, 1.15, 0.65, 0.92, [0.24, 0.26, 0.22], 0, 0, 5, 7);
-  m.ellipsoid(0.45, 0.55, 0.12, 0.78, 0.32, 0.62, [0.16, 0.38, 0.12], 0, 0, 4, 6);
-  const bark = [0.22, 0.15, 0.10];
-  m.tube([[-1.4, 0.22, 0.55], [0, 0.28, 0.62], [1.45, 0.18, 0.48]], [0.26, 0.24, 0.20], [bark, bark, bark], [[0, 0], [0, 0], [0, 0]], 6, true);
-  const glow = [0.35, 0.95, 0.62];
-  for (let g = 0; g < 5; g++) {
-    const gx = -0.7 + g * 0.35;
-    m.ellipsoid(gx, 0.54 + (g % 2) * 0.05, 0.62, 0.11, 0.04, 0.11, glow, 2, 0.2, 4, 5);
+  // Fractured granite core boulder with angular secondary slabs & stratified karst shelf
+  const g0 = [0.24, 0.26, 0.23], g1 = [0.30, 0.31, 0.28], gDark = [0.16, 0.17, 0.15];
+  m.ellipsoid(0, 0.28, 0, 1.18, 0.68, 0.94, g0, 0, 0, 5, 7);
+  m.ellipsoid(-0.55, 0.34, -0.28, 0.68, 0.52, 0.54, g1, 0, 0, 4, 6);
+  m.ellipsoid(0.62, 0.22, -0.35, 0.58, 0.38, 0.48, gDark, 0, 0, 4, 5);
+  // Stratified limestone / basalt hexagonal column spurs
+  for (let c = 0; c < 3; c++) {
+    const cx = -0.35 + c * 0.34, cz = -0.45 + (c % 2) * 0.18;
+    const ch = 0.62 + (c === 1 ? 0.28 : 0.08);
+    m.tube([[cx, 0.0, cz], [cx, ch, cz]], [0.22, 0.19], [gDark, g1], [[0, 0], [0, 0]], 6, true);
+  }
+  // Emerald bryophyte moss cushion on upper rock shelf
+  m.ellipsoid(0.32, 0.62, 0.10, 0.78, 0.26, 0.62, [0.16, 0.39, 0.12], 0, 0, 4, 6);
+  // Fallen hollow nurse log with weathered bark
+  const bark = [0.22, 0.15, 0.10], heartwood = [0.34, 0.22, 0.14];
+  m.tube([[-1.42, 0.22, 0.55], [0, 0.29, 0.64], [1.48, 0.18, 0.48]], [0.27, 0.24, 0.20], [bark, bark, heartwood], [[0, 0], [0, 0], [0, 0]], 6, true);
+  // Bioluminescent Mycena chlorophos fungi clusters along the nurse log
+  const glow = [0.32, 0.96, 0.64], stemCol = [0.20, 0.62, 0.46];
+  for (let g = 0; g < 6; g++) {
+    const gx = -0.82 + g * 0.32;
+    const gy = 0.50 + (g % 2) * 0.05;
+    const gz = 0.62 + ((g % 3) - 1) * 0.04;
+    m.tube([[gx, gy - 0.10, gz], [gx, gy, gz]], [0.018, 0.012], [stemCol, glow], [[2, 0.1], [2, 0.2]], 4, false);
+    m.ellipsoid(gx, gy + 0.02, gz, 0.11, 0.042, 0.11, glow, 2, 0.25, 4, 5);
   }
   return m.build();
 }
@@ -194,7 +211,7 @@ function buildWaterFloraMesh() {
   return m.build();
 }
 
-// Noniv/abyssal-garden Sunken Wooden Galleon Shipwreck (meshShip)
+// Abyssal Garden Sunken Wooden Galleon Shipwreck (meshShip)
 function buildSunkenGalleonMesh() {
   const m = new MeshBuilder();
   const darkOak = [0.18, 0.12, 0.08], midOak = [0.26, 0.18, 0.11], mossOak = [0.14, 0.26, 0.18];
@@ -233,27 +250,69 @@ function buildSunkenGalleonMesh() {
   return m.build();
 }
 
-// Noniv/abyssal-garden Smooth-Min SDF Whale Fluke Monument & Reef Corals/Kelp
+// Abyssal Garden Multi-Species Segmented Kelp (Macrocystis), Eelgrass, Sargassum & Bioluminescent Coral
 function buildKelpCoralReefMesh() {
   const m = new MeshBuilder();
-  // Swaying giant ribbon kelp fronds (uv.x = 1, uv.y = 0..1 sway)
-  const kelp0 = [0.10, 0.36, 0.16], kelp1 = [0.22, 0.58, 0.24];
-  for (let k = 0; k < 7; k++) {
-    const a = (k / 7) * TAU;
-    const kx = cos(a) * 0.55, kz = sin(a) * 0.55;
-    const kh = 3.2 + (k % 3) * 1.35;
-    m.ribbon([kx, -0.1, kz], [kx + sin(k) * 0.4, kh, kz + cos(k) * 0.4], 0.16, 0.06, 0.35, kelp0, kelp1, 1, 0.0, 1.0, 6);
+  const holdfastCol = [0.16, 0.24, 0.14];
+  const stipeCol = [0.14, 0.42, 0.18];
+  const bladderCol = [0.42, 0.64, 0.22];
+  const bladeBase = [0.12, 0.46, 0.20];
+  const bladeTip = [0.28, 0.68, 0.26];
+
+  // 1. Giant Kelp (Macrocystis pyrifera): Holdfast anchors + segmented stipes + pneumatocyst bladders + corrugated blades
+  for (let k = 0; k < 4; k++) {
+    const a = (k / 4) * TAU + 0.25;
+    const kx = cos(a) * 0.46, kz = sin(a) * 0.46;
+    const kh = 3.8 + (k % 2) * 1.45;
+    // Holdfast haptera roots anchoring stipe base
+    m.ellipsoid(kx, 0.04, kz, 0.20, 0.10, 0.20, holdfastCol, 0, 0, 3, 5);
+    // Segmented stipe column (uv.x = 1.0, uv.y = 0..1 height fraction for traveling-wave current shader)
+    const stipePath = [
+      [kx, 0.0, kz],
+      [kx + sin(k) * 0.10, kh * 0.32, kz + cos(k) * 0.10],
+      [kx - cos(k) * 0.14, kh * 0.66, kz + sin(k) * 0.14],
+      [kx + sin(k) * 0.18, kh, kz - cos(k) * 0.12]
+    ];
+    m.tube(stipePath, [0.036, 0.028, 0.022, 0.014], [holdfastCol, stipeCol, stipeCol, bladeTip], [[1, 0.0], [1, 0.32], [1, 0.66], [1, 1.0]], 5, true);
+
+    // Gas-bladder pneumatocysts (uv.x = 1.5) & Lateral corrugated kelp blades (uv.x = 1.2)
+    for (let n = 1; n <= 5; n++) {
+      const f = n / 5.4;
+      const ny = kh * f;
+      const nx = kx + sin(k + f * 2.2) * 0.12;
+      const nz = kz + cos(k + f * 2.2) * 0.12;
+      const bAng = a + n * 1.35;
+      const bLen = 0.68 + (1 - f * 0.35) * 0.45;
+      // Pneumatocyst gas bladder at blade junction
+      m.ellipsoid(nx + cos(bAng) * 0.045, ny, nz + sin(bAng) * 0.045, 0.038, 0.052, 0.038, bladderCol, 1.5, f, 3, 4);
+      // Corrugated lateral blade trailing in current
+      const tipX = nx + cos(bAng) * bLen;
+      const tipY = ny + 0.18 + (n % 2) * 0.12;
+      const tipZ = nz + sin(bAng) * bLen;
+      m.ribbon([nx, ny, nz], [tipX, tipY, tipZ], 0.15, 0.04, 0.18, bladeBase, bladeTip, 1.2, f, min(1.0, f + 0.18), 4);
+    }
   }
-  // Fluorescent sea anemone & staghorn coral branches (uv.x = 2 for bioluminescence)
-  const coralCols = [[0.92, 0.22, 0.56], [0.22, 0.85, 0.92], [0.96, 0.52, 0.16]];
+
+  // 2. Eelgrass (Zostera) & Sargassum meadow ribbons around reef perimeter
+  const eel0 = [0.09, 0.36, 0.18], eel1 = [0.22, 0.58, 0.28];
+  for (let e = 0; e < 7; e++) {
+    const a = (e / 7) * TAU + 0.6;
+    const r = 0.72 + (e % 2) * 0.25;
+    const ex = cos(a) * r, ez = sin(a) * r;
+    const eh = 1.35 + (e % 3) * 0.48;
+    m.ribbon([ex, -0.05, ez], [ex + cos(a) * 0.26, eh, ez + sin(a) * 0.26], 0.08, 0.025, 0.16, eel0, eel1, 1.0, 0.0, 0.75, 4);
+  }
+
+  // 3. Bioluminescent Staghorn Coral, Sea Anemones & Hydrothermal Tube Worms (uv.x = 2.0)
+  const coralCols = [[0.94, 0.22, 0.58], [0.18, 0.88, 0.95], [0.96, 0.54, 0.14]];
   for (let c = 0; c < 6; c++) {
     const a = (c / 6) * TAU + 0.4;
     const cx = cos(a) * 0.85, cz = sin(a) * 0.85;
     const col = coralCols[c % 3];
-    m.tube([[cx * 0.4, 0, cz * 0.4], [cx * 0.8, 0.55, cz * 0.8], [cx, 1.15, cz]], [0.12, 0.09, 0.05], [col, col, [0.98, 0.88, 0.95]], [[2, 0.1], [2, 0.3], [2, 0.6]], 5, true);
+    m.tube([[cx * 0.38, 0, cz * 0.38], [cx * 0.75, 0.56, cz * 0.75], [cx, 1.18, cz]], [0.11, 0.085, 0.048], [col, col, [0.98, 0.90, 0.96]], [[2, 0.1], [2, 0.35], [2, 0.7]], 5, true);
   }
-  // Brain coral dome & barrel sponge at base
-  m.ellipsoid(0, 0.28, 0, 0.65, 0.42, 0.62, [0.68, 0.24, 0.48], 2, 0.1, 5, 7);
+  // Grooved Brain Coral Dome at center
+  m.ellipsoid(0, 0.28, 0, 0.64, 0.40, 0.62, [0.72, 0.24, 0.52], 2, 0.15, 5, 7);
   return m.build();
 }
 
@@ -730,16 +789,50 @@ function buildBirdMesh(bodyCol, wingCol, beakCol, wingSpan = 0.85, beakLen = 0.1
 
 function buildFishManateeMesh(col, isManatee = false) {
   const m = new MeshBuilder();
-  const c2 = [col[0] * 0.7, col[1] * 0.75, col[2] * 0.8];
-  const rx = isManatee ? 0.28 : 0.055, ry = isManatee ? 0.24 : 0.09, rz = isManatee ? 0.68 : 0.22;
+  const c2 = [col[0] * 0.72, col[1] * 0.76, col[2] * 0.82];
+  const belly = [min(1.0, col[0] * 0.65 + 0.35), min(1.0, col[1] * 0.65 + 0.35), min(1.0, col[2] * 0.65 + 0.35)];
+  if (isManatee) {
+    const rx = 0.28, ry = 0.24, rz = 0.68;
+    m.smoothLimb(
+      [[0, 0, -rz * 1.35], [0, 0, -rz * 0.5], [0, 0, rz * 0.3], [0, 0, rz * 0.95]],
+      [[0.02, 0.03], [rx * 0.7, ry * 0.75], [rx, ry], [rx * 0.45, ry * 0.45]],
+      [c2, col, col, c2],
+      [[0.9, 0], [0.6, 0.3], [0.5, 0.65], [0.5, 1.0]],
+      6, 0.05
+    );
+    addExpressiveFace(m, 0.02, rz * 0.85, rx * 0.42, ry * 0.42, rz * 0.20, belly, c2, [0.05, 0.05, 0.05], false);
+    m.ribbon([0, 0, -rz * 0.85], [0, 0, -rz * 1.45], ry * 0.35, ry * 1.15, 0.02, col, c2, 0.9, 0.2, 0.0, 3);
+    for (const s of [-1, 1]) {
+      m.ribbon([s * rx * 0.78, -ry * 0.35, rz * 0.32], [s * rx * 1.45, -ry * 0.62, rz * 0.14], 0.14, 0.06, -0.02, col, c2, 0.5, 0.65, 0.8, 3);
+    }
+    return m.build();
+  }
+
+  // Anatomical 3D Reef & Pelagic Fish (facing +Z):
+  // Streamlined fusiform body from caudal peduncle (-0.28) to rostrum (+0.25)
+  const rx = 0.058, ry = 0.096, rz = 0.24;
   m.smoothLimb(
-    [[0, 0, -rz * 1.35], [0, 0, -rz * 0.5], [0, 0, rz * 0.3], [0, 0, rz * 0.95]],
-    [[0.02, 0.03], [rx * 0.7, ry * 0.75], [rx, ry], [rx * 0.45, ry * 0.45]],
-    [c2, col, col, c2],
-    [[0.9, 0], [0.6, 0.3], [0.5, 0.65], [0.5, 1.0]],
-    6, 0.05
+    [[0, 0, -rz * 1.18], [0, 0, -rz * 0.65], [0, 0.005, -rz * 0.10], [0, 0.008, rz * 0.38], [0, 0.0, rz * 0.82], [0, -0.006, rz * 1.08]],
+    [[0.012, 0.022], [rx * 0.52, ry * 0.58], [rx * 0.94, ry * 0.96], [rx, ry], [rx * 0.68, ry * 0.66], [rx * 0.26, ry * 0.24]],
+    [c2, col, col, col, c2, belly],
+    [[0.92, 0.0], [0.75, 0.22], [0.55, 0.48], [0.5, 0.70], [0.5, 0.88], [0.5, 1.0]],
+    7, 0.035
   );
-  m.ribbon([0, 0, -rz * 0.85], [0, 0, -rz * 1.45], ry * 0.35, ry * 1.15, 0.02, col, c2, 0.9, 0.2, 0.0, 3);
+  // Expressive fish head: wet specular eyes (uv.x = 0.12) & articulated lower jaw (uv.x = 0.18)
+  addExpressiveFace(m, 0.008, rz * 0.82, rx * 0.72, ry * 0.55, rz * 0.26, belly, c2, [0.04, 0.05, 0.07], false);
+  // Sculpted gill operculum plates & lateral pectoral fins
+  for (const s of [-1, 1]) {
+    m.ellipsoid(s * rx * 0.86, 0.0, rz * 0.54, rx * 0.22, ry * 0.52, rz * 0.16, c2, 0.5, 0.78, 3, 4);
+    m.ribbon([s * rx * 0.84, -ry * 0.24, rz * 0.42], [s * (rx * 2.45), -ry * 0.48, rz * 0.16], 0.058, 0.018, -0.01, col, belly, 0.65, 0.62, 0.76, 3);
+    // Paired ventral pelvic fins
+    m.ribbon([s * rx * 0.38, -ry * 0.82, rz * 0.12], [s * rx * 0.95, -ry * 1.28, -rz * 0.08], 0.042, 0.012, -0.01, c2, belly, 0.6, 0.45, 0.55, 2);
+  }
+  // Swept dorsal fin & ventral anal fin
+  m.ribbon([0, ry * 0.86, rz * 0.18], [0, ry * 1.72, -rz * 0.34], 0.095, 0.022, 0.02, col, c2, 0.7, 0.40, 0.65, 4);
+  m.ribbon([0, -ry * 0.76, -rz * 0.25], [0, -ry * 1.36, -rz * 0.62], 0.068, 0.016, -0.015, c2, belly, 0.75, 0.25, 0.42, 3);
+  // Deeply forked homocercal caudal tail fin (upper & lower lobes)
+  m.ribbon([0, 0.008, -rz * 1.05], [0, ry * 1.28, -rz * 1.68], 0.056, 0.016, 0.018, col, c2, 0.95, 0.12, 0.0, 3);
+  m.ribbon([0, -0.008, -rz * 1.05], [0, -ry * 1.18, -rz * 1.64], 0.054, 0.016, -0.018, col, belly, 0.95, 0.12, 0.0, 3);
   return m.build();
 }
 
@@ -941,13 +1034,13 @@ function buildWorld() {
     }
   }
 
-  // Interior Canopy Trees (Cypress, Kapok, Palm, Mangrove)
-  const treeCount = round(760 * VEG_DENSITY_SCALE);
+  // Interior & Global Canopy Trees (Cypress, Kapok, Palm, Mangrove across the entire planetary domain)
+  const treeCount = round(920 * VEG_DENSITY_SCALE);
   for (let i = 0; i < treeCount; i++) {
-    const x = rr(-245, 245), z = rr(-225, 165);
+    const x = rr(-350, 350), z = rr(-215, 225);
     if (hypot(x - LAGOON_POS[0], z - LAGOON_POS[1]) < 22) continue;
     terrainAt(x, z, t);
-    if (t.h < -0.55 || (t.clearing > 0.62 && rnd() < 0.85) || t.savanna > 0.55 || t.dune > 0.45 || t.volcano > 0.45) continue;
+    if (t.h < -0.55 || (t.clearing > 0.62 && rnd() < 0.85) || t.savanna > 0.55 || t.dune > 0.45 || t.volcano > 0.45 || t.polar > 0.25) continue;
     const rot = rr(0, TAU), seed = rnd(), charAmt = saturate(t.fire * rr(0.6, 1.25));
     if (t.mangrove > 0.32 || (t.h < 0.18 && t.river > 0.25)) {
       pushInst(3, x, max(-0.28, t.h), z, rr(0.85, 1.32), rot, seed, charAmt, t.wetness, 0.55, 5.2);
@@ -960,31 +1053,31 @@ function buildWorld() {
     }
   }
 
-  // Dense Understory (Ferns, Monstera, Heliconia, Wildflowers)
-  const underCount = round(1400 * VEG_DENSITY_SCALE);
+  // Dense Understory (Ferns, Monstera, Heliconia, Wildflowers across the full planetary belt)
+  const underCount = round(1600 * VEG_DENSITY_SCALE);
   for (let i = 0; i < underCount; i++) {
-    const x = rr(-255, 255), z = rr(-240, 175);
+    const x = rr(-350, 350), z = rr(-215, 225);
     terrainAt(x, z, t);
-    if (t.h < -0.05 || t.h > 19 || t.dune > 0.45 || t.volcano > 0.45) continue;
+    if (t.h < -0.05 || t.h > 19 || t.dune > 0.45 || t.volcano > 0.45 || t.polar > 0.25) continue;
     pushInst(4, x, t.h, z, rr(0.75, 1.55), rr(0, TAU), rnd(), saturate(t.fire * 1.1), t.wetness);
   }
 
-  // Boulders, Fallen Logs, Kopje Rocks, Cenote Karst & Polar Icebergs
-  const rockCount = round(540 * VEG_DENSITY_SCALE);
+  // Boulders, Fallen Logs, Kopje Rocks, Cenote Karst & North/South Polar Glacial Icebergs
+  const rockCount = round(640 * VEG_DENSITY_SCALE);
   for (let i = 0; i < rockCount; i++) {
-    const x = rr(-265, 265), z = rr(-245, 285);
+    const x = rr(-352, 352), z = rr(-352, 352);
     terrainAt(x, z, t);
-    if (t.h < -1.2 && z < 180) continue;
-    const sc = rr(0.75, 1.85);
+    if (t.h < -1.2 && z > -210 && z < 180) continue;
+    const sc = (z < -225 || z > 235) ? rr(1.15, 2.45) : rr(0.75, 1.85);
     pushInst(5, x, t.h - 0.08, z, sc, rr(0, TAU), rnd(), saturate(t.fire), t.wetness, 0.78, 0.95);
   }
 
-  // Water Lilies, Sawgrass & Cattails
-  const waterFloraCount = round(680 * VEG_DENSITY_SCALE);
+  // Water Lilies, Sawgrass & Cattails across main river and outer tributary channels
+  const waterFloraCount = round(760 * VEG_DENSITY_SCALE);
   for (let i = 0; i < waterFloraCount; i++) {
-    const x = rr(-220, 220), z = rr(-185, 155);
+    const x = rr(-345, 345), z = rr(-205, 175);
     terrainAt(x, z, t);
-    if (t.h > -1.35 && t.h < 0.28) {
+    if (t.h > -1.35 && t.h < 0.28 && t.polar < 0.1) {
       pushInst(6, x, 0.01, z, rr(0.75, 1.45), rr(0, TAU), rnd(), saturate(t.fire * 0.8), 1.0);
     }
   }
@@ -998,12 +1091,15 @@ function buildWorld() {
   }));
 
   // ==========================================================================
-  // Solid Obstacle + Ground Collision Solver (Camera & Wildlife)
+  // Solid Obstacle + Ground Collision Solver (Camera & Wildlife, Geodesic-Wrapped)
   // ==========================================================================
   const _colT = {};
   function resolveWorldCollision(x, y, z, radius, vx, vz, out = {}, minGroundOffset = 0.62) {
-    let nx = x, ny = y, nz = z;
-    let nvx = vx, nvz = vz;
+    let nx = Number.isFinite(x) ? x : 0;
+    let ny = Number.isFinite(y) ? y : 2.5;
+    let nz = Number.isFinite(z) ? z : 0;
+    let nvx = Number.isFinite(vx) ? vx : 0;
+    let nvz = Number.isFinite(vz) ? vz : 0;
     let hit = false, hitGround = false;
     let hitNx = 0, hitNz = 0;
 
@@ -1014,19 +1110,20 @@ function buildWorld() {
       hitGround = true;
     }
 
-    const cx = clamp(floor((nx + WORLD_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
-    const cz = clamp(floor((nz + WORLD_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
+    const wx = wrapCoord(nx);
+    const wz = wrapCoord(nz);
+    const cx = clamp(floor((wx + WORLD_HALF) / CELL_SPAN) || 0, 0, GRID_CELLS - 1);
+    const cz = clamp(floor((wz + WORLD_HALF) / CELL_SPAN) || 0, 0, GRID_CELLS - 1);
     for (let dz = -1; dz <= 1; dz++) {
-      const gz = cz + dz;
-      if (gz < 0 || gz >= GRID_CELLS) continue;
+      const gz = (cz + dz + GRID_CELLS) % GRID_CELLS;
       for (let dx = -1; dx <= 1; dx++) {
-        const gx = cx + dx;
-        if (gx < 0 || gx >= GRID_CELLS) continue;
+        const gx = (cx + dx + GRID_CELLS) % GRID_CELLS;
         const bucket = colliderCells[gz * GRID_CELLS + gx];
+        if (!bucket) continue;
         for (let k = 0; k < bucket.length; k++) {
           const c = colliders[bucket[k]];
           if (ny > c.maxY) continue;
-          const ox = nx - c.x, oz = nz - c.z;
+          const ox = wrapDelta(wx, c.x), oz = wrapDelta(wz, c.z);
           const minDist = c.r + radius;
           const d2 = ox * ox + oz * oz;
           if (d2 < minDist * minDist && d2 > 1e-9) {
@@ -1090,10 +1187,17 @@ function buildWorld() {
       it.prevX = it.x;
       it.prevY = it.y;
       it.prevZ = it.z;
-      it.yaw = it.yaw ?? (-it.ang);
+      // Canonical local +Z forward rotates to world (-sin(yaw), cos(yaw)),
+      // matching circular velocity (-sin(ang), cos(ang)) when yaw === ang
+      it.yaw = normAngle(it.yaw ?? it.ang);
       it.prevYaw = it.yaw;
       it.pitch = 0;
       it.roll = 0;
+      it.vx = 0;
+      it.vz = 0;
+      it.boidsX = 0;
+      it.boidsY = 0;
+      it.boidsZ = 0;
     }
     wildlifeGroups.push({
       name,
@@ -1324,23 +1428,32 @@ function buildWorld() {
   addCohort('mantas', buildMantaMesh(), mantas, 34, 16, { label: 'Oceanic Manta Ray', domain: 'water', role: 'herbivore', eyeOffset: [0, 0.14, 0.95], followDist: 5.5, baseSpeed: 9.0 });
 
   const penguins = [];
-  for (let i = 0; i < 24; i++) {
-    const inPolar = i >= 14;
-    const base = inPolar ? POLAR_POS : ROOKERY_POS;
-    penguins.push({ type: 'walkCircle', cx: base[0] + rr(-48, 48), cz: base[1] + rr(-38, 38), rad: rr(4, 12), speed: rr(0.12, 0.24), phase: rr(0, TAU), scale: rr(0.92, 1.18), animSpeed: 1.35, mode: 3 });
+  for (let i = 0; i < 32; i++) {
+    // Populate BOTH South Polar (ROOKERY_POS / POLAR_POS) AND North Antarctica Continent (z < -250)
+    const inNorthAntarctica = i >= 20;
+    const inPolar = i >= 10 && i < 20;
+    const cx = inNorthAntarctica ? rr(-280, 280) : (inPolar ? POLAR_POS[0] : ROOKERY_POS[0]) + rr(-58, 58);
+    const cz = inNorthAntarctica ? rr(-330, -245) : (inPolar ? POLAR_POS[1] : ROOKERY_POS[1]) + rr(-45, 45);
+    penguins.push({ type: 'walkCircle', cx, cz, rad: rr(4, 14), speed: rr(0.12, 0.24), phase: rr(0, TAU), scale: rr(0.92, 1.18), animSpeed: 1.35, mode: 3 });
   }
   addCohort('penguins', buildPenguinMesh(), penguins, 35, 22, { label: 'Emperor Penguin', domain: 'land', role: 'herbivore', eyeOffset: [0, 0.78, 0.18], followDist: 3.2, baseSpeed: 6.5 });
 
   const polarBears = [];
-  for (let i = 0; i < 6; i++) {
-    polarBears.push({ type: 'walkCircle', cx: POLAR_POS[0] + rr(-52, 52), cz: POLAR_POS[1] + rr(-40, 40), rad: rr(8, 18), speed: rr(0.10, 0.18), phase: rr(0, TAU), scale: rr(1.15, 1.42), animSpeed: 0.85, mode: 3 });
+  for (let i = 0; i < 10; i++) {
+    const inNorthAntarctica = i >= 5;
+    const cx = inNorthAntarctica ? rr(-260, 260) : POLAR_POS[0] + rr(-58, 58);
+    const cz = inNorthAntarctica ? rr(-335, -248) : POLAR_POS[1] + rr(-45, 45);
+    polarBears.push({ type: 'walkCircle', cx, cz, rad: rr(8, 18), speed: rr(0.10, 0.18), phase: rr(0, TAU), scale: rr(1.15, 1.42), animSpeed: 0.85, mode: 3 });
   }
   addCohort('polarBears', buildBearTapirMesh(false), polarBears, 36, 28, { label: 'Polar Bear', domain: 'land', role: 'predator', eyeOffset: [0, 0.78, 0.82], followDist: 5.0, baseSpeed: 9.2 });
 
   const seals = [];
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 14; i++) {
+    const inNorthAntarctica = i >= 10;
     const base = i < 6 ? ROOKERY_POS : POLAR_POS;
-    seals.push({ type: 'swimCircle', cx: base[0] + rr(-45, 45), cz: base[1] + rr(-35, 35), y: -0.65, rad: rr(6, 15), speed: rr(0.14, 0.25), phase: rr(0, TAU), scale: rr(0.95, 1.25), animSpeed: 1.05, mode: 1 });
+    const cx = inNorthAntarctica ? rr(-250, 250) : base[0] + rr(-48, 48);
+    const cz = inNorthAntarctica ? rr(-245, -222) : base[1] + rr(-38, 38);
+    seals.push({ type: 'swimCircle', cx, cz, y: -0.65, rad: rr(6, 15), speed: rr(0.14, 0.25), phase: rr(0, TAU), scale: rr(0.95, 1.25), animSpeed: 1.05, mode: 1 });
   }
   addCohort('seals', buildFishManateeMesh([0.52, 0.56, 0.62], true), seals, 37, 20, { label: 'Leopard Seal', domain: 'water', role: 'predator', eyeOffset: [0, 0.24, 0.65], followDist: 4.0, baseSpeed: 8.5 });
 
@@ -1408,10 +1521,23 @@ function buildWorld() {
     const sz = inReef ? 235 + sin(s) * 28 : 14 + sin(s) * 18;
     const baseDepth = inReef ? -3.4 : -0.85;
     for (let k = 0; k < 14; k++) {
-      fish.push({ type: 'swimCircle', cx: sx + rr(-4, 4), cz: sz + rr(-4, 4), y: baseDepth + rr(-1.8, 0.6), rad: rr(2.5, 7.5), speed: rr(0.45, 0.95), phase: rr(0, TAU), scale: rr(0.85, 1.45), animSpeed: 2.2, mode: 1 });
+      fish.push({
+        type: 'swimCircle',
+        schoolId: s,
+        cx: sx + rr(-4, 4),
+        cz: sz + rr(-4, 4),
+        y: baseDepth + rr(-1.8, 0.6),
+        baseY: baseDepth + rr(-1.8, 0.6),
+        rad: rr(2.5, 7.5),
+        speed: rr(0.45, 0.95),
+        phase: rr(0, TAU),
+        scale: rr(0.85, 1.45),
+        animSpeed: 2.2,
+        mode: 1
+      });
     }
   }
-  addCohort('fish', buildFishManateeMesh([0.88, 0.64, 0.22], false), fish, 0, 8, { label: 'Golden Reef & River Fish', domain: 'water' });
+  addCohort('fish', buildFishManateeMesh([0.88, 0.64, 0.22], false), fish, 0, 8, { label: 'Golden Reef & River Fish', domain: 'water', eyeOffset: [0, 0.06, 0.22], followDist: 2.4, baseSpeed: 7.5 });
 
   const butterflies = [];
   for (let i = 0; i < 80; i++) {
@@ -1507,7 +1633,7 @@ function buildWorld() {
         size = rr(0.06, 0.14); r = 0.90; g = 0.88; b = 0.68; vy = rr(-0.08, 0.12);
       }
     } else if (i < rainStart) {
-      kind = 6; // Underwater rising hydrothermal & reef bubbles (Noniv/abyssal-garden)
+      kind = 6; // Underwater rising hydrothermal & reef bubbles (Abyssal Garden)
       x = rr(-24, 24); y = rr(-14.0, -0.2); z = rr(-24, 24);
       size = rr(0.035, 0.085); r = 0.8; g = 0.94; b = 0.96; vy = rr(0.55, 1.35);
     } else {
@@ -1524,6 +1650,7 @@ function buildWorld() {
   // Push idle ground wildlife cleanly outside trees/rocks on startup
   const _anCol = {};
   const _ikOut = {};
+  const _hazardOut = {};
   for (let g = 0; g < wildlifeGroups.length; g++) {
     const grp = wildlifeGroups[g];
     for (let i = 0; i < grp.items.length; i++) {
@@ -1541,9 +1668,10 @@ function buildWorld() {
   }
 
   // ==========================================================================
-  // Fixed-Rate (120 Hz) Ecological Survival FSM + Zero-Slide IK Locomotion
+  // Fixed-Rate (120 Hz) Ecological Survival FSM + Canonical IK Locomotion
   // ==========================================================================
   let simTime = 0;
+  let hazardAvoidanceEnabled = true;
   let activeSurvivalEvent = 'Lions stalking Plains Zebras across the Serengeti Savanna';
 
   // Quick lookup for predator-prey interactions
@@ -1588,6 +1716,8 @@ function buildWorld() {
     for (let g = 0; g < wildlifeGroups.length; g++) {
       const grp = wildlifeGroups[g];
       const items = grp.items;
+      const isFishSchool = grp.name === 'fish';
+
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
         it.prevX = it.x;
@@ -1603,8 +1733,8 @@ function buildWorld() {
         // Skip autonomous steering if currently embodied & controlled by the player!
         if (it.playerControlled) continue;
 
-        const dCam = hypot(it.x - camX, it.z - camZ);
-        const dFire = hypot(it.x - FIRE_POS[0], it.z - FIRE_POS[1]);
+        const dCam = hypot(wrapDelta(it.x, camX), wrapDelta(it.z, camZ));
+        const dFire = hypot(wrapDelta(it.x, FIRE_POS[0]), wrapDelta(it.z, FIRE_POS[1]));
 
         // Dynamic emotional & behavioral expression state machine
         it.emotionTimer -= dt;
@@ -1641,8 +1771,21 @@ function buildWorld() {
           else if (rainIntensity > 0.65) spd *= 0.68;
 
           it.ang += spd * dt;
-          const tx = it.cx + cos(it.ang) * it.rad;
-          const tz = it.cz + sin(it.ang) * it.rad;
+          let tx = it.cx + cos(it.ang) * it.rad;
+          let tz = it.cz + sin(it.ang) * it.rad;
+
+          // Hazard avoidance steering (deep water, steep cliffs, fire, volcanic lava)
+          if (hazardAvoidanceEnabled) {
+            evaluateHazardAt(tx, tz, 0, _hazardOut);
+            if (_hazardOut.hazard > 0.18) {
+              const pushStr = _hazardOut.hazard * 2.2;
+              it.cx = clamp(it.cx - _hazardOut.gradX * pushStr * dt, -WORLD_HALF + 18, WORLD_HALF - 18);
+              it.cz = clamp(it.cz - _hazardOut.gradZ * pushStr * dt, -WORLD_HALF + 18, WORLD_HALF - 18);
+              tx -= _hazardOut.gradX * pushStr * 0.35;
+              tz -= _hazardOut.gradZ * pushStr * 0.35;
+            }
+          }
+
           terrainAt(tx, tz, t);
           const colR = clamp(0.45 * it.scale, 0.18, 0.95);
           resolveWorldCollision(tx, max(-0.1, t.h) + 0.25, tz, colR, 0, 0, _anCol, 0.0);
@@ -1653,17 +1796,78 @@ function buildWorld() {
           // Analytical 2-Bone IK Foot-Pinning & Zero-Slide Stride Coupling (v = f_stride * L_stride)
           const mvx = it.x - it.prevX, mvz = it.z - it.prevZ;
           const stepDist = hypot(mvx, mvz);
+          it.vx = mvx / max(1e-5, dt);
+          it.vz = mvz / max(1e-5, dt);
           it.phase = (it.phase + (stepDist / max(0.18, it.strideLen)) * 1.15) % TAU;
+
+          // Canonical heading: local +Z forward rotates to world (-sin(yaw), cos(yaw))
+          const targetYaw = (stepDist > 1e-5) ? velocityToYaw(mvx, mvz, it.yaw) : normAngle(it.ang);
+          it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * 24.0));
+
+          const [fx, fz] = yawToForward(it.yaw);
           const legLen = 0.42 * it.scale;
-          solveTwoBoneIK(it.x, t.h + legLen * 1.85, it.z, it.x, t.h, it.z, sin(it.yaw), 0, cos(it.yaw), legLen, legLen, _ikOut);
+          solveTwoBoneIK(it.x, t.h + legLen * 1.85, it.z, it.x, t.h, it.z, fx, 0, fz, legLen, legLen, _ikOut);
           it.y = t.h;
-          it.yaw = (stepDist > 1e-4) ? atan2(mvx, mvz) : -it.ang;
         } else if (it.type === 'swimCircle') {
           let spd = it.speed;
           if (dCam < it.flightDist) spd *= 1.65;
           it.ang += spd * dt;
-          const tx = it.cx + cos(it.ang) * it.rad;
-          const tz = it.cz + sin(it.ang) * it.rad;
+          let tx = it.cx + cos(it.ang) * it.rad;
+          let tz = it.cz + sin(it.ang) * it.rad;
+
+          // 3D Boids Schooling for Reef & River Fish Cohorts (Separation + Alignment + Cohesion + Depth-Keeping)
+          if (isFishSchool) {
+            const schoolStart = (i / 14 | 0) * 14;
+            const schoolEnd = min(items.length, schoolStart + 14);
+            let sepX = 0, sepY = 0, sepZ = 0;
+            let cohX = 0, cohY = 0, cohZ = 0;
+            let aliSpd = 0, neighbors = 0;
+            for (let j = schoolStart; j < schoolEnd; j++) {
+              if (j === i) continue;
+              const nb = items[j];
+              const dx = it.x - nb.x, dy = it.y - nb.y, dz = it.z - nb.z;
+              const d2 = dx * dx + dy * dy + dz * dz;
+              if (d2 < 25.0 && d2 > 1e-6) {
+                const d = sqrt(d2);
+                if (d < 1.35) {
+                  const rep = (1.35 - d) / d;
+                  sepX += dx * rep;
+                  sepY += dy * rep;
+                  sepZ += dz * rep;
+                }
+                cohX += nb.x;
+                cohY += nb.y;
+                cohZ += nb.z;
+                aliSpd += nb.speed;
+                neighbors++;
+              }
+            }
+            if (neighbors > 0) {
+              const invN = 1 / neighbors;
+              const toCenterX = (cohX * invN - it.x) * 0.22;
+              const toCenterY = (cohY * invN - it.y) * 0.25;
+              const toCenterZ = (cohZ * invN - it.z) * 0.22;
+              it.boidsX = clamp(lerp(it.boidsX, sepX * 0.85 + toCenterX, dt * 4.5), -2.4, 2.4);
+              it.boidsY = clamp(lerp(it.boidsY, sepY * 0.45 + toCenterY, dt * 3.5), -0.85, 0.85);
+              it.boidsZ = clamp(lerp(it.boidsZ, sepZ * 0.85 + toCenterZ, dt * 4.5), -2.4, 2.4);
+              it.speed = lerp(it.speed, aliSpd * invN, dt * 1.5);
+            }
+            tx += it.boidsX;
+            tz += it.boidsZ;
+            const baseDepth = it.baseY ?? (it.baseY = it.y);
+            it.y = clamp(baseDepth + it.boidsY + sin(simTime * 1.4 + it.phase) * 0.14, -18.0, -0.22);
+          }
+
+          // Marine shallow-water stranding avoidance
+          if (hazardAvoidanceEnabled) {
+            evaluateHazardAt(tx, tz, 1, _hazardOut);
+            if (_hazardOut.hazard > 0.25) {
+              const pushStr = _hazardOut.hazard * 1.8;
+              tx -= _hazardOut.gradX * pushStr * 0.35;
+              tz -= _hazardOut.gradZ * pushStr * 0.35;
+            }
+          }
+
           const colR = clamp(0.42 * it.scale, 0.16, 0.85);
           resolveWorldCollision(tx, it.y + 0.15, tz, colR, 0, 0, _anCol, -22.0);
           it.x = _anCol.x;
@@ -1676,8 +1880,11 @@ function buildWorld() {
           }
           const mvx = it.x - it.prevX, mvz = it.z - it.prevZ;
           const stepDist = hypot(mvx, mvz);
+          it.vx = mvx / max(1e-5, dt);
+          it.vz = mvz / max(1e-5, dt);
           it.phase = (it.phase + (stepDist / max(0.25, it.strideLen)) * 0.95) % TAU;
-          it.yaw = (stepDist > 1e-4) ? atan2(mvx, mvz) : -it.ang;
+          const targetYaw = (stepDist > 1e-5) ? velocityToYaw(mvx, mvz, it.yaw) : normAngle(it.ang);
+          it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * 24.0));
         } else if (it.type === 'flyCircle') {
           const spd = it.speed * (rainIntensity > 0.7 ? 0.72 : 1.0);
           it.ang += spd * dt;
@@ -1689,7 +1896,12 @@ function buildWorld() {
           it.x = _anCol.x;
           it.y = _anCol.y;
           it.z = _anCol.z;
-          it.yaw = -it.ang;
+          const mvx = it.x - it.prevX, mvz = it.z - it.prevZ;
+          const stepDist = hypot(mvx, mvz);
+          it.vx = mvx / max(1e-5, dt);
+          it.vz = mvz / max(1e-5, dt);
+          const targetYaw = (stepDist > 1e-5) ? velocityToYaw(mvx, mvz, it.yaw) : normAngle(it.ang);
+          it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * 24.0));
         }
       }
     }
@@ -1754,7 +1966,7 @@ function buildWorld() {
         out[o + 1] = lerp(it.prevY, it.y, a);
         out[o + 2] = lerp(it.prevZ, it.z, a);
         out[o + 3] = it.scale;
-        out[o + 4] = lerp(it.prevYaw, it.yaw, a);
+        out[o + 4] = lerpAngle(it.prevYaw, it.yaw, a);
         out[o + 5] = it.phase;
         const effSpd = (it.state === 'flee' || it.state === 'chase') ? it.animSpeed * 2.1 : it.animSpeed;
         const emo = clamp(round(it.emotion || 0), 0, 4);
@@ -1830,7 +2042,7 @@ function buildWorld() {
       const grp = wildlifeGroups[g];
       for (let i = 0; i < grp.items.length; i++) {
         const it = grp.items[i];
-        const d = hypot(it.x - x, it.y - y, it.z - z);
+        const d = hypot(wrapDelta(it.x, x), it.y - y, wrapDelta(it.z, z));
         if (d < bestD) {
           bestD = d;
           bestGrp = g;
@@ -1849,6 +2061,8 @@ function buildWorld() {
     particles, particleState, particleRanges, MAX_PARTICLES,
     stepSim, interpolateSim, updateDynamic, updateLookdevRig,
     findNearestAnimal,
+    setHazardAvoidance: (enabled) => { hazardAvoidanceEnabled = !!enabled; },
+    getHazardAvoidance: () => hazardAvoidanceEnabled,
     EMOTION_NAMES,
     getActiveSurvivalEvent: () => activeSurvivalEvent
   };

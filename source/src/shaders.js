@@ -1,6 +1,6 @@
 // ============================================================================
-// WGSL Shaders — Terra Primordia (18 Biomes, Noniv/abyssal-garden Ocean,
-// Expressive & Emotional Creature Skinning, Micro-Coat Shading & Aurora)
+// WGSL Shaders — REALISM (Earth-Scale Planet, Noniv/abyssal-garden Deep Ocean,
+// Orbital Space Globe, Expressive Creature Skinning & Micro-Coat Shading)
 // ============================================================================
 
 const W_COMMON = /*wgsl*/`
@@ -114,21 +114,190 @@ fn abyssalRockDetail(wp: vec3f, n: vec3f) -> vec4f {
   return vec4f(w.x - 0.5, w.y - 0.5, rockH, flu);
 }
 
-// Raymarched Aurora Borealis / Australis geomagnetic curtains for Polar Night & Polar Biome
+const WORLD_HALF: f32 = 360.0;
+const WORLD_SPAN: f32 = 720.0;
+
+fn wrapXZ(xz: vec2f) -> vec2f {
+  return xz - floor((xz + vec2f(WORLD_HALF)) / WORLD_SPAN) * WORLD_SPAN;
+}
+
+// Soft, organic blended Aurora Borealis / Australis (emerald, teal & twilight violet glow)
+// Strictly rendered ONLY under the atmosphere at night/twilight — never as lines in deep space
 fn evalAurora(dir: vec3f, t: f32) -> vec3f {
-  if (dir.y <= 0.02) { return vec3f(0.0); }
+  if (dir.y <= 0.01) { return vec3f(0.0); }
+  let skyDomeUV = dir.xz / (dir.y + 0.22);
   var col = vec3f(0.0);
-  for (var i = 0; i < 4; i++) {
+  for (var i = 0; i < 3; i++) {
     let fi = f32(i);
-    let h = (0.14 + fi * 0.055) / max(0.06, dir.y);
-    let p = dir.xz * h * 1.35 + vec2f(t * 0.025 * (1.0 + fi * 0.2), fi * 3.7);
-    let warp = n2(p * 1.8 + vec2f(0.0, t * 0.08)) * 0.65;
-    let curtain = sin(p.x * 3.6 + warp * 4.2 + sin(p.y * 2.4 - t * 0.12) * 2.1);
-    let band = pow(clamp(1.0 - abs(curtain), 0.0, 1.0), 7.0) * smoothstep(0.02, 0.28, dir.y) * (1.0 - smoothstep(0.45, 0.92, dir.y));
-    let cHue = mix(vec3f(0.08, 0.95, 0.52), vec3f(0.55, 0.18, 0.92), clamp(fi / 3.0 + warp * 0.35, 0.0, 1.0));
-    col += cHue * band * (0.55 - fi * 0.09);
+    let scale = 0.55 + fi * 0.28;
+    let drift = vec2f(t * (0.014 + fi * 0.005), -t * 0.009 + fi * 2.3);
+    let p = skyDomeUV * scale + drift;
+    let flow = vec2f(
+      fbm(p * 1.15 + vec2f(0.0, t * 0.03)),
+      fbm(p * 1.15 + vec2f(4.7, -t * 0.025))
+    );
+    let veilA = fbm(p * 1.45 + flow * 1.65);
+    let veilB = fbm(p * 2.35 - flow * 1.15 + vec2f(t * 0.02));
+    let blendGlow = smoothstep(0.42, 0.82, veilA * 0.65 + veilB * 0.35);
+    let vertFade = smoothstep(0.02, 0.24, dir.y) * (1.0 - smoothstep(0.52, 0.96, dir.y));
+    let emerald = vec3f(0.08, 0.88, 0.54);
+    let teal    = vec3f(0.06, 0.68, 0.86);
+    let violet  = vec3f(0.48, 0.16, 0.82);
+    let hueMix1 = mix(emerald, teal, smoothstep(0.3, 0.75, flow.x));
+    let hueMix2 = mix(hueMix1, violet, smoothstep(0.45, 0.88, veilB + fi * 0.22));
+    col += hueMix2 * blendGlow * vertFade * (0.52 - fi * 0.11);
   }
   return col;
+}
+
+// High-velocity flying meteorites / shooting stars across outer space & upper mesosphere
+fn evalMeteorites(dir: vec3f, t: f32) -> vec3f {
+  var mCol = vec3f(0.0);
+  for (var k = 0; k < 3; k++) {
+    let fk = f32(k);
+    let period = 4.2 + fk * 1.7;
+    let cycle = floor(t / period);
+    let phase = fract(t / period);
+    let activeWin = smoothstep(0.02, 0.12, phase) * (1.0 - smoothstep(0.48, 0.68, phase));
+    if (activeWin > 0.001) {
+      let seed = h22(vec2f(cycle + fk * 19.3, fk * 37.1));
+      let az = (seed.x * 2.0 - 1.0) * 3.14159;
+      let el = 0.18 + seed.y * 0.62;
+      let startDir = normalize(vec3f(cos(el) * sin(az), sin(el), cos(el) * cos(az)));
+      let tangent = normalize(cross(startDir, vec3f(0.15, 1.0, -0.25)));
+      let headDir = normalize(startDir + tangent * (phase * 0.95 - 0.25));
+      let tailDir = normalize(startDir + tangent * (max(0.0, phase - 0.16) * 0.95 - 0.25));
+      // Distance from ray dir to meteorite streak segment [tailDir -> headDir]
+      let seg = headDir - tailDir;
+      let segLen2 = max(1e-5, dot(seg, seg));
+      let hProj = clamp(dot(dir - tailDir, seg) / segLen2, 0.0, 1.0);
+      let closest = normalize(tailDir + seg * hProj);
+      let angDist = length(dir - closest);
+      let core = exp(-angDist * 380.0) * pow(hProj, 1.8);
+      let headSpark = exp(-length(dir - headDir) * 220.0) * 1.65;
+      let trailCol = mix(vec3f(0.28, 0.78, 1.0), vec3f(1.0, 0.92, 0.72), hProj);
+      mCol += (trailCol * core * 2.4 + vec3f(1.0, 0.97, 0.90) * headSpark) * activeWin;
+    }
+  }
+  return mCol;
+}
+
+// Distant 3D Planets (Ringed Saturn, Red Mars, Cratered Moon) & Inclined Spiral Galaxy
+fn evalCosmicBodies(dir: vec3f, t: f32, spaceVis: f32) -> vec3f {
+  if (spaceVis <= 0.01) { return vec3f(0.0); }
+  var c = vec3f(0.0);
+  let sunL = normalize(U.sunDir.xyz);
+
+  // 1. Inclined Spiral Galaxy & Glowing Core
+  let galCenter = normalize(vec3f(0.48, 0.58, 0.65));
+  let gRight = normalize(cross(galCenter, vec3f(0.0, 1.0, 0.0)));
+  let gUp = cross(gRight, galCenter);
+  let gDot = dot(dir, galCenter);
+  if (gDot > 0.88) {
+    let gx = dot(dir, gRight) * 11.5;
+    let gy = dot(dir, gUp) * 21.0; // inclined elliptical disc
+    let gr = sqrt(gx * gx + gy * gy);
+    let gTheta = atan2(gy, gx);
+    let spiral = cos(2.0 * gTheta - log(max(0.04, gr)) * 4.2 + t * 0.02);
+    let armMask = smoothstep(-0.2, 0.75, spiral) * exp(-gr * 1.85) * smoothstep(0.08, 0.35, gr);
+    let coreGlow = exp(-gr * 5.2) * 1.45;
+    let dustNoise = 0.65 + 0.35 * fbm(vec2f(gx * 2.5, gy * 2.5));
+    let galCol = vec3f(1.0, 0.86, 0.62) * coreGlow +
+                 mix(vec3f(0.32, 0.58, 1.0), vec3f(0.82, 0.34, 0.88), smoothstep(0.2, 1.2, gr)) * armMask * dustNoise;
+    c += galCol * spaceVis * 0.95;
+  }
+
+  // 2. Ringed Gas Giant (Saturn-like 3D Sphere + Concentric Tilted Rings)
+  let satDir = normalize(vec3f(-0.62, 0.34, -0.70));
+  let satRight = normalize(cross(satDir, vec3f(0.18, 1.0, 0.08)));
+  let satUp = normalize(cross(satRight, satDir));
+  let satDot = dot(dir, satDir);
+  if (satDot > 0.975) {
+    let sx = dot(dir, satRight);
+    let sy = dot(dir, satUp);
+    let sRad = 0.032;
+    let sr2 = sx * sx + sy * sy;
+    // Ring plane intersection (tilted normal)
+    let ringNorm = normalize(satUp * 0.82 - satDir * 0.57);
+    let denom = dot(dir, ringNorm);
+    var ringCol = vec3f(0.0);
+    var ringAlpha = 0.0;
+    var ringBehind = false;
+    if (abs(denom) > 0.01) {
+      let tRing = dot(satDir, ringNorm) / denom;
+      let rHit = dir * tRing - satDir;
+      let rDist = length(rHit);
+      if (rDist > sRad * 1.38 && rDist < sRad * 2.55) {
+        let rU = (rDist - sRad * 1.38) / (sRad * 1.17);
+        let cassini = smoothstep(0.03, 0.08, abs(rU - 0.62));
+        let bands = 0.65 + 0.35 * sin(rU * 48.0) * cos(rU * 19.0);
+        ringAlpha = cassini * bands * smoothstep(0.0, 0.08, rU) * (1.0 - smoothstep(0.90, 1.0, rU)) * 0.85;
+        ringCol = mix(vec3f(0.68, 0.56, 0.40), vec3f(0.92, 0.82, 0.64), bands) * max(0.25, dot(ringNorm, sunL) * 0.6 + 0.55);
+        ringBehind = tRing > 1.0;
+      }
+    }
+    if (sr2 < sRad * sRad) {
+      let sz = sqrt(max(0.0, sRad * sRad - sr2));
+      let sNorm = normalize(satRight * sx + satUp * sy - satDir * sz);
+      let bandLat = dot(sNorm, satUp);
+      let storm = fbm(vec2f(atan2(sx, sz) * 3.0 + t * 0.03, bandLat * 12.0));
+      let bandWave = sin(bandLat * 26.0 + storm * 2.2) * 0.5 + 0.5;
+      let satAlb = mix(vec3f(0.76, 0.60, 0.38), vec3f(0.94, 0.82, 0.58), bandWave);
+      let sLit = max(0.06, dot(sNorm, sunL));
+      var bodyCol = satAlb * sLit;
+      if (!ringBehind && ringAlpha > 0.01) {
+        bodyCol = mix(bodyCol, ringCol, ringAlpha);
+      }
+      c = mix(c, bodyCol, spaceVis);
+    } else if (ringAlpha > 0.01) {
+      c += ringCol * ringAlpha * spaceVis;
+    }
+  }
+
+  // 3. Red Planet (Mars-like 3D Sphere with Polar Ice Cap & Basalt Syrtis Basins)
+  let marsDir = normalize(vec3f(0.74, 0.42, -0.52));
+  let mRight = normalize(cross(marsDir, vec3f(0.0, 1.0, 0.0)));
+  let mUp = cross(mRight, marsDir);
+  if (dot(dir, marsDir) > 0.996) {
+    let mx = dot(dir, mRight);
+    let my = dot(dir, mUp);
+    let mRad = 0.018;
+    let mr2 = mx * mx + my * my;
+    if (mr2 < mRad * mRad) {
+      let mz = sqrt(max(0.0, mRad * mRad - mr2));
+      let mNorm = normalize(mRight * mx + mUp * my - marsDir * mz);
+      let mNoise = fbm(vec2f(atan2(mx, mz) * 2.5 + t * 0.015, (my / mRad) * 4.0));
+      var mAlb = mix(vec3f(0.78, 0.30, 0.14), vec3f(0.38, 0.16, 0.10), smoothstep(0.45, 0.72, mNoise));
+      let mPole = smoothstep(0.78, 0.92, abs(my / mRad));
+      mAlb = mix(mAlb, vec3f(0.95, 0.96, 0.98), mPole);
+      let mLit = max(0.05, dot(mNorm, sunL));
+      c = mix(c, mAlb * mLit, spaceVis);
+    }
+  }
+
+  // 4. Cratered Lunar Sphere (Moon)
+  let moonDir = normalize(vec3f(-0.36, 0.56, 0.74));
+  let lRight = normalize(cross(moonDir, vec3f(0.0, 1.0, 0.0)));
+  let lUp = cross(lRight, moonDir);
+  if (dot(dir, moonDir) > 0.994) {
+    let lx = dot(dir, lRight);
+    let ly = dot(dir, lUp);
+    let lRad = 0.026;
+    let lr2 = lx * lx + ly * ly;
+    if (lr2 < lRad * lRad) {
+      let lz = sqrt(max(0.0, lRad * lRad - lr2));
+      let lNorm = normalize(lRight * lx + lUp * ly - moonDir * lz);
+      let lUv = vec2f(atan2(lx, lz) * 3.2, (ly / lRad) * 3.2);
+      let maria = fbm(lUv * 1.8);
+      let crater = voronoi(lUv * 7.5).x;
+      let craterRim = smoothstep(0.12, 0.24, crater) - smoothstep(0.24, 0.36, crater) * 0.3;
+      let lAlb = mix(vec3f(0.38, 0.40, 0.44), vec3f(0.74, 0.76, 0.78), smoothstep(0.38, 0.65, maria) + craterRim * 0.25);
+      let lLit = max(0.04, dot(lNorm, sunL));
+      c = mix(c, lAlb * lLit, spaceVis);
+    }
+  }
+
+  return c;
 }
 
 fn distributionGGX(NdotH: f32, rough: f32) -> f32 {
@@ -168,39 +337,162 @@ fn evalSky(dir: vec3f) -> vec3f {
     return uwSky;
   }
 
-  let y = clamp(dir.y, 0., 1.);
-  var col = mix(U.skyHorizon.rgb, U.skyZenith.rgb, pow(y, 0.52));
-  let sd = max(dot(dir, U.sunDir.xyz), 0.);
-  let mie = pow(sd, 10.) * 0.38 + pow(sd, 96.) * 1.35 + smoothstep(0.9982, 0.9997, sd) * 9.0;
-  col += U.sunCol.rgb * mie * U.sunDir.w;
+  let spaceFactor = smoothstep(160.0, 820.0, U.camPos.y);
+  let atmoDensity = 1.0 - spaceFactor;
 
-  if (dir.y > 0.015) {
-    let uv = dir.xz / (dir.y + 0.16) * 0.22 + U.wind.xy * (t * 0.008);
-    let c1 = fbm(uv * 2.2);
-    let c2 = fbm(uv * 5.1 - vec2f(t * 0.012, 0.));
-    let cMask = smoothstep(0.47 - U.skyZenith.w * 0.18, 0.78, c1 * 0.68 + c2 * 0.32) * smoothstep(0.015, 0.18, dir.y);
-    let cLit = mix(vec3f(0.18, 0.22, 0.25), U.sunCol.rgb * 1.15 + vec3f(0.28), pow(sd, 3.) * 0.65 + 0.35 * U.sunDir.w);
-    col = mix(col, cLit, cMask * 0.72);
+  // Ascending through lower & upper atmospheric layers gets progressively lighter before thinning into space
+  let climbGlow = smoothstep(28.0, 135.0, U.camPos.y) * (1.0 - smoothstep(150.0, 380.0, U.camPos.y));
+  let y = clamp(dir.y, 0., 1.);
+  var baseHoriz = mix(U.skyHorizon.rgb, vec3f(0.68, 0.86, 0.98), climbGlow * 0.65);
+  var baseZen   = mix(U.skyZenith.rgb,  vec3f(0.26, 0.58, 0.92), climbGlow * 0.55);
+  var col = mix(baseHoriz, baseZen, pow(y, 0.52)) * atmoDensity;
+
+  // Blazing Sun Disc, Solar Corona & Atmospheric Mie Scattering
+  let sd = max(dot(dir, U.sunDir.xyz), 0.);
+  let mie = pow(sd, 10.) * 0.38 * atmoDensity + pow(sd, 72.) * (1.25 + spaceFactor * 1.4) + smoothstep(0.9980, 0.9997, sd) * (9.5 + spaceFactor * 6.0);
+  col += mix(U.sunCol.rgb, vec3f(1.0, 0.96, 0.86), spaceFactor * 0.7) * mie * max(U.sunDir.w, spaceFactor * 1.15);
+
+  // Multi-Layer Cloud Decks (Lower Cumulus Deck at y=42..88m & Upper Cirrus Ice-Crystal Deck at y=115..165m)
+  if (atmoDensity > 0.01) {
+    // 1. Lower Billowing Cumulus Deck (y ~ 64m) — pass right through it as you ascend!
+    let dCumulus = 64.0 - U.camPos.y;
+    if ((dCumulus > 0.0 && dir.y > 0.01) || (dCumulus < 0.0 && dir.y < -0.01 && U.camPos.y < 290.0)) {
+      let tCloud = clamp(abs(dCumulus) / max(0.06, abs(dir.y)), 0.0, 1800.0);
+      let cPos = U.camPos.xz + dir.xz * tCloud * 0.14 + U.wind.xy * (t * 1.4);
+      let c1 = fbm(cPos * 0.032);
+      let c2 = fbm(cPos * 0.085 - vec2f(t * 0.04, 0.0));
+      let cDensity = c1 * 0.68 + c2 * 0.32;
+      let cMask = smoothstep(0.45 - U.skyZenith.w * 0.16, 0.76, cDensity) *
+                  smoothstep(0.01, 0.16, abs(dir.y)) *
+                  (1.0 - smoothstep(140.0, 290.0, U.camPos.y));
+      let topSun = select(0.55, 0.95, dCumulus < 0.0);
+      let cLit = mix(vec3f(0.24, 0.30, 0.36), U.sunCol.rgb * 1.18 + vec3f(0.35, 0.38, 0.42) * topSun, pow(sd, 3.0) * 0.55 + 0.45 * U.sunDir.w);
+      col = mix(col, cLit, cMask * 0.78 * atmoDensity);
+    }
+
+    // 2. Upper Wispy Cirrus / Stratospheric Ice-Crystal Clouds (y ~ 138m)
+    let dCirrus = 138.0 - U.camPos.y;
+    if ((dCirrus > 0.0 && dir.y > 0.01) || (dCirrus < 0.0 && dir.y < -0.01 && U.camPos.y < 360.0)) {
+      let tCir = clamp(abs(dCirrus) / max(0.06, abs(dir.y)), 0.0, 2200.0);
+      let cirPos = U.camPos.xz + dir.xz * tCir * 0.09 - U.wind.xy * (t * 0.9);
+      let warp = fbm(cirPos * 0.025);
+      let streak = fbm(vec2f(cirPos.x * 0.06 + warp * 2.2, cirPos.y * 0.018));
+      let cirMask = smoothstep(0.52, 0.80, streak) * smoothstep(0.01, 0.14, abs(dir.y)) * (1.0 - smoothstep(190.0, 360.0, U.camPos.y));
+      let cirCol = mix(vec3f(0.62, 0.76, 0.92), U.sunCol.rgb * 1.25 + vec3f(0.45), 0.65 * U.sunDir.w);
+      col = mix(col, cirCol, cirMask * 0.52 * atmoDensity);
+    }
+
+    // 3. Inside-Cloud Volumetric Whiteout Scattering when physically flying through cloud altitudes
+    let inCumulus = (1.0 - smoothstep(0.0, 22.0, abs(U.camPos.y - 64.0))) *
+                    smoothstep(0.38, 0.72, fbm(U.camPos.xz * 0.025 + vec2f(t * 0.05)));
+    let inCirrus  = (1.0 - smoothstep(0.0, 18.0, abs(U.camPos.y - 138.0))) * 0.55;
+    let inCloudMist = clamp(inCumulus * 0.78 + inCirrus * 0.42, 0.0, 0.85);
+    if (inCloudMist > 0.01) {
+      let cloudVapor = mix(vec3f(0.74, 0.84, 0.94), U.sunCol.rgb * 0.65 + vec3f(0.48, 0.54, 0.62), U.sunDir.w * 0.7);
+      col = mix(col, cloudVapor, inCloudMist);
+    }
   }
 
-  let nightFactor = 1.0 - smoothstep(0.15, 0.55, U.sunDir.w);
-  let polarProximity = smoothstep(140.0, 240.0, U.camPos.z) * smoothstep(-40.0, 120.0, abs(U.camPos.x));
+  // Stars, Deep-Space Nebulae, Galaxies, Distant Planets, Flying Meteorites & Under-Atmosphere Aurora
+  let trueNightFactor = 1.0 - smoothstep(0.15, 0.55, U.sunDir.w);
+  let cosmosVis = clamp(trueNightFactor + spaceFactor, 0.0, 1.0);
   let weatherIdx = round(U.misc.x);
-  let auroraWeight = clamp(nightFactor * 0.85 + select(0.0, 0.95, abs(weatherIdx - 6.0) < 0.4) + polarProximity * 0.55, 0.0, 1.0);
-  if (auroraWeight > 0.02 && dir.y > 0.02) {
-    let starCell = floor(dir.xz / max(0.1, dir.y + 0.2) * 190.0);
+  let wxzCam = wrapXZ(U.camPos.xz);
+  let polarProximity = max(smoothstep(155.0, 245.0, wxzCam.y), 1.0 - smoothstep(-245.0, -175.0, wxzCam.y));
+  // CRITICAL: Aurora ONLY shows under the atmosphere (combine of northern light + night), NEVER in the starry space sky!
+  let underAtmoMask = 1.0 - smoothstep(130.0, 290.0, U.camPos.y);
+  let auroraNightGate = clamp(trueNightFactor * 0.92 + select(0.0, 0.95, abs(weatherIdx - 6.0) < 0.4), 0.0, 1.0);
+  let auroraWeight = underAtmoMask * auroraNightGate * clamp(0.45 + polarProximity * 0.65, 0.0, 1.0);
+
+  if (cosmosVis > 0.02 && (dir.y > 0.01 || spaceFactor > 0.12)) {
+    // 3D spherical starfield mapping so stars surround the entire universe in all directions
+    let starAz = atan2(dir.x, dir.z);
+    let starEl = asin(clamp(dir.y, -0.999, 0.999));
+    let sProj = vec2f(starAz * 3.2, starEl * 6.4);
+    let starCell = floor(sProj * 115.0);
     let starH = h21(starCell);
-    if (starH > 0.993) {
-      let twinkle = 0.5 + 0.5 * sin(t * 3.5 + starH * 60.0);
-      col += vec3f(0.85, 0.92, 1.0) * (starH - 0.993) * 140.0 * twinkle * nightFactor * smoothstep(0.05, 0.35, dir.y);
+    if (starH > 0.989) {
+      let twinkle = 0.58 + 0.42 * sin(t * 3.2 + starH * 64.0);
+      let starVis = select(smoothstep(0.04, 0.32, dir.y), 1.0, spaceFactor > 0.25);
+      let starTint = mix(vec3f(0.78, 0.88, 1.0), vec3f(1.0, 0.88, 0.72), fract(starH * 31.7));
+      col += starTint * (starH - 0.989) * 135.0 * twinkle * cosmosVis * starVis;
     }
-    col += evalAurora(dir, t) * auroraWeight;
+    if (spaceFactor > 0.10) {
+      let neb = fbm(sProj * 1.15 + vec2f(2.4, -1.7));
+      let nebMask = smoothstep(0.50, 0.82, neb) * spaceFactor;
+      let nebCol = mix(vec3f(0.05, 0.20, 0.36), vec3f(0.34, 0.09, 0.32), sin(sProj.x * 1.4 + sProj.y) * 0.5 + 0.5);
+      col += nebCol * nebMask * 0.52;
+    }
+    // Distant 3D Planets (Saturn, Mars, Moon), Spiral Galaxy & Flying Meteorites
+    let spaceBodyVis = clamp(spaceFactor + trueNightFactor * smoothstep(0.05, 0.35, dir.y) * 0.75, 0.0, 1.0);
+    col += evalCosmicBodies(dir, t, spaceBodyVis);
+    col += evalMeteorites(dir, t) * clamp(spaceFactor + trueNightFactor * 0.85, 0.0, 1.0);
+
+    // Soft blended atmospheric Aurora ONLY when inside the atmosphere at night
+    if (dir.y > 0.01 && auroraWeight > 0.01) {
+      col += evalAurora(dir, t) * auroraWeight;
+    }
+  }
+
+  // 3D Navigable Spherical Earth Globe & Atmospheric Limb when ascending out of the planet
+  if (U.camPos.y > 140.0) {
+    let pRad = 1850.0;
+    let pCenter = vec3f(U.camPos.x, -pRad - (U.camPos.y - 130.0) * 1.32, U.camPos.z);
+    let oc = U.camPos.xyz - pCenter;
+    let b = dot(oc, dir);
+    let cSph = dot(oc, oc) - pRad * pRad;
+    let disc = b * b - cSph;
+    let atmoDisc = b * b - (dot(oc, oc) - (pRad + 115.0) * (pRad + 115.0));
+    if (disc > 0.0 && -b - sqrt(disc) > 0.0) {
+      let tHit = -b - sqrt(disc);
+      let hitPos = U.camPos.xyz + dir * tHit;
+      let sNorm = normalize(hitPos - pCenter);
+      // Tie globe rotation to player's wrapped planetary coordinates so flying in orbit moves across Earth
+      let camLonOff = (U.camPos.x / WORLD_HALF) * PI;
+      let camLatOff = (U.camPos.z / WORLD_HALF) * (PI * 0.38);
+      let spinLon = atan2(sNorm.x, sNorm.z) + camLonOff + t * 0.004;
+      let latVal = clamp(sNorm.y - sin(camLatOff) * 0.35, -1.0, 1.0);
+      let sphUv = vec2f(spinLon * 2.1, latVal * 3.6);
+      let contNoise = fbm(sphUv * 1.45) * 0.68 + fbm(sphUv * 3.6) * 0.32;
+      let isLand = smoothstep(0.49, 0.55, contNoise);
+      let latAbs = abs(latVal);
+      // Both North Antarctica / Arctic Cap (latVal > 0.66) AND South Antarctica Continent (latVal < -0.64)
+      let northPolarIce = smoothstep(0.65, 0.78, latVal + (contNoise - 0.5) * 0.14);
+      let southAntarctica = smoothstep(0.62, 0.76, -latVal + (contNoise - 0.45) * 0.16);
+      let iceMask = clamp(northPolarIce + southAntarctica, 0.0, 1.0);
+      let oceanCol = mix(vec3f(0.012, 0.08, 0.22), vec3f(0.04, 0.42, 0.54), smoothstep(0.36, 0.51, contNoise));
+      let jungleCol = vec3f(0.07, 0.28, 0.11);
+      let savannaDesert = mix(vec3f(0.54, 0.42, 0.20), vec3f(0.74, 0.38, 0.20), smoothstep(0.55, 0.78, contNoise));
+      let mountainRock = vec3f(0.36, 0.34, 0.32);
+      var landBiome = mix(jungleCol, savannaDesert, smoothstep(0.16, 0.48, abs(latAbs - 0.28) * 2.4));
+      landBiome = mix(landBiome, mountainRock, smoothstep(0.68, 0.82, contNoise));
+      var surfAlb = mix(oceanCol, landBiome, isLand);
+      surfAlb = mix(surfAlb, vec3f(0.92, 0.96, 1.0), iceMask);
+      let cloudP = fbm(sphUv * 2.5 + vec2f(t * 0.014, -t * 0.005));
+      let cloudM = smoothstep(0.47, 0.72, cloudP);
+      surfAlb = mix(surfAlb, vec3f(0.95, 0.97, 1.0), cloudM * 0.70);
+      let sNdotL = max(dot(sNorm, U.sunDir.xyz), 0.0);
+      let limb = pow(1.0 - max(dot(sNorm, -dir), 0.0), 2.8);
+      let oceanSpec = pow(max(dot(reflect(-U.sunDir.xyz, sNorm), -dir), 0.0), 42.0) * (1.0 - isLand) * (1.0 - cloudM) * 0.58;
+      // Night-side planetary aurora hugging the magnetic polar rings ON the 3D Earth sphere (not in space!)
+      let polarRing = smoothstep(0.58, 0.72, latAbs) * (1.0 - smoothstep(0.76, 0.90, latAbs));
+      let nightSide = 1.0 - smoothstep(0.0, 0.24, sNdotL);
+      let globeAurora = polarRing * nightSide * smoothstep(0.38, 0.75, fbm(sphUv * 4.2 + vec2f(t * 0.08)));
+      let planetCol = surfAlb * (sNdotL * 1.18 + 0.045) +
+                      vec3f(0.18, 0.56, 0.98) * limb * (sNdotL * 0.82 + 0.22) +
+                      U.sunCol.rgb * oceanSpec * sNdotL +
+                      mix(vec3f(0.08, 0.92, 0.56), vec3f(0.45, 0.22, 0.88), sin(spinLon * 3.0) * 0.5 + 0.5) * globeAurora * 0.65;
+      col = mix(col, planetCol, smoothstep(145.0, 290.0, U.camPos.y));
+    } else if (atmoDisc > 0.0 && -b > 0.0) {
+      let halo = clamp(atmoDisc / (pRad * 210.0), 0.0, 1.0);
+      col += vec3f(0.16, 0.52, 0.96) * halo * smoothstep(145.0, 310.0, U.camPos.y) * 0.82;
+    }
   }
 
   let fireDir = normalize(vec3f(U.firePos.x - U.camPos.x, 12., U.firePos.z - U.camPos.z));
   let fd = max(dot(dir, fireDir), 0.);
   let fDist = length(U.camPos.xz - U.firePos.xz);
-  let fGlow = pow(fd, 5.) * (1. - smoothstep(25., 320., fDist)) * U.fogCol.w * (1. - y * 0.75);
+  let fGlow = pow(fd, 5.) * (1. - smoothstep(25., 320., fDist)) * U.fogCol.w * (1. - y * 0.75) * atmoDensity;
   col += vec3f(1.05, 0.36, 0.07) * fGlow;
   return col;
 }
@@ -222,23 +514,29 @@ fn applyAtmosphere(col_in: vec3f, worldPos: vec3f) -> vec3f {
     }
   }
 
-  let baseFog = 1. - exp(-dist * U.sunCol.w);
+  let atmoFade = 1.0 - smoothstep(180.0, 780.0, U.camPos.y);
+  let baseFog = 1. - exp(-dist * U.sunCol.w * atmoFade);
   let hFactor = exp(-max(worldPos.y, 0.) * 0.095);
-  let mist = (1. - exp(-dist * 0.009 * U.skyHorizon.w)) * hFactor * 0.48;
-  let fogAmt = clamp(baseFog + mist, 0., 0.92);
+  let mist = (1. - exp(-dist * 0.009 * U.skyHorizon.w)) * hFactor * 0.48 * atmoFade;
+
+  // Ascending cloud-deck & atmospheric scattering veil: world below gets lighter and softer as you climb
+  let altHaze = smoothstep(32.0, 175.0, U.camPos.y) * (1.0 - smoothstep(220.0, 440.0, U.camPos.y));
+  let fogAmt = clamp(baseFog + mist + altHaze * 0.48, 0., 0.94);
 
   let sd = max(dot(dir, U.sunDir.xyz), 0.);
   var fCol = mix(U.fogCol.rgb, U.sunCol.rgb * 0.85 + U.skyHorizon.rgb * 0.35, pow(sd, 5.) * 0.5 * U.sunDir.w);
+  fCol = mix(fCol, vec3f(0.68, 0.84, 0.98) * max(0.35, U.sunDir.w), altHaze * 0.65);
 
-  let df = length(worldPos.xz - U.firePos.xz);
+  let wxz = wrapXZ(worldPos.xz);
+  let df = length(wxz - U.firePos.xz);
   let smoke = (1. - smoothstep(15., 95.0, df)) * U.fogCol.w;
   fCol = mix(fCol, vec3f(0.26, 0.14, 0.08) + vec3f(0.85, 0.28, 0.04) * (1. - smoothstep(8., 55., df)), smoke * 0.78);
 
-  let dSavanna = length(worldPos.xz - vec2f(-215.0, -35.0));
-  let dDune = length(worldPos.xz - vec2f(-235.0, -185.0));
+  let dSavanna = length(wxz - vec2f(-215.0, -35.0));
+  let dDune = length(wxz - vec2f(-235.0, -185.0));
   if (dSavanna < 120.0 || dDune < 120.0) {
     let devilPos = vec2f(-215.0 + sin(U.camPos.w * 0.35) * 32.0, -35.0 + cos(U.camPos.w * 0.28) * 28.0);
-    let dDevil = length(worldPos.xz - devilPos);
+    let dDevil = length(wxz - devilPos);
     let swirl = (1.0 - smoothstep(1.5, 12.0, dDevil)) * smoothstep(0.0, 18.0, worldPos.y) * (1.0 - smoothstep(14.0, 32.0, worldPos.y));
     fCol = mix(fCol, vec3f(0.82, 0.58, 0.34), clamp(swirl * 0.65, 0.0, 0.7));
   }
@@ -303,40 +601,44 @@ struct VSOut {
   @location(2) @interpolate(flat) biome: vec4f,
 };
 
-const WORLD_HALF: f32 = 360.0;
-
 fn sampleH(xz: vec2f) -> vec4f {
   let dims = vec2i(textureDimensions(heightTex));
-  let uv = clamp((xz + vec2f(WORLD_HALF)) / (WORLD_HALF * 2.), vec2f(0.), vec2f(1.));
+  let wxz = wrapXZ(xz);
+  let uv = clamp((wxz + vec2f(WORLD_HALF)) / WORLD_SPAN, vec2f(0.), vec2f(1.));
   let tc = clamp(vec2i(uv * vec2f(dims - vec2i(1))), vec2i(0), dims - vec2i(1));
   return textureLoad(heightTex, tc, 0);
 }
 
 @vertex fn vs(inp: VSIn) -> VSOut {
-  let wxz = clamp(inp.grid * inp.morph.z + inp.morph.xy, vec2f(-WORLD_HALF), vec2f(WORLD_HALF));
-  let h0 = sampleH(wxz);
+  let rawXZ = inp.grid * inp.morph.z + inp.morph.xy;
+  let h0 = sampleH(rawXZ);
   let eps = 1.6;
-  let hx1 = sampleH(wxz + vec2f(eps, 0.)).x;
-  let hx0 = sampleH(wxz - vec2f(eps, 0.)).x;
-  let hz1 = sampleH(wxz + vec2f(0., eps)).x;
-  let hz0 = sampleH(wxz - vec2f(0., eps)).x;
+  let hx1 = sampleH(rawXZ + vec2f(eps, 0.)).x;
+  let hx0 = sampleH(rawXZ - vec2f(eps, 0.)).x;
+  let hz1 = sampleH(rawXZ + vec2f(0., eps)).x;
+  let hz0 = sampleH(rawXZ - vec2f(0., eps)).x;
   let n = normalize(vec3f(hx0 - hx1, 2. * eps, hz0 - hz1));
 
-  let wy = h0.x - inp.morph.w;
-  let wp = vec3f(wxz.x, wy, wxz.y);
+  // Planetary curvature horizon drop scaled with distance from camera
+  let dCam = rawXZ - U.camPos.xz;
+  let curveDrop = dot(dCam, dCam) * 0.000018 * (1.0 + clamp(U.camPos.y * 0.003, 0.0, 6.0));
+  let wy = h0.x - inp.morph.w - curveDrop;
+  let wp = vec3f(rawXZ.x, wy, rawXZ.y);
 
   var o: VSOut;
   o.pos = U.vp * vec4f(wp, 1.);
   o.worldPos = wp;
   o.norm = n;
-  o.biome = vec4f(h0.y, h0.z, h0.w, wy);
+  o.biome = vec4f(h0.y, h0.z, h0.w, h0.x);
   return o;
 }
 
 @vertex fn vsShadow(inp: VSIn) -> @builtin(position) vec4f {
-  let wxz = clamp(inp.grid * inp.morph.z + inp.morph.xy, vec2f(-WORLD_HALF), vec2f(WORLD_HALF));
-  let h0 = sampleH(wxz);
-  let wp = vec3f(wxz.x, h0.x - inp.morph.w, wxz.y);
+  let rawXZ = inp.grid * inp.morph.z + inp.morph.xy;
+  let h0 = sampleH(rawXZ);
+  let dCam = rawXZ - U.camPos.xz;
+  let curveDrop = dot(dCam, dCam) * 0.000018 * (1.0 + clamp(U.camPos.y * 0.003, 0.0, 6.0));
+  let wp = vec3f(rawXZ.x, h0.x - inp.morph.w - curveDrop, rawXZ.y);
   return U.sunVp * vec4f(wp, 1.);
 }
 
@@ -359,13 +661,11 @@ fn sampleShadow(wp: vec3f) -> f32 {
 
 @fragment fn fs(v: VSOut) -> @location(0) vec4f {
   let wp = v.worldPos;
-  var n = normalize(v.norm);
-  let slope = 1. - clamp(n.y, 0., 1.);
-  let h = wp.y;
-  let wetness = clamp(v.biome.x + smoothstep(-0.35, 0.65, -h) * 0.65, 0., 1.);
-  let fireBio = v.biome.z;
+  let wxz = wrapXZ(wp.xz);
+  let rHoriz = length(wp.xz - U.camPos.xz);
+  let maxHorizR = 320.0 + clamp(U.camPos.y, 0.0, 260.0) * 1.15;
 
-  // Sample procedural material array layers unconditionally at top of fragment shader
+  // Sample procedural material array layers unconditionally before any discard
   let uvA = wp.xz * 0.28;
   let uvB = wp.xz * 0.09 + vec2f(0.37, 0.71);
   let sSoil  = mix(textureSample(matTex, matSmp, uvA, 0), textureSample(matTex, matSmp, uvB, 0), 0.42);
@@ -378,8 +678,21 @@ fn sampleShadow(wp: vec3f) -> f32 {
   let sGranite   = textureSample(matTex, matSmp, uvA * 0.55, 8);
   let sChar      = textureSample(matTex, matSmp, uvA * 0.8, 12);
 
+  // Circular globe horizon boundary — eliminates square map appearance when ascending
+  if (rHoriz > maxHorizR || U.camPos.y > 390.0) {
+    discard;
+  }
+
+  var n = normalize(v.norm);
+  let slope = 1. - clamp(n.y, 0., 1.);
+  let h = v.biome.w;
+  let wetness = clamp(v.biome.x + smoothstep(-0.35, 0.65, -h) * 0.65, 0., 1.);
+  let fireBio = v.biome.z;
+  // Lightweight altitude blur factor: smooths fine details into soft planetary biome colors as you ascend
+  let altBlur = smoothstep(38.0, 210.0, U.camPos.y);
+
   let rockMask = smoothstep(0.24, 0.56, slope);
-  let litterMask = smoothstep(0.35, 0.65, fbm(wp.xz * 0.35)) * (1. - wetness * 0.8);
+  let litterMask = smoothstep(0.35, 0.65, fbm(wxz * 0.35)) * (1. - wetness * 0.8);
   let grassMask = smoothstep(0.45, 2.2, h) * (1. - rockMask);
 
   var base = mix(sSoil.rgb, sGrass.rgb, grassMask * 0.72);
@@ -392,91 +705,98 @@ fn sampleShadow(wp: vec3f) -> f32 {
   base = mix(base, sSand.rgb, sandMask * 0.68);
   base = mix(base, sMud.rgb, smoothstep(-0.35, 0.85, -h) * 0.82);
 
-  let wSavanna = 1.0 - smoothstep(28.0, 110.0, length(wp.xz - vec2f(-215.0, -35.0)));
+  let wSavanna = 1.0 - smoothstep(28.0, 110.0, length(wxz - vec2f(-215.0, -35.0)));
   if (wSavanna > 0.01) {
-    let savGrass = mix(vec3f(0.58, 0.48, 0.22), vec3f(0.46, 0.32, 0.16), fbm(wp.xz * 0.18));
+    let savGrass = mix(vec3f(0.58, 0.48, 0.22), vec3f(0.46, 0.32, 0.16), fbm(wxz * 0.18));
     let kopjeRock = vec3f(0.52, 0.42, 0.34) * (0.75 + 0.45 * sGranite.rgb);
     base = mix(base, mix(savGrass, kopjeRock, smoothstep(0.18, 0.48, slope)), wSavanna * 0.92);
   }
 
-  let wPlantation = 1.0 - smoothstep(22.0, 78.0, length(wp.xz - vec2f(64.0, -148.0)));
+  let wPlantation = 1.0 - smoothstep(22.0, 78.0, length(wxz - vec2f(64.0, -148.0)));
   if (wPlantation > 0.01) {
     let terraceRiser = smoothstep(0.22, 0.52, slope);
     let terraceCol = mix(vec3f(0.18, 0.34, 0.14), vec3f(0.32, 0.36, 0.28), terraceRiser);
     base = mix(base, terraceCol, wPlantation * 0.68);
   }
 
-  let wDune = 1.0 - smoothstep(26.0, 95.0, length(wp.xz - vec2f(-235.0, -185.0)));
+  let wDune = 1.0 - smoothstep(26.0, 95.0, length(wxz - vec2f(-235.0, -185.0)));
   if (wDune > 0.01) {
-    let ripple = sin((wp.x * 1.4 + wp.z * 0.65) * 4.5 + fbm(wp.xz * 0.4) * 3.0) * 0.06;
+    let ripple = sin((wxz.x * 1.4 + wxz.y * 0.65) * 4.5 + fbm(wxz * 0.4) * 3.0) * 0.06 * (1.0 - altBlur);
     let namibSand = vec3f(0.78, 0.36, 0.18) + vec3f(ripple);
     base = mix(base, namibSand, wDune * 0.94);
   }
 
-  if (wp.z > 152.0) {
-    let oceanWeight = smoothstep(152.0, 185.0, wp.z);
-    let sandRipple = cos((wp.x * 0.8 + wp.z * 0.35) * 5.0) * 0.045;
+  if (wxz.y > 152.0) {
+    let oceanWeight = smoothstep(152.0, 185.0, wxz.y);
+    let sandRipple = cos((wxz.x * 0.8 + wxz.y * 0.35) * 5.0) * 0.045 * (1.0 - altBlur);
     let beachSand = vec3f(0.84, 0.76, 0.58) + vec3f(sandRipple);
     let swashWet = smoothstep(0.05, 0.85, h) * (1.0 - smoothstep(0.85, 2.2, h));
     var marineCol = mix(beachSand * 0.68, beachSand, swashWet);
 
     if (h < 0.25) {
-      let abDet = abyssalRockDetail(wp, n);
-      n = normalize(n + vec3f(abDet.x * 0.35, 0.0, abDet.y * 0.35));
+      let abDet = abyssalRockDetail(vec3f(wxz.x, h, wxz.y), n);
+      n = normalize(n + vec3f(abDet.x * 0.35, 0.0, abDet.y * 0.35) * (1.0 - altBlur));
       let reefRock = mix(vec3f(0.16, 0.22, 0.26), vec3f(0.34, 0.38, 0.42), abDet.z);
       let sandyBed = vec3f(0.68, 0.64, 0.52) + vec3f(sandRipple * 0.8);
       marineCol = mix(sandyBed, reefRock, smoothstep(0.14, 0.42, slope + (1.0 - smoothstep(-14.0, -4.0, h)) * 0.25));
-      let coralline = mix(vec3f(0.75, 0.14, 0.52), vec3f(0.45, 0.16, 0.82), sin(wp.x * 0.4 + wp.z * 0.3) * 0.5 + 0.5);
+      let coralline = mix(vec3f(0.75, 0.14, 0.52), vec3f(0.45, 0.16, 0.82), sin(wxz.x * 0.4 + wxz.y * 0.3) * 0.5 + 0.5);
       marineCol = mix(marineCol, coralline, abDet.w * 0.72);
     }
     base = mix(base, marineCol, oceanWeight);
   }
 
-  let wPolar = max(
-    1.0 - smoothstep(28.0, 100.0, length(wp.xz - vec2f(215.0, 255.0))),
-    (1.0 - smoothstep(25.0, 90.0, length(wp.xz - vec2f(-215.0, 245.0)))) * 0.85
+  // Both South Polar Ice Shelf & North Antarctica Glacial Continent (wxz.y < -215.0)
+  let wSouthPolar = max(
+    1.0 - smoothstep(28.0, 100.0, length(wxz - vec2f(215.0, 255.0))),
+    max(
+      (1.0 - smoothstep(25.0, 90.0, length(wxz - vec2f(-215.0, 245.0)))) * 0.85,
+      smoothstep(275.0, 325.0, wxz.y)
+    )
   );
+  let wNorthAntarctica = 1.0 - smoothstep(-265.0, -215.0, wxz.y);
+  let wPolar = max(wSouthPolar, wNorthAntarctica);
   if (wPolar > 0.01 && h > -0.8) {
-    let snowSparkle = step(0.985, h21(floor(wp.xz * 28.0 + U.camPos.w * 0.2))) * 0.65;
+    let snowSparkle = step(0.985, h21(floor(wxz * 28.0 + U.camPos.w * 0.2))) * 0.65 * (1.0 - altBlur);
     let glacialBlue = vec3f(0.24, 0.64, 0.92);
-    let pureSnow = vec3f(0.90, 0.95, 1.0) + vec3f(snowSparkle);
+    let pureSnow = vec3f(0.92, 0.96, 1.0) + vec3f(snowSparkle);
     let basaltCliff = vec3f(0.14, 0.16, 0.20);
-    let isEastPolar = smoothstep(-20.0, 80.0, wp.x);
-    let cliffCol = mix(basaltCliff, glacialBlue, isEastPolar);
+    let isGlacial = max(smoothstep(-20.0, 80.0, wxz.x), wNorthAntarctica * 0.8);
+    let cliffCol = mix(basaltCliff, glacialBlue, isGlacial);
     let polarCol = mix(pureSnow, cliffCol, smoothstep(0.20, 0.55, slope));
-    base = mix(base, polarCol, wPolar * 0.94);
+    base = mix(base, polarCol, wPolar * 0.95);
   }
 
   var emissive = vec3f(0.0);
   if (fireBio > 0.01) {
-    let emberNoise = fbm(wp.xz * 2.4 + vec2f(U.camPos.w * 0.35, 0.));
+    let emberNoise = fbm(wxz * 2.4 + vec2f(U.camPos.w * 0.35, 0.));
     base = mix(base, sChar.rgb * 0.45, fireBio * 0.88);
     let emberMask = smoothstep(0.60, 0.82, emberNoise) * fireBio * U.fogCol.w;
     emissive += vec3f(2.4, 0.52, 0.06) * emberMask;
   }
 
-  let wVolcano = 1.0 - smoothstep(22.0, 85.0, length(wp.xz - vec2f(245.0, 38.0)));
+  let wVolcano = 1.0 - smoothstep(22.0, 85.0, length(wxz - vec2f(245.0, 38.0)));
   if (wVolcano > 0.01) {
     let obsidian = vec3f(0.07, 0.07, 0.09) * (0.7 + 0.6 * sGranite.r);
     base = mix(base, obsidian, wVolcano * 0.94);
-    let lavaFlow = fbm(wp.xz * 0.45 - vec2f(U.camPos.w * 0.22, U.camPos.w * 0.12));
+    let lavaFlow = fbm(wxz * 0.45 - vec2f(U.camPos.w * 0.22, U.camPos.w * 0.12));
     let inChannel = (1.0 - smoothstep(1.2, 4.8, h)) * (1.0 - smoothstep(0.15, 0.45, slope));
     let lavaGlow = smoothstep(0.38, 0.68, lavaFlow + inChannel * 0.45) * wVolcano;
     emissive += mix(vec3f(2.8, 0.32, 0.02), vec3f(4.5, 1.85, 0.22), lavaGlow) * lavaGlow * 1.6;
   }
 
-  let wCenote = 1.0 - smoothstep(24.0, 88.0, length(wp.xz - vec2f(-148.0, -125.0)));
+  let wCenote = 1.0 - smoothstep(24.0, 88.0, length(wxz - vec2f(-148.0, -125.0)));
   if (wCenote > 0.02) {
-    let bioVein = smoothstep(0.66, 0.82, fbm(wp.xz * 0.85 + vec2f(sin(U.camPos.w * 0.4) * 0.2)));
-    let bioHue = mix(vec3f(0.08, 0.95, 0.78), vec3f(0.68, 0.18, 0.96), sin(wp.x * 0.2 + wp.z * 0.2) * 0.5 + 0.5);
+    let bioVein = smoothstep(0.66, 0.82, fbm(wxz * 0.85 + vec2f(sin(U.camPos.w * 0.4) * 0.2)));
+    let bioHue = mix(vec3f(0.08, 0.95, 0.78), vec3f(0.68, 0.18, 0.96), sin(wxz.x * 0.2 + wxz.y * 0.2) * 0.5 + 0.5);
     emissive += bioHue * bioVein * wCenote * 0.85;
   }
 
-  let dHx = (sSoil.a - 0.5) * 0.28 + (sGranite.a - 0.5) * rockMask * 0.35;
-  let dHz = (sMoss.a - 0.5) * 0.28 + (sLimestone.a - 0.5) * rockMask * 0.35;
-  n = normalize(n + vec3f(dHx, 0., dHz));
+  // Blur out micro-normal detail as altitude increases so ascending is lightweight and blurry
+  let dHx = ((sSoil.a - 0.5) * 0.28 + (sGranite.a - 0.5) * rockMask * 0.35) * (1.0 - altBlur);
+  let dHz = ((sMoss.a - 0.5) * 0.28 + (sLimestone.a - 0.5) * rockMask * 0.35) * (1.0 - altBlur);
+  n = normalize(mix(n + vec3f(dHx, 0., dHz), vec3f(0.0, 1.0, 0.0), altBlur * 0.65));
 
-  let rough = clamp(mix(0.86 - sSoil.a * 0.15, 0.12, wetness * 0.78), 0.08, 0.95);
+  let rough = clamp(mix(0.86 - sSoil.a * 0.15, 0.12, wetness * 0.78) + altBlur * 0.35, 0.08, 0.98);
   base *= mix(1., 0.56, wetness * 0.7);
 
   let V = normalize(U.camPos.xyz - wp);
@@ -487,39 +807,47 @@ fn sampleShadow(wp: vec3f) -> f32 {
   let NdotH = max(dot(n, H), 0.);
   let VdotH = max(dot(V, H), 0.);
 
-  let sh = sampleShadow(wp + n * 0.18);
+  let sh = mix(sampleShadow(wp + n * 0.18), 1.0, altBlur);
   let D = distributionGGX(NdotH, rough);
   let G = geometrySmith(NdotV, NdotL, rough);
   let F = fresnelSchlick(VdotH, vec3f(mix(0.03, 0.05, wetness)));
-  let spec = (D * G * F) / max(4. * NdotV * NdotL, 0.001);
+  let spec = (D * G * F) / max(4. * NdotV * NdotL, 0.001) * (1.0 - altBlur * 0.85);
 
   let hemi = mix(vec3f(0.05, 0.08, 0.05), U.skyZenith.rgb * 0.48 + U.skyHorizon.rgb * 0.28, n.y * 0.5 + 0.5);
-  var col = base * (hemi + U.sunCol.rgb * U.sunDir.w * NdotL * sh * (1. - F)) + spec * U.sunCol.rgb * U.sunDir.w * NdotL * sh + emissive;
+  var col = base * (hemi + U.sunCol.rgb * U.sunDir.w * NdotL * sh * (1. - F)) + spec * U.sunCol.rgb * U.sunDir.w * NdotL * sh + emissive * (1.0 - altBlur * 0.7);
 
   if (wPolar > 0.1 && h > 0.0) {
     let iceSss = pow(clamp(dot(-V, L + n * 0.4), 0.0, 1.0), 3.0) * wPolar * 0.45;
     col += vec3f(0.16, 0.58, 0.88) * iceSss * U.sunDir.w;
   }
 
-  if (h < 0.05) {
+  if (h < 0.05 && altBlur < 0.85) {
     let t = U.camPos.w * 0.65;
-    let cuv = wp.xz * 0.085 + n.xz * 0.08;
+    let cuv = wxz * 0.085 + n.xz * 0.08;
     let cR = caus(cuv + vec2f(0.006, 0.0), t);
     let cG = caus(cuv, t);
     let cB = caus(cuv - vec2f(0.006, 0.0), t);
     let depthAtten = smoothstep(-22.0, -0.1, h) * smoothstep(-0.15, 0.08, -h);
-    col += vec3f(cR * 0.9, cG * 1.15, cB * 1.35) * depthAtten * max(0.25, U.sunDir.w) * 0.62;
+    col += vec3f(cR * 0.9, cG * 1.15, cB * 1.35) * depthAtten * max(0.25, U.sunDir.w) * 0.62 * (1.0 - altBlur);
   }
 
-  let df = length(wp.xz - U.firePos.xz);
+  let df = length(wxz - U.firePos.xz);
   if (df < 95.) {
-    let fDir = normalize(vec3f(U.firePos.x - wp.x, 7. - wp.y, U.firePos.z - wp.z));
+    let fDir = normalize(vec3f(U.firePos.x - wxz.x, 7. - h, U.firePos.z - wxz.y));
     let fAtt = pow(clamp(1. - df / 95., 0., 1.), 2.2) * U.fogCol.w;
-    let flicker = 0.85 + 0.15 * sin(U.camPos.w * 13. + wp.x * 0.5);
+    let flicker = 0.85 + 0.15 * sin(U.camPos.w * 13. + wxz.x * 0.5);
     col += base * vec3f(2.1, 0.68, 0.14) * max(dot(n, fDir), 0.15) * fAtt * flicker;
   }
 
-  return vec4f(applyAtmosphere(col, wp), 1.);
+  var finalCol = applyAtmosphere(col, wp);
+  // Circular horizon & altitude handoff into the 3D spherical Earth globe so no square border ever appears
+  let circleEdge = smoothstep(maxHorizR * 0.58, maxHorizR * 0.96, rHoriz);
+  let orbitHandoff = smoothstep(155.0, 365.0, U.camPos.y);
+  let skyBlend = clamp(max(circleEdge, orbitHandoff), 0.0, 1.0);
+  if (skyBlend > 0.01) {
+    finalCol = mix(finalCol, evalSky(normalize(wp - U.camPos.xyz)), skyBlend);
+  }
+  return vec4f(finalCol, 1.);
 }
 `;
 
@@ -557,14 +885,31 @@ fn displaceVeg(inp: VSIn) -> vec3f {
 
   let t = U.camPos.w;
   let swayW = inp.uv.y;
-  let wBase = inp.iPosScale.xyz;
+  // Toroidally wrap vegetation around camera XZ so jungles, reefs & boulders populate the entire planet endlessly
+  let relXZ = wrapXZ(inp.iPosScale.xz - U.camPos.xz);
+  let curveDrop = dot(relXZ, relXZ) * 0.000018 * (1.0 + clamp(U.camPos.y * 0.003, 0.0, 6.0));
+  let wBase = vec3f(U.camPos.x + relXZ.x, inp.iPosScale.y - curveDrop, U.camPos.z + relXZ.y);
 
-  if (wBase.y < -0.25) {
-    let surge = sin(t * 1.45 + wBase.x * 0.12 + inp.pos.y * 0.55) * 0.42 + cos(t * 0.92 + wBase.z * 0.15) * 0.24;
-    p.x += surge * swayW * inp.iPosScale.w * 0.35;
-    p.z += surge * 0.7 * swayW * inp.iPosScale.w * 0.35;
+  if (inp.iPosScale.y < -0.25) {
+    // Abyssal Garden multi-harmonic traveling wave current along segmented kelp stipes & frond blades
+    let wavePhase = t * 1.75 - inp.pos.y * 0.92 + inp.iPosScale.x * 0.14 + inp.iRotSeed.y * 6.28;
+    let surgeX = sin(wavePhase) * 0.46 + cos(t * 0.95 + inp.iPosScale.z * 0.16) * 0.25;
+    let surgeZ = cos(wavePhase * 0.85) * 0.36 + sin(t * 1.15 + inp.iPosScale.x * 0.15) * 0.22;
+    let bladeFlutter = sin(t * 4.8 + inp.pos.y * 3.5 + inp.pos.x * 5.0) * 0.08 * swayW * swayW;
+    p.x += (surgeX * swayW + bladeFlutter) * inp.iPosScale.w * 0.42;
+    p.z += (surgeZ * swayW + bladeFlutter * 0.8) * inp.iPosScale.w * 0.42;
+    p.y -= abs(surgeX) * swayW * swayW * 0.06 * inp.iPosScale.w;
+    // Swimmer wake deflection when camera/creature passes through kelp forest
+    let wakeVec = (wBase.xz + p.xz) - U.camPos.xz;
+    let wakeD = length(wakeVec);
+    if (wakeD < 4.5 && abs(U.camPos.y - (wBase.y + p.y)) < 4.5) {
+      let push = (1.0 - wakeD / 4.5) * swayW * 0.65;
+      let wakeDir = wakeVec / max(0.05, wakeD);
+      p.x += wakeDir.x * push;
+      p.z += wakeDir.y * push;
+    }
   } else {
-    let gust = sin(t * 1.6 + inp.iRotSeed.y * 6.28 + wBase.x * 0.06) * 0.6 + cos(t * 2.9 + wBase.z * 0.08) * 0.4;
+    let gust = sin(t * 1.6 + inp.iRotSeed.y * 6.28 + inp.iPosScale.x * 0.06) * 0.6 + cos(t * 2.9 + inp.iPosScale.z * 0.08) * 0.4;
     let windStr = U.wind.z * (0.5 + 0.5 * gust);
     p.x += U.wind.x * windStr * swayW * 0.45 * inp.iPosScale.w;
     p.z += U.wind.y * windStr * swayW * 0.45 * inp.iPosScale.w;
@@ -598,6 +943,10 @@ fn displaceVeg(inp: VSIn) -> vec3f {
 
 @fragment fn fs(v: VSOut, @builtin(front_facing) ff: bool) -> @location(0) vec4f {
   let wp = v.worldPos;
+  let rHoriz = length(wp.xz - U.camPos.xz);
+  if (rHoriz > 310.0 || U.camPos.y > 235.0) {
+    discard;
+  }
   var n = normalize(select(-v.norm, v.norm, ff));
   let isLeaf = v.uv.x > 0.5;
   let isGlow = v.uv.x > 1.5;
@@ -692,6 +1041,10 @@ struct VSOut {
   @location(5) @interpolate(flat) species: f32,
   @location(6) @interpolate(flat) emotion: f32,
 };
+
+fn isLimbFactor(b: bool) -> f32 {
+  return select(0.0, 1.0, b);
+}
 
 @vertex fn vs(inp: VSIn) -> VSOut {
   var p = inp.pos;
@@ -796,8 +1149,13 @@ struct VSOut {
       let pecW = clamp(abs(p.x) - 0.35, 0.0, 1.5);
       p.y += sin(realT * 2.1 + sign(p.x) * 0.6) * 0.12 * pecW;
     } else {
-      let spine = clamp(0.5 - p.z, 0.0, 1.8);
-      p.x += sin(realT * 5.2 - spine * 3.6) * 0.15 * spine;
+      // Anatomical Reef & Pelagic Fish travelling body-wave propulsion + pectoral fin sculling
+      let spine = clamp(0.45 - p.z, 0.0, 1.8);
+      let wave = sin(realT * 6.2 - spine * 4.1);
+      p.x += wave * 0.14 * spine * (0.35 + 0.65 * spine);
+      if (abs(p.x) > 0.05 && p.z > -0.1) {
+        p.y += sin(realT * 7.5 + sign(p.x) * 1.2) * 0.035 * abs(p.x);
+      }
     }
   } else if (mode > 1.5 && mode < 2.5) {
     // Mode 2: Avian articulated 2-joint wingbeat, feather spread & head stabilization
@@ -812,19 +1170,38 @@ struct VSOut {
     }
     p.y += cos(realT * 7.8) * 0.035;
   } else if (mode > 2.5 && mode < 3.5) {
-    // Mode 3: Continuous Zero-Slide IK Quadruped / Biped Stride with Emotional Postures
-    let legMask = clamp((0.20 - p.y) * 5.0, 0., 1.);
+    // Mode 3: 2-Joint Articulated Hip/Shoulder + Knee/Elbow + Foot-Arc Quadruped / Biped Stride
     let side = select(-1., 1., p.x >= 0.);
     let front = select(-1., 1., p.z >= 0.);
-    let phase = strideT + side * 1.57 + front * 0.85;
-    let swing = sin(phase);
-    let lift = max(0., cos(phase));
-    p.z += swing * 0.17 * legMask;
-    p.y += lift * 0.105 * legMask;
+    let isLimb = abs(anat - 0.4) < 0.07;
+    // Normalized joint gradient limbT: 0.0 at hip/shoulder pivot -> 0.5 at knee/elbow -> 1.0 at paw/hoof
+    let rawLimbT = select(
+      clamp((0.35 - inp.uv.y) / 0.35, 0.0, 1.0),
+      clamp((inp.uv.y - 0.60) / 0.40, 0.0, 1.0),
+      front > 0.0
+    );
+    let limbT = select(clamp((0.52 - p.y) / 0.52, 0.0, 1.0), rawLimbT, isLimb);
+    let legMask = select(clamp((0.26 - p.y) * 4.2, 0.0, 1.0), smoothstep(0.02, 0.16, limbT), isLimb);
 
-    // Muscle belly expansion during stance push-off
-    let muscleFlex = max(0.0, -swing) * smoothstep(0.12, 0.48, p.y) * (1.0 - smoothstep(0.48, 0.85, p.y));
-    p.x += sign(p.x) * muscleFlex * 0.028;
+    // 4-beat lateral walk/trot phase offset: Left/Right opposite (PI), Front/Hind quarter-cycle (PI/2)
+    let phase = strideT + select(0.0, PI, side > 0.0) + select(0.0, 1.5708, front < 0.0);
+    let swing = sin(phase);
+    let liftPhase = cos(phase);
+
+    // 1. Hip/Shoulder Pendulum Swing + 2. Knee/Elbow Flexion Bend + 3. Lower Shin Whip Extension
+    let hipSwing = swing * 0.22 * limbT;
+    let kneeBend = max(0.0, cos(phase - 0.45)) * sin(limbT * PI) * 0.14;
+    let pawWhip  = sin(phase - 0.55) * max(0.0, limbT - 0.45) * 0.16;
+    let footClearance = pow(max(0.0, liftPhase), 1.35) * (0.14 * limbT * limbT) + kneeBend * 0.45;
+
+    p.z += (hipSwing - kneeBend * front + pawWhip) * legMask;
+    p.y += footClearance * legMask;
+
+    // Muscle belly expansion & shoulder scapula roll during stance push-off
+    let stancePush = max(0.0, -swing);
+    let muscleFlex = stancePush * smoothstep(0.12, 0.48, p.y) * (1.0 - smoothstep(0.48, 0.85, p.y));
+    p.x += sign(p.x) * muscleFlex * 0.032;
+    p.y += stancePush * (1.0 - limbT) * isLimbFactor(isLimb) * 0.025;
 
     // Predator Stealth Crouch (Lion, Tiger, Jaguar, Panther in emotion 3)
     let isBigCat = abs(sp - 24.0) < 0.5 || abs(sp - 25.0) < 0.5 || abs(sp - 1.0) < 0.5 || abs(sp - 11.0) < 0.5;
@@ -851,10 +1228,10 @@ struct VSOut {
       p.x += waddle;
     }
 
-    // Spine counter-flexion & expressive tail whip
+    // Spine counter-flexion, hip/shoulder weight transfer & expressive tail whip
     let bodyMask = 1.0 - legMask;
-    p.y += abs(sin(strideT)) * 0.028 * bodyMask;
-    p.x += sin(strideT * 0.5 - p.z * 2.2) * 0.024 * bodyMask;
+    p.y += cos(strideT * 2.0) * 0.026 * bodyMask;
+    p.x += sin(strideT - p.z * 2.2) * 0.024 * bodyMask;
     if (p.z < -0.35) {
       let tailFreq = select(3.2, 7.5, emotion >= 2.5);
       let tailAmp = select(0.08, 0.16, emotion >= 2.5);
@@ -881,7 +1258,11 @@ struct VSOut {
   let c = cos(inp.iAnim.x);
   let s = sin(inp.iAnim.x);
   let sp_scale = inp.iPosScale.w;
-  let wp = inp.iPosScale.xyz + vec3f((p.x * c - p.z * s) * sp_scale, p.y * sp_scale, (p.x * s + p.z * c) * sp_scale);
+  // Toroidally wrap animal instance around U.camPos.xz with matching planetary curvature drop
+  let relXZ = wrapXZ(inp.iPosScale.xz - U.camPos.xz);
+  let curveDrop = dot(relXZ, relXZ) * 0.000018 * (1.0 + clamp(U.camPos.y * 0.003, 0.0, 6.0));
+  let basePos = vec3f(U.camPos.x + relXZ.x, inp.iPosScale.y - curveDrop, U.camPos.z + relXZ.y);
+  let wp = basePos + vec3f((p.x * c - p.z * s) * sp_scale, p.y * sp_scale, (p.x * s + p.z * c) * sp_scale);
   let wn = normalize(vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c));
 
   var o: VSOut;
@@ -900,15 +1281,21 @@ struct VSOut {
   let c = cos(inp.iAnim.x);
   let s = sin(inp.iAnim.x);
   let p = inp.pos * inp.iPosScale.w;
-  let wp = inp.iPosScale.xyz + vec3f(p.x * c - p.z * s, p.y, p.x * s + p.z * c);
+  let relXZ = wrapXZ(inp.iPosScale.xz - U.camPos.xz);
+  let curveDrop = dot(relXZ, relXZ) * 0.000018 * (1.0 + clamp(U.camPos.y * 0.003, 0.0, 6.0));
+  let basePos = vec3f(U.camPos.x + relXZ.x, inp.iPosScale.y - curveDrop, U.camPos.z + relXZ.y);
+  let wp = basePos + vec3f(p.x * c - p.z * s, p.y, p.x * s + p.z * c);
   return U.sunVp * vec4f(wp, 1.);
 }
 
 @fragment fn fs(v: VSOut) -> @location(0) vec4f {
   let wp = v.worldPos;
+  let sp = i32(round(v.species));
+  if ((length(wp.xz - U.camPos.xz) > 310.0 || U.camPos.y > 235.0) && (sp < 21 || sp > 23)) {
+    discard;
+  }
   var n = normalize(v.norm);
   let lp = v.localPos;
-  let sp = i32(round(v.species));
   let L = U.sunDir.xyz;
   let V = normalize(U.camPos.xyz - wp);
   let H = normalize(V + L);
@@ -1077,6 +1464,19 @@ struct VSOut {
       albedo = mix(albedo, vec3f(0.12, 0.14, 0.18), spots * 0.65);
       rough = 0.22;
     }
+  } else if (sp == 0) {
+    // Abyssal Garden Reef & Pelagic Fish: countershading, tropical bars, iridescent scales & deep photophores
+    let counter = 1.0 - smoothstep(-0.06, 0.04, lp.y);
+    let band = smoothstep(0.25, 0.65, sin(lp.z * 26.0 + lp.y * 8.0));
+    let irid = pow(1.0 - max(dot(n, V), 0.0), 2.2);
+    albedo = mix(albedo, vec3f(0.12, 0.58, 0.88), band * 0.48);
+    albedo = mix(albedo, vec3f(0.92, 0.95, 0.98), counter * 0.65);
+    albedo += vec3f(0.18, 0.72, 0.85) * irid * 0.45;
+    if (wp.y < -4.5) {
+      let photophore = smoothstep(0.72, 0.92, sin(lp.z * 42.0)) * (1.0 - smoothstep(-0.05, 0.02, lp.y));
+      albedo += vec3f(0.15, 0.95, 0.88) * photophore * 1.4;
+    }
+    rough = 0.14;
   }
 
   let NdotL = max(dot(n, L), 0.);
@@ -1119,62 +1519,69 @@ struct VSOut {
   @location(2) wetness: f32,
 };
 
-const WORLD_HALF: f32 = 360.0;
-
 fn sampleH(xz: vec2f) -> vec4f {
   let dims = vec2i(textureDimensions(heightTex));
-  let uv = clamp((xz + vec2f(WORLD_HALF)) / (WORLD_HALF * 2.), vec2f(0.), vec2f(1.));
+  let wxz = wrapXZ(xz);
+  let uv = clamp((wxz + vec2f(WORLD_HALF)) / WORLD_SPAN, vec2f(0.), vec2f(1.));
   let tc = clamp(vec2i(uv * vec2f(dims - vec2i(1))), vec2i(0), dims - vec2i(1));
   return textureLoad(heightTex, tc, 0);
 }
 
 fn waveH(p: vec2f, t: f32) -> f32 {
-  let isOcean = smoothstep(150.0, 210.0, p.y);
+  let wp = wrapXZ(p);
+  let isOcean = smoothstep(150.0, 210.0, wp.y);
   let ampScale = mix(1.0, 2.6, isOcean);
   let w1 = sin(dot(p, vec2f(0.38, 0.16)) + t * 1.55) * 0.042;
   let w2 = sin(dot(p, vec2f(-0.24, 0.44)) + t * 1.95) * 0.032;
   let w3 = sin(dot(p, vec2f(0.72, -0.58)) + t * 2.65) * 0.018;
   let w4 = (n2(p * 1.35 + vec2f(t * 0.7, -t * 0.55)) - 0.5) * 0.025;
-  let shoreBand = smoothstep(168.0, 182.0, p.y) * (1.0 - smoothstep(184.0, 204.0, p.y));
-  let surfWave = pow(max(0.0, sin(p.y * 0.45 - t * 2.4 + sin(p.x * 0.08) * 1.5)), 3.0) * 0.32 * shoreBand;
+  let shoreBand = smoothstep(168.0, 182.0, wp.y) * (1.0 - smoothstep(184.0, 204.0, wp.y));
+  let surfWave = pow(max(0.0, sin(wp.y * 0.45 - t * 2.4 + sin(wp.x * 0.08) * 1.5)), 3.0) * 0.32 * shoreBand;
   return (w1 + w2 + w3 + w4) * ampScale + surfWave;
 }
 
 @vertex fn vs(@location(0) grid: vec2f) -> VSOut {
-  let wxz = grid * WORLD_HALF;
+  let snapCamXZ = floor(U.camPos.xz / 24.0) * 24.0;
+  let wxz = snapCamXZ + grid * WORLD_HALF;
   let h0 = sampleH(wxz);
   let t = U.camPos.w;
-  let wh = U.camUp.w + waveH(wxz, t);
+  let dCam = wxz - U.camPos.xz;
+  let curveDrop = dot(dCam, dCam) * 0.000018 * (1.0 + clamp(U.camPos.y * 0.003, 0.0, 6.0));
+  let wh = U.camUp.w + waveH(wxz, t) - curveDrop;
   let wp = vec3f(wxz.x, wh, wxz.y);
   var o: VSOut;
   o.pos = U.vp * vec4f(wp, 1.);
   o.worldPos = wp;
-  o.bedH = h0.x;
+  o.bedH = h0.x - curveDrop;
   o.wetness = h0.y;
   return o;
 }
 
 @fragment fn fs(v: VSOut) -> @location(0) vec4f {
   let depth = v.worldPos.y - v.bedH;
-  if (depth < -0.04) {
+  let wp = v.worldPos;
+  let rHoriz = length(wp.xz - U.camPos.xz);
+  let maxHorizR = 320.0 + clamp(U.camPos.y, 0.0, 260.0) * 1.15;
+  if (depth < -0.04 || rHoriz > maxHorizR || U.camPos.y > 390.0) {
     discard;
   }
-  let wp = v.worldPos;
+  let wxz = wrapXZ(wp.xz);
+  let altBlur = smoothstep(38.0, 210.0, U.camPos.y);
   let t = U.camPos.w;
   let e = 0.22;
   let hC = waveH(wp.xz, t);
   let hX = waveH(wp.xz + vec2f(e, 0.), t);
   let hZ = waveH(wp.xz + vec2f(0., e), t);
-  var n = normalize(vec3f(hC - hX, e * (1.0 - U.misc.y * 0.35), hC - hZ));
+  var n = normalize(vec3f((hC - hX) * (1.0 - altBlur), e * (1.0 - U.misc.y * 0.35), (hC - hZ) * (1.0 - altBlur)));
 
-  if (U.misc.y > 0.05) {
+  if (U.misc.y > 0.05 && altBlur < 0.7) {
     let rCell = floor(wp.xz * 3.5);
     let rLocal = fract(wp.xz * 3.5) - 0.5;
     let rSeed = h21(rCell);
     let rPhase = fract(t * 2.4 + rSeed);
     let rDist = length(rLocal) * 2.0;
     let ring = sin((rDist - rPhase) * 28.0) * smoothstep(0.0, 0.15, rDist) * (1. - smoothstep(0.15, 0.85, rDist)) * (1. - rPhase);
-    n = normalize(n + vec3f(rLocal.x * ring, 0., rLocal.y * ring) * U.misc.y * 0.45);
+    n = normalize(n + vec3f(rLocal.x * ring, 0., rLocal.y * ring) * U.misc.y * 0.45 * (1.0 - altBlur));
   }
 
   let V = normalize(U.camPos.xyz - wp);
@@ -1198,9 +1605,9 @@ fn waveH(p: vec2f, t: f32) -> f32 {
   let fres = clamp(0.025 + 0.975 * pow(1. - NdotV, 5.), 0., 1.);
 
   var reflCol = evalSky(vec3f(R.x, max(R.y, 0.03), R.z));
-  let canopyShadow = smoothstep(0.35, 0.72, fbm(wp.xz * 0.08 + R.xz * 1.8));
+  let canopyShadow = smoothstep(0.35, 0.72, fbm(wxz * 0.08 + R.xz * 1.8));
   let canopyGreen = vec3f(0.04, 0.12, 0.05) * max(0.25, U.sunDir.w);
-  let isOcean = smoothstep(155.0, 195.0, wp.z);
+  let isOcean = smoothstep(155.0, 195.0, wxz.y);
   reflCol = mix(reflCol, canopyGreen, canopyShadow * (1. - smoothstep(0.15, 0.55, R.y)) * 0.58 * (1.0 - isOcean));
 
   let shallowCol = mix(vec3f(0.09, 0.28, 0.20), vec3f(0.08, 0.58, 0.64), isOcean);
@@ -1208,36 +1615,41 @@ fn waveH(p: vec2f, t: f32) -> f32 {
   let absorb = 1. - exp(-max(depth, 0.) * mix(0.85, 0.22, isOcean));
   var waterBody = mix(shallowCol, deepCol, absorb) * max(0.22, U.sunDir.w);
 
-  let cUv = wp.xz * 0.12 + n.xz * 0.35;
-  let cR = caus(cUv + vec2f(0.005, 0.0), t * 0.65);
-  let cG = caus(cUv, t * 0.65);
-  let cB = caus(cUv - vec2f(0.005, 0.0), t * 0.65);
-  let causticVis = (1. - absorb) * smoothstep(0.02, 0.25, depth);
-  waterBody += vec3f(cR * 0.85, cG * 1.05, cB * 1.25) * U.sunCol.rgb * causticVis * 0.42 * U.sunDir.w;
+  if (altBlur < 0.85) {
+    let cUv = wxz * 0.12 + n.xz * 0.35;
+    let cR = caus(cUv + vec2f(0.005, 0.0), t * 0.65);
+    let cG = caus(cUv, t * 0.65);
+    let cB = caus(cUv - vec2f(0.005, 0.0), t * 0.65);
+    let causticVis = (1. - absorb) * smoothstep(0.02, 0.25, depth);
+    waterBody += vec3f(cR * 0.85, cG * 1.05, cB * 1.25) * U.sunCol.rgb * causticVis * 0.42 * U.sunDir.w * (1.0 - altBlur);
+  }
 
-  let swampWeight = smoothstep(15., 55., -abs(wp.x + 95.) + 70.) * (1.0 - isOcean);
-  let duckweed = smoothstep(0.56, 0.72, fbm(wp.xz * 0.9 + vec2f(t * 0.02))) * swampWeight * smoothstep(0.05, 0.6, depth);
+  let swampWeight = smoothstep(15., 55., -abs(wxz.x + 95.) + 70.) * (1.0 - isOcean);
+  let duckweed = smoothstep(0.56, 0.72, fbm(wxz * 0.9 + vec2f(t * 0.02))) * swampWeight * smoothstep(0.05, 0.6, depth);
   waterBody = mix(waterBody, vec3f(0.16, 0.34, 0.10) * max(0.3, U.sunDir.w), duckweed * 0.72);
 
   let H = normalize(V + L);
-  let spec = pow(max(dot(n, H), 0.), 320.) * 3.8 * U.sunDir.w;
+  let spec = pow(max(dot(n, H), 0.), 320.) * 3.8 * U.sunDir.w * (1.0 - altBlur * 0.75);
 
-  let shoreFoam = (1. - smoothstep(0.0, 0.28, depth)) * smoothstep(0.52, 0.72, n2(wp.xz * 3.2 - vec2f(t * 0.8, 0.)));
-  let surfCrest = smoothstep(168.0, 184.0, wp.z) * (1.0 - smoothstep(186.0, 206.0, wp.z)) *
-                  smoothstep(0.12, 0.28, hC) * (0.65 + 0.35 * fbm(wp.xz * 2.4 + vec2f(0.0, t * 1.5)));
-  let totalFoam = clamp(shoreFoam + surfCrest, 0.0, 1.0);
+  let shoreFoam = (1. - smoothstep(0.0, 0.28, depth)) * smoothstep(0.52, 0.72, n2(wxz * 3.2 - vec2f(t * 0.8, 0.)));
+  let surfCrest = smoothstep(168.0, 184.0, wxz.y) * (1.0 - smoothstep(186.0, 206.0, wxz.y)) *
+                  smoothstep(0.12, 0.28, hC) * (0.65 + 0.35 * fbm(wxz * 2.4 + vec2f(0.0, t * 1.5)));
+  let totalFoam = clamp(shoreFoam + surfCrest, 0.0, 1.0) * (1.0 - altBlur * 0.8);
 
   var col = mix(waterBody, reflCol, fres * (1. - duckweed * 0.65)) + U.sunCol.rgb * spec;
   col = mix(col, vec3f(0.92, 0.95, 0.97) * max(0.35, U.sunDir.w), totalFoam * 0.78);
 
-  let df = length(wp.xz - U.firePos.xz);
+  let df = length(wxz - U.firePos.xz);
   if (df < 120.) {
-    let fDir = normalize(vec3f(U.firePos.x - wp.x, 9., U.firePos.z - wp.z));
+    let fDir = normalize(vec3f(U.firePos.x - wxz.x, 9., U.firePos.z - wxz.y));
     let fSpec = pow(max(dot(R, fDir), 0.), 24.) * (1. - df / 120.) * U.fogCol.w;
     col += vec3f(2.2, 0.65, 0.12) * fSpec;
   }
 
-  let alpha = clamp(smoothstep(0., 0.16, depth) * 0.92 + fres * 0.25 + duckweed * 0.5 + totalFoam * 0.6, 0., 0.98);
+  let circleEdge = smoothstep(maxHorizR * 0.58, maxHorizR * 0.96, rHoriz);
+  let orbitHandoff = smoothstep(155.0, 365.0, U.camPos.y);
+  let fadeOut = 1.0 - clamp(max(circleEdge, orbitHandoff), 0.0, 1.0);
+  let alpha = clamp(smoothstep(0., 0.16, depth) * 0.92 + fres * 0.25 + duckweed * 0.5 + totalFoam * 0.6, 0., 0.98) * fadeOut;
   return vec4f(applyAtmosphere(col, wp), alpha);
 }
 `;

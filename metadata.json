@@ -1,6 +1,6 @@
 {
-  "name": "Terra Primordia — The Living WebGPU Planet",
-  "description": "A seamless, human-free, photorealistic raw-WebGPU planetary ecosystem featuring 18 biomes, the Abyssal Garden ocean trench, interactive planetary map teleportation, and playable wildlife embodiment in 1st and 3rd person POV.",
+  "name": "REALISM — Earth-Scale Procedural Planet & Abyssal Garden WebGPU Engine",
+  "description": "An Earth-scale (6,371 km) raw-WebGPU planetary, deep-ocean, and orbital simulation featuring 18 seamless biomes, Abyssal Garden procedural reefs and kelp forests, 3D planetary globe navigation, persistent settings, and playable wildlife embodiment.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

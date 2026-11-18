@@ -1,237 +1,437 @@
 // ============================================================================
-// Procedural Web Audio Bio-Acoustic Engine (18 Biomes + Species Vocalizations)
+// REALISM — Procedural WebAudio Bio-Acoustic & Orbital Soundscape Synthesizer
 // ============================================================================
-import { hypot, min, max, clamp, rr, rnd } from './math.js';
-import { FIRE_POS, VOLCANO_POS, SAVANNA_POS, HIGHLAND_POS, BEACH_POS, ABYSS_POS, POLAR_POS, terrainAt } from './biomes.js';
 
-let actx = null;
-let masterGain = null;
-let windGain = null, waterGain = null, rainGain = null, fireGain = null, surfGain = null;
-let windFilter = null, waterFilter = null;
-let muted = false;
-let userVol = 0.7;
-const _audT = {};
+export const createBioAudio = () => {
+  let ctx = null;
+  let master = null;
+  let running = false;
+  let muted = false;
+  let windGain = null;
+  let waterGain = null;
+  let rainGain = null;
+  let surfGain = null;
+  let fireGain = null;
+  let spaceDroneGain = null;
+  let windFilter = null;
+  let birdTimer = 0;
+  let frogTimer = 0;
+  let cicadaGain = null;
+  let whaleTimer = 5.0;
+  let roarTimer = 9.0;
 
-function initAudio(state) {
-  if (actx) {
-    if (actx.state === 'suspended') actx.resume();
-    return;
-  }
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return;
-  actx = new AC();
-  masterGain = actx.createGain();
-  masterGain.gain.value = muted ? 0 : userVol;
-  masterGain.connect(actx.destination);
+  // Channel volume multipliers controlled by in-game Settings modal
+  const vols = {
+    master: 0.75,
+    ambient: 0.85,
+    wildlife: 0.90,
+    water: 0.85,
+    weather: 0.80
+  };
 
-  const len = actx.sampleRate * 3;
-  const buf = actx.createBuffer(1, len, actx.sampleRate);
-  const d = buf.getChannelData(0);
-  let b0 = 0, b1 = 0, b2 = 0;
-  for (let i = 0; i < len; i++) {
-    const w = Math.random() * 2 - 1;
-    b0 = 0.997 * b0 + w * 0.029;
-    b1 = 0.985 * b1 + w * 0.032;
-    b2 = 0.950 * b2 + w * 0.048;
-    d[i] = (b0 + b1 + b2 + w * 0.015) * 0.35;
-  }
+  const makeNoiseBuffer = (context, seconds = 3) => {
+    const len = context.sampleRate * seconds;
+    const buf = context.createBuffer(1, len, context.sampleRate);
+    const data = buf.getChannelData(0);
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.96900 * b2 + white * 0.1538520;
+      b3 = 0.86650 * b3 + white * 0.3104856;
+      b4 = 0.55000 * b4 + white * 0.5329522;
+      b5 = -0.7616 * b5 - white * 0.0168980;
+      data[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.035;
+      b6 = white * 0.115926;
+    }
+    return buf;
+  };
 
-  function makeNoiseLoop(type, freq, q) {
-    const src = actx.createBufferSource();
-    src.buffer = buf;
-    src.loop = true;
-    const flt = actx.createBiquadFilter();
-    flt.type = type;
-    flt.frequency.value = freq;
-    flt.Q.value = q;
-    const g = actx.createGain();
-    g.gain.value = 0.001;
-    src.connect(flt);
+  const triggerBirdCall = (biomeId = 0, isUnderwater = 0) => {
+    if (!ctx || !running || muted || isUnderwater > 0.5 || vols.wildlife <= 0.01) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+
+    const isCoast = biomeId === 9 || biomeId === 12 || biomeId === 17;
+    const baseFreq = isCoast
+      ? 680 + Math.random() * 420
+      : biomeId === 2
+        ? 1100 + Math.random() * 650
+        : 1450 + Math.random() * 900;
+
+    osc.type = isCoast ? 'triangle' : 'sine';
+    osc.frequency.setValueAtTime(baseFreq, now);
+    osc.frequency.exponentialRampToValueAtTime(baseFreq * (isCoast ? 0.78 : 1.32), now + 0.09);
+    osc.frequency.exponentialRampToValueAtTime(baseFreq * (isCoast ? 0.65 : 0.88), now + 0.24);
+
+    const peak = 0.025 * vols.wildlife;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(peak, now + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
+
+    osc.connect(g);
+    g.connect(master);
+    osc.start(now);
+    osc.stop(now + 0.28);
+  };
+
+  const triggerFrogCroak = () => {
+    if (!ctx || !running || muted || vols.wildlife <= 0.01) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const mod = ctx.createOscillator();
+    const modGain = ctx.createGain();
+    const g = ctx.createGain();
+
+    osc.type = 'sawtooth';
+    const f = 140 + Math.random() * 55;
+    osc.frequency.setValueAtTime(f, now);
+    osc.frequency.linearRampToValueAtTime(f * 1.18, now + 0.14);
+
+    mod.frequency.setValueAtTime(36, now);
+    modGain.gain.setValueAtTime(45, now);
+    mod.connect(modGain);
+    modGain.connect(osc.frequency);
+
+    const flt = ctx.createBiquadFilter();
+    flt.type = 'bandpass';
+    flt.frequency.value = 340;
+    flt.Q.value = 3.2;
+
+    const peak = 0.028 * vols.wildlife;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(peak, now + 0.025);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.19);
+
+    osc.connect(flt);
     flt.connect(g);
-    g.connect(masterGain);
-    src.start();
-    return { flt, g };
-  }
+    g.connect(master);
 
-  const wNode = makeNoiseLoop('bandpass', 320, 1.8);
-  windFilter = wNode.flt; windGain = wNode.g;
+    osc.start(now);
+    mod.start(now);
+    osc.stop(now + 0.21);
+    mod.stop(now + 0.21);
+  };
 
-  const rNode = makeNoiseLoop('bandpass', 580, 1.1);
-  waterFilter = rNode.flt; waterGain = rNode.g;
+  const triggerWhaleSong = () => {
+    if (!ctx || !running || muted || vols.wildlife <= 0.01) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    const flt = ctx.createBiquadFilter();
 
-  const rnNode = makeNoiseLoop('highpass', 1100, 0.7);
-  rainGain = rnNode.g;
+    osc.type = 'sine';
+    const f0 = 115 + Math.random() * 95;
+    osc.frequency.setValueAtTime(f0, now);
+    osc.frequency.exponentialRampToValueAtTime(f0 * 1.55, now + 0.75);
+    osc.frequency.exponentialRampToValueAtTime(f0 * 0.72, now + 2.1);
 
-  const fNode = makeNoiseLoop('lowpass', 240, 0.9);
-  fireGain = fNode.g;
+    flt.type = 'lowpass';
+    flt.frequency.value = 420;
 
-  const sfNode = makeNoiseLoop('bandpass', 260, 1.2);
-  surfGain = sfNode.g;
+    const peak = 0.045 * vols.wildlife;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(peak, now + 0.35);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 2.3);
 
-  function scheduleCalls() {
-    if (!actx) return;
-    if (actx.state === 'running' && !muted) {
-      terrainAt(state.camX || 0, state.camZ || 0, _audT);
-      const t = actx.currentTime;
-      const roll = rnd();
+    osc.connect(flt);
+    flt.connect(g);
+    g.connect(master);
+    osc.start(now);
+    osc.stop(now + 2.4);
+  };
 
-      if ((state.camY || 0) < -0.15 || _audT.abyss > 0.2 || _audT.reef > 0.2) {
-        // Haunting Humpback Whale Song harmonic sweep underwater
-        const o = actx.createOscillator();
-        const g = actx.createGain();
-        o.type = 'sine';
-        const f0 = rr(125, 260);
-        o.frequency.setValueAtTime(f0, t);
-        o.frequency.exponentialRampToValueAtTime(f0 * rr(1.35, 1.85), t + 0.9);
-        o.frequency.exponentialRampToValueAtTime(f0 * 0.78, t + 2.1);
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.linearRampToValueAtTime(0.055, t + 0.35);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + 2.2);
-        o.connect(g); g.connect(masterGain);
-        o.start(t); o.stop(t + 2.25);
-      } else if (_audT.savanna > 0.25 && roll < 0.45) {
-        // Distant African Lion Roar or Elephant call
-        triggerSpeciesCall(roll < 0.25 ? 24 : 28);
-      } else if (_audT.highland > 0.25 && roll < 0.45) {
-        // Silverback Gorilla Chest-Beat
-        triggerSpeciesCall(26);
-      } else if (roll < 0.55) {
-        // Tropical songbird / macaw / toucan FM call
-        const o = actx.createOscillator();
-        const g = actx.createGain();
-        o.type = 'sine';
-        const f0 = rr(1300, 2600);
-        const f1 = f0 * rr(0.72, 1.38);
-        o.frequency.setValueAtTime(f0, t);
-        o.frequency.exponentialRampToValueAtTime(f1, t + 0.14);
-        o.frequency.exponentialRampToValueAtTime(f0 * 0.92, t + 0.28);
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.linearRampToValueAtTime(0.038 * (1 - _audT.fire * 0.8), t + 0.03);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
-        o.connect(g); g.connect(masterGain);
-        o.start(t); o.stop(t + 0.34);
-      } else if (_audT.wetness > 0.35) {
-        // Tree frog / bullfrog resonant croak
-        const o = actx.createOscillator();
-        const g = actx.createGain();
-        o.type = 'triangle';
-        const f0 = rr(190, 420);
-        o.frequency.setValueAtTime(f0, t);
-        o.frequency.exponentialRampToValueAtTime(f0 * 1.32, t + 0.09);
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.linearRampToValueAtTime(0.035, t + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
-        o.connect(g); g.connect(masterGain);
-        o.start(t); o.stop(t + 0.2);
+  const triggerApexCall = (biomeId = 6) => {
+    if (!ctx || !running || muted || vols.wildlife <= 0.01) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    const flt = ctx.createBiquadFilter();
+
+    osc.type = 'sawtooth';
+    const base = biomeId === 8 ? 72 : 88 + Math.random() * 25;
+    osc.frequency.setValueAtTime(base, now);
+    osc.frequency.exponentialRampToValueAtTime(base * 0.62, now + 0.85);
+
+    flt.type = 'lowpass';
+    flt.frequency.value = 210;
+
+    const peak = 0.032 * vols.wildlife;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(peak, now + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.95);
+
+    osc.connect(flt);
+    flt.connect(g);
+    g.connect(master);
+    osc.start(now);
+    osc.stop(now + 1.0);
+  };
+
+  const ensureInitialized = () => {
+    if (ctx) {
+      if (ctx.state === 'suspended') ctx.resume();
+      return true;
+    }
+    const AudioCtx = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+    if (!AudioCtx) return false;
+    ctx = new AudioCtx();
+    master = ctx.createGain();
+    master.gain.value = 0.24 * vols.master;
+    master.connect(ctx.destination);
+
+    const noiseBuf = makeNoiseBuffer(ctx, 4);
+
+    // Wind & canopy rustle
+    const windSrc = ctx.createBufferSource();
+    windSrc.buffer = noiseBuf;
+    windSrc.loop = true;
+    windFilter = ctx.createBiquadFilter();
+    windFilter.type = 'bandpass';
+    windFilter.frequency.value = 380;
+    windFilter.Q.value = 0.9;
+    windGain = ctx.createGain();
+    windGain.gain.value = 0.16;
+    windSrc.connect(windFilter);
+    windFilter.connect(windGain);
+    windGain.connect(master);
+    windSrc.start();
+
+    // River & stream murmur
+    const waterSrc = ctx.createBufferSource();
+    waterSrc.buffer = noiseBuf;
+    waterSrc.loop = true;
+    const waterFilter = ctx.createBiquadFilter();
+    waterFilter.type = 'bandpass';
+    waterFilter.frequency.value = 640;
+    waterFilter.Q.value = 1.4;
+    waterGain = ctx.createGain();
+    waterGain.gain.value = 0.14;
+    waterSrc.connect(waterFilter);
+    waterFilter.connect(waterGain);
+    waterGain.connect(master);
+    waterSrc.start();
+
+    // Ocean surf & deep underwater hydrophone rumble
+    const surfSrc = ctx.createBufferSource();
+    surfSrc.buffer = noiseBuf;
+    surfSrc.loop = true;
+    const surfFilter = ctx.createBiquadFilter();
+    surfFilter.type = 'lowpass';
+    surfFilter.frequency.value = 240;
+    surfGain = ctx.createGain();
+    surfGain.gain.value = 0.01;
+    surfSrc.connect(surfFilter);
+    surfFilter.connect(surfGain);
+    surfGain.connect(master);
+    surfSrc.start();
+
+    // Fire crackle / volcanic rumble
+    const fireSrc = ctx.createBufferSource();
+    fireSrc.buffer = noiseBuf;
+    fireSrc.loop = true;
+    const fireFilter = ctx.createBiquadFilter();
+    fireFilter.type = 'bandpass';
+    fireFilter.frequency.value = 1200;
+    fireFilter.Q.value = 0.8;
+    fireGain = ctx.createGain();
+    fireGain.gain.value = 0.001;
+    fireSrc.connect(fireFilter);
+    fireFilter.connect(fireGain);
+    fireGain.connect(master);
+    fireSrc.start();
+
+    // Rain pattering
+    const rainSrc = ctx.createBufferSource();
+    rainSrc.buffer = noiseBuf;
+    rainSrc.loop = true;
+    const rainFilter = ctx.createBiquadFilter();
+    rainFilter.type = 'highpass';
+    rainFilter.frequency.value = 1600;
+    rainGain = ctx.createGain();
+    rainGain.gain.value = 0.001;
+    rainSrc.connect(rainFilter);
+    rainFilter.connect(rainGain);
+    rainGain.connect(master);
+    rainSrc.start();
+
+    // Cicada / insect drone
+    const cicadaSrc = ctx.createBufferSource();
+    cicadaSrc.buffer = noiseBuf;
+    cicadaSrc.loop = true;
+    const cicadaFilter = ctx.createBiquadFilter();
+    cicadaFilter.type = 'bandpass';
+    cicadaFilter.frequency.value = 4200;
+    cicadaFilter.Q.value = 5.5;
+    cicadaGain = ctx.createGain();
+    cicadaGain.gain.value = 0.04;
+    cicadaSrc.connect(cicadaFilter);
+    cicadaFilter.connect(cicadaGain);
+    cicadaGain.connect(master);
+    cicadaSrc.start();
+
+    // High-altitude / deep-space cosmic harmonic drone
+    const spaceOsc = ctx.createOscillator();
+    spaceOsc.type = 'sine';
+    spaceOsc.frequency.value = 64;
+    spaceDroneGain = ctx.createGain();
+    spaceDroneGain.gain.value = 0.0001;
+    spaceOsc.connect(spaceDroneGain);
+    spaceDroneGain.connect(master);
+    spaceOsc.start();
+
+    running = true;
+    muted = false;
+    return true;
+  };
+
+  return {
+    get running() {
+      return running && !muted;
+    },
+    get muted() {
+      return muted;
+    },
+    init() {
+      return ensureInitialized();
+    },
+    setVolumes(newVols = {}) {
+      if (typeof newVols.master === 'number') vols.master = newVols.master;
+      if (typeof newVols.ambient === 'number') vols.ambient = newVols.ambient;
+      if (typeof newVols.wildlife === 'number') vols.wildlife = newVols.wildlife;
+      if (typeof newVols.water === 'number') vols.water = newVols.water;
+      if (typeof newVols.weather === 'number') vols.weather = newVols.weather;
+      if (ctx && master && !muted) {
+        master.gain.setTargetAtTime(0.24 * vols.master, ctx.currentTime, 0.1);
+      }
+    },
+    toggle() {
+      if (!ctx) {
+        ensureInitialized();
+        return false; // not muted
+      }
+      if (ctx.state === 'suspended') ctx.resume();
+      muted = !muted;
+      master.gain.setTargetAtTime(muted ? 0.0 : 0.24 * vols.master, ctx.currentTime, 0.15);
+      return muted;
+    },
+    callSpecies(speciesId = 24) {
+      if (!ctx) ensureInitialized();
+      if (!ctx || muted) return;
+      if (speciesId === 31 || speciesId === 32) {
+        triggerWhaleSong();
+      } else if (speciesId >= 4 && speciesId <= 10 || speciesId === 35) {
+        triggerBirdCall(speciesId === 35 ? 12 : 2, 0);
+      } else if (speciesId === 16 || speciesId === 17) {
+        triggerFrogCroak();
+      } else {
+        triggerApexCall(speciesId === 26 ? 8 : 6);
+      }
+    },
+    update(dt, env) {
+      if (!ctx || !running || muted) return;
+      const now = ctx.currentTime;
+      const wind = env.windStrength ?? 0.5;
+      const rain = env.rainIntensity ?? 0.0;
+      const sunEl = env.sunEl ?? 0.35;
+      const camY = env.camY ?? 2.0;
+      const biomeId = env.biomeId ?? 0;
+      const isUnderwater = env.isUnderwater ?? (camY < -0.05 ? 1 : 0);
+
+      // Atmospheric thinning with altitude (above 140m air thins into stratospheric/exospheric silence)
+      const atmoDensity = Math.max(0.0, Math.min(1.0, 1.0 - Math.max(0, camY - 140) / 620));
+      const spaceFactor = 1.0 - atmoDensity;
+
+      if (windFilter && windGain) {
+        windFilter.frequency.setTargetAtTime(isUnderwater > 0.5 ? 160 : 280 + wind * 360, now, 0.2);
+        windGain.gain.setTargetAtTime((isUnderwater > 0.5 ? 0.03 : 0.08 + wind * 0.22) * vols.ambient * atmoDensity, now, 0.2);
+      }
+      if (waterGain) {
+        const nearWater = Math.max(0.04, Math.min(0.32, 0.28 / (1 + Math.max(0, camY) * 0.22)));
+        waterGain.gain.setTargetAtTime(nearWater * vols.water * atmoDensity, now, 0.2);
+      }
+      if (surfGain) {
+        const isMarine = biomeId >= 9 && biomeId <= 13;
+        const surfWave = 0.5 + 0.5 * Math.sin(now * 0.65);
+        const targetSurf = isUnderwater > 0.5 ? 0.28 : isMarine ? 0.12 + surfWave * 0.16 : 0.01;
+        surfGain.gain.setTargetAtTime(targetSurf * vols.water * atmoDensity, now, 0.25);
+      }
+      if (fireGain) {
+        const isFireZone = biomeId === 14 || biomeId === 15;
+        fireGain.gain.setTargetAtTime((isFireZone ? 0.22 : 0.001) * vols.ambient * atmoDensity, now, 0.25);
+      }
+      if (rainGain) {
+        rainGain.gain.setTargetAtTime((0.002 + rain * 0.26) * vols.weather * atmoDensity, now, 0.2);
+      }
+      if (cicadaGain) {
+        const isWarmJungle = biomeId <= 8 || biomeId === 16;
+        const nightBoost = sunEl < 0.18 ? 0.085 : 0.035;
+        cicadaGain.gain.setTargetAtTime((isWarmJungle && isUnderwater < 0.5 ? nightBoost : 0.002) * vols.wildlife * atmoDensity, now, 0.4);
+      }
+      if (spaceDroneGain) {
+        spaceDroneGain.gain.setTargetAtTime(spaceFactor * 0.075 * vols.ambient, now, 0.3);
+      }
+
+      if (atmoDensity > 0.25) {
+        birdTimer -= dt;
+        if (birdTimer <= 0) {
+          if (sunEl > -0.05 && isUnderwater < 0.5 && biomeId !== 14 && biomeId !== 15) {
+            triggerBirdCall(biomeId, isUnderwater);
+          }
+          birdTimer = 1.8 + Math.random() * 4.2;
+        }
+
+        frogTimer -= dt;
+        if (frogTimer <= 0) {
+          if ((biomeId === 0 || biomeId === 1 || biomeId === 3 || sunEl < 0.25) && isUnderwater < 0.5) {
+            triggerFrogCroak();
+          }
+          frogTimer = 1.6 + Math.random() * 3.8;
+        }
+
+        whaleTimer -= dt;
+        if (whaleTimer <= 0) {
+          if (isUnderwater > 0.5 || (biomeId >= 10 && biomeId <= 13)) {
+            triggerWhaleSong();
+          }
+          whaleTimer = 4.5 + Math.random() * 6.5;
+        }
+
+        roarTimer -= dt;
+        if (roarTimer <= 0) {
+          if ((biomeId === 6 || biomeId === 7 || biomeId === 8) && isUnderwater < 0.5) {
+            triggerApexCall(biomeId);
+          }
+          roarTimer = 7.0 + Math.random() * 9.0;
+        }
       }
     }
-    setTimeout(scheduleCalls, rr(1600, 3900));
-  }
-  setTimeout(scheduleCalls, 1200);
-}
+  };
+};
 
-// Play authentic species vocalization or locomotion sound when embodying an animal
-function triggerSpeciesCall(speciesId) {
-  if (!actx || actx.state !== 'running' || muted) return;
-  const t = actx.currentTime;
-  const o = actx.createOscillator();
-  const g = actx.createGain();
+const sharedBioAudio = createBioAudio();
 
-  if (speciesId === 24 || speciesId === 25 || speciesId === 1 || speciesId === 11) {
-    // Lion / Tiger / Jaguar / Panther deep guttural roar
-    o.type = 'sawtooth';
-    o.frequency.setValueAtTime(135, t);
-    o.frequency.exponentialRampToValueAtTime(72, t + 0.65);
-    g.gain.setValueAtTime(0.001, t);
-    g.gain.linearRampToValueAtTime(0.08, t + 0.08);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.72);
-    o.connect(g); g.connect(masterGain);
-    o.start(t); o.stop(t + 0.75);
-  } else if (speciesId === 26 || speciesId === 27) {
-    // Silverback Gorilla rapid chest-beat percussive resonance
-    o.type = 'triangle';
-    o.frequency.setValueAtTime(145, t);
-    o.frequency.exponentialRampToValueAtTime(92, t + 0.28);
-    g.gain.setValueAtTime(0.001, t);
-    g.gain.linearRampToValueAtTime(0.09, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.30);
-    o.connect(g); g.connect(masterGain);
-    o.start(t); o.stop(t + 0.32);
-  } else if (speciesId === 28) {
-    // African Bush Elephant brassy trumpet
-    o.type = 'sawtooth';
-    o.frequency.setValueAtTime(290, t);
-    o.frequency.exponentialRampToValueAtTime(640, t + 0.25);
-    o.frequency.exponentialRampToValueAtTime(480, t + 0.65);
-    g.gain.setValueAtTime(0.001, t);
-    g.gain.linearRampToValueAtTime(0.075, t + 0.06);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.70);
-    o.connect(g); g.connect(masterGain);
-    o.start(t); o.stop(t + 0.72);
-  } else if (speciesId === 31 || speciesId === 32) {
-    // Humpback Whale / Orca resonant sonar song
-    o.type = 'sine';
-    o.frequency.setValueAtTime(180, t);
-    o.frequency.exponentialRampToValueAtTime(420, t + 0.55);
-    o.frequency.exponentialRampToValueAtTime(240, t + 1.15);
-    g.gain.setValueAtTime(0.001, t);
-    g.gain.linearRampToValueAtTime(0.07, t + 0.12);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
-    o.connect(g); g.connect(masterGain);
-    o.start(t); o.stop(t + 1.25);
-  } else {
-    // Eagle screech / Macaw call / Penguin bray
-    o.type = 'sine';
-    o.frequency.setValueAtTime(1650, t);
-    o.frequency.exponentialRampToValueAtTime(1120, t + 0.32);
-    g.gain.setValueAtTime(0.001, t);
-    g.gain.linearRampToValueAtTime(0.055, t + 0.03);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.36);
-    o.connect(g); g.connect(masterGain);
-    o.start(t); o.stop(t + 0.38);
-  }
-}
-
-function updateAudio(camX, camY, camZ, weather, fireStrength, windSpeed) {
-  if (!actx || actx.state !== 'running') return;
-  const now = actx.currentTime;
-  terrainAt(camX, camZ, _audT);
-
-  const underwater = camY < -0.05;
-  const wFreq = underwater ? 140 : clamp(220 + windSpeed * 180 + max(0, camY) * 6, 160, 900);
-  windFilter.frequency.setTargetAtTime(wFreq, now, 0.12);
-  windGain.gain.setTargetAtTime(underwater ? 0.04 : clamp(0.04 + windSpeed * 0.08, 0.02, 0.22), now, 0.12);
-
-  const waterProx = clamp(_audT.wetness * 0.9 + (camY < 3 ? 0.3 : 0), 0, 1);
-  waterFilter.frequency.setTargetAtTime(underwater ? 210 : 620, now, 0.12);
-  waterGain.gain.setTargetAtTime(waterProx * (underwater ? 0.22 : 0.11), now, 0.12);
-
-  const rainAmt = (weather === 2 || weather === 5) ? 0.16 : weather === 1 ? 0.02 : 0.0001;
-  rainGain.gain.setTargetAtTime(underwater ? rainAmt * 0.2 : rainAmt, now, 0.25);
-
-  const df = min(hypot(camX - FIRE_POS[0], camZ - FIRE_POS[1]), hypot(camX - VOLCANO_POS[0], camZ - VOLCANO_POS[1]));
-  const fProx = clamp(1 - df / 110, 0, 1) * fireStrength;
-  fireGain.gain.setTargetAtTime(max(0.0001, fProx * 0.22), now, 0.15);
-
-  // Coastal Shorebreak Surf rhythmic wave wash
-  const dBeach = hypot(camX - BEACH_POS[0], camZ - BEACH_POS[1]);
-  const surfProx = clamp(1 - dBeach / 130, 0, 1) * (0.5 + 0.5 * Math.sin(now * 0.85));
-  if (surfGain) {
-    surfGain.gain.setTargetAtTime(max(0.0001, surfProx * 0.16), now, 0.18);
-  }
-}
-
-function setVolume(v) {
-  userVol = clamp(v, 0, 1);
-  if (masterGain && actx) {
-    masterGain.gain.setTargetAtTime(muted ? 0 : userVol, actx.currentTime, 0.05);
-  }
-}
-
-function toggleMute() {
-  muted = !muted;
-  setVolume(userVol);
-  return muted;
-}
-
-export { initAudio, updateAudio, setVolume, toggleMute, triggerSpeciesCall };
+export const initAudio = () => sharedBioAudio.init();
+export const toggleMute = () => sharedBioAudio.toggle();
+export const setVolume = (v) => sharedBioAudio.setVolumes({ master: v });
+export const setAudioSettings = (settings) => sharedBioAudio.setVolumes({
+  master: settings.masterVolume,
+  ambient: settings.ambientVolume,
+  wildlife: settings.wildlifeVolume,
+  water: settings.waterVolume,
+  weather: settings.weatherVolume
+});
+export const triggerSpeciesCall = (speciesId) => sharedBioAudio.callSpecies(speciesId);
+export const updateAudio = (camX, camY, camZ, weatherIdx = 0, fireStr = 0, windStr = 0.45, biomeId = 0) => {
+  const rain = weatherIdx === 2 || weatherIdx === 5 ? 0.95 : weatherIdx === 1 ? 0.1 : 0.0;
+  sharedBioAudio.update(0.016, {
+    windStrength: windStr,
+    rainIntensity: rain,
+    sunEl: weatherIdx === 6 ? 0.05 : 0.4,
+    camY,
+    biomeId: fireStr > 0.8 ? 14 : biomeId,
+    isUnderwater: camY < -0.05 ? 1 : 0
+  });
+};

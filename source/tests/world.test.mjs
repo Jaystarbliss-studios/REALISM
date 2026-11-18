@@ -6,19 +6,25 @@ import { fileURLToPath } from 'node:url';
 
 import {
   WORLD_SEED, seedRng, rnd, fbm2, m4Persp, m4Look, m4Mul, m4Inv,
-  smin, smax, solveTwoBoneIK, MeshBuilder
+  smin, smax, solveTwoBoneIK, normAngle, lerpAngle, yawToForward, velocityToYaw, MeshBuilder
 } from '../src/math.js';
 import {
-  WORLD_HALF, SAVANNA_POS, PLANTATION_POS, BEACH_POS, REEF_POS, ABYSS_POS, POLAR_POS, VOLCANO_POS,
-  BIOME_CATALOG, terrainAt, POSES, biomeLabelAt
+  WORLD_HALF, WORLD_SIZE, PLANET_RADIUS, PLANET_EQUATORIAL_RADIUS, PLANET_POLAR_RADIUS,
+  SAVANNA_POS, PLANTATION_POS, BEACH_POS, REEF_POS, ABYSS_POS, POLAR_POS, VOLCANO_POS, FIRE_POS,
+  BIOME_CATALOG, terrainAt, POSES, biomeLabelAt,
+  wrapCoord, wrapDelta, worldToLatLonAlt, latLonToWorld, worldToCubeSphere,
+  updateQuadtreeChunks, atmosphericLayerAt, evaluateHazardAt
 } from '../src/biomes.js';
+import {
+  DEFAULT_SETTINGS, QUALITY_TIERS, loadSettings, saveSettings, resetSettings, createQualityController
+} from '../src/quality.js';
 import { buildWorld } from '../src/world.js';
 import { generateMaterialAtlas, PROCEDURAL_MATERIALS, TEX_SIZE, TEX_LAYERS } from '../src/assets.js';
 import * as shaders from '../src/shaders.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-test('1. Deterministic PRNG, 2D FBM noise, Smooth-Min (smin) & Analytical 2-Bone IK', () => {
+test('1. Deterministic PRNG, 2D FBM noise, Smooth-Min (smin), Canonical Yaw/Forward & Analytical 2-Bone IK', () => {
   seedRng(WORLD_SEED);
   const a1 = rnd(), a2 = rnd();
   seedRng(WORLD_SEED);
@@ -33,6 +39,18 @@ test('1. Deterministic PRNG, 2D FBM noise, Smooth-Min (smin) & Analytical 2-Bone
   const sm = smin(1.0, 1.0, 0.2);
   assert.ok(sm < 1.0 && sm > 0.85, `smin(1, 1, 0.2) expected ~0.95, got ${sm}`);
   assert.ok(smax(1.0, 1.0, 0.2) > 1.0, 'smax must blend smoothly above max(a, b)');
+
+  // Canonical Creature Heading & Forward Vector Roundtrip (Local +Z -> World (-sin(yaw), cos(yaw)))
+  for (const deg of [-150, -90, -45, 0, 30, 90, 135, 180]) {
+    const yaw = normAngle((deg * Math.PI) / 180);
+    const [fx, fz] = yawToForward(yaw);
+    assert.ok(Math.abs(Math.hypot(fx, fz) - 1.0) < 1e-6, 'yawToForward must return unit vector');
+    const recoveredYaw = velocityToYaw(fx * 3.5, fz * 3.5, 0);
+    assert.ok(Math.abs(normAngle(recoveredYaw - yaw)) < 1e-5, `Canonical yaw/forward roundtrip failed at ${deg}°`);
+  }
+  // Shortest-arc lerpAngle across +-PI seam
+  const seamAngle = lerpAngle(Math.PI - 0.1, -Math.PI + 0.1, 0.5);
+  assert.ok(Math.abs(Math.abs(seamAngle) - Math.PI) < 0.05, 'lerpAngle must interpolate across +-PI shortest arc');
 
   // Analytical 2-Bone IK solver must return finite knee/elbow and clamped foot coordinates
   const ik = solveTwoBoneIK(0, 1.0, 0, 0.2, 0.0, 0.1, 0, 0, 1, 0.55, 0.55);
@@ -53,21 +71,59 @@ test('2. 4x4 Matrix Math & Inverse Projection Roundtrip', () => {
   assert.ok(Math.abs(ident[15] - 1) < 1e-4);
 });
 
-test('3. Continuous 18-Biome Planetary Topography, Bathymetry & Poses', () => {
+test('3. Earth-Scale Geodesics (6,371 km), Cube-Sphere Projection, Quadtree Streaming & Continuous 18-Biome Topography', () => {
+  assert.strictEqual(PLANET_RADIUS, 6371000, 'PLANET_RADIUS must equal true Earth mean radius 6,371,000 m');
+  assert.ok(PLANET_EQUATORIAL_RADIUS > PLANET_POLAR_RADIUS, 'Oblate spheroid equatorial radius must exceed polar radius');
+
+  // Geodesic wrapping across planetary boundary
+  assert.ok(Math.abs(wrapCoord(WORLD_HALF + 25) - (-WORLD_HALF + 25)) < 1e-5, 'wrapCoord must wrap smoothly across +WORLD_HALF');
+  assert.ok(Math.abs(wrapDelta(WORLD_HALF - 5, -WORLD_HALF + 5) - (-10)) < 1e-5, 'wrapDelta must compute shortest wrapped distance');
+
+  // Lat/Lon roundtrip and 6-face Cube-Sphere coverage
+  const geo = worldToLatLonAlt(108, 45, -72);
+  assert.ok(Number.isFinite(geo.lat) && Number.isFinite(geo.lon) && Number.isFinite(geo.altKm));
+  const back = latLonToWorld(geo.latDeg, geo.lonDeg);
+  assert.ok(Math.abs(back.x - 108) < 1e-3 && Math.abs(back.z - (-72)) < 1e-3, 'latLonToWorld must invert worldToLatLonAlt');
+
+  const seenFaces = new Set();
+  for (let lat = -80; lat <= 80; lat += 40) {
+    for (let lon = -180; lon <= 180; lon += 45) {
+      const pt = latLonToWorld(lat, lon);
+      const cs = worldToCubeSphere(pt.x, 0, pt.z);
+      assert.ok(cs.face >= 0 && cs.face <= 5, `Cube-sphere face must be 0..5, got ${cs.face}`);
+      assert.ok(cs.u >= -1.001 && cs.u <= 1.001 && cs.v >= -1.001 && cs.v <= 1.001, 'Cube-sphere u,v must lie in [-1, 1]');
+      seenFaces.add(cs.face);
+    }
+  }
+  assert.ok(seenFaces.size >= 5, 'worldToCubeSphere must project across cube-sphere faces');
+
+  // Atmospheric & Deep-Space Vertical Layers
+  assert.strictEqual(atmosphericLayerAt(-14).code, 'OCEAN');
+  assert.strictEqual(atmosphericLayerAt(10).code, 'TROPO');
+  assert.strictEqual(atmosphericLayerAt(200).code, 'STRATO');
+  assert.strictEqual(atmosphericLayerAt(950).code, 'THERMO');
+  assert.strictEqual(atmosphericLayerAt(1500).code, 'EXO');
+  assert.strictEqual(atmosphericLayerAt(2600).code, 'COSMOS');
+
+  // Hazard evaluation for terrestrial and aquatic fauna
+  const fireHaz = evaluateHazardAt(FIRE_POS[0], FIRE_POS[1], 'land');
+  assert.ok(fireHaz.hazard > 0.35, 'Terrestrial fauna must detect thermal hazard at FIRE_POS');
+  const deepWaterLandHaz = evaluateHazardAt(ABYSS_POS[0], ABYSS_POS[1], 'land');
+  assert.ok(deepWaterLandHaz.hazard > 0.5, 'Terrestrial fauna must avoid drowning in deep Abyssal Trench');
+  const dryLandAquaticHaz = evaluateHazardAt(SAVANNA_POS[0], SAVANNA_POS[1], 'water');
+  assert.ok(dryLandAquaticHaz.hazard > 0.5, 'Aquatic fauna must avoid stranding on dry Savanna');
+
   assert.strictEqual(POSES.length, 18, 'Must define all 18 planetary biome & forbidden zone poses');
   assert.strictEqual(BIOME_CATALOG.length, 18, 'Must define metadata for all 18 planetary zones');
 
   const t = {};
-  // River Lagoon channel should be submerged (< 0)
   terrainAt(22, 16, t);
   assert.ok(t.h < -0.3, `Expected submerged river lagoon height < -0.3, got ${t.h}`);
   assert.ok(t.wetness > 0.6, `Expected high wetness in river lagoon, got ${t.wetness}`);
 
-  // Amazon canopy hills should be elevated (> 0.5)
   terrainAt(108, -72, t);
   assert.ok(t.h > 0.5, `Expected elevated Amazon terrain > 0.5, got ${t.h}`);
 
-  // Serengeti Savanna, Overgrown Plantations, Coral Reef, Abyssal Garden & Polar Ice Planet
   terrainAt(SAVANNA_POS[0], SAVANNA_POS[1], t);
   assert.ok(t.savanna > 0.7, 'Expected high savanna weight at SAVANNA_POS');
 
@@ -83,7 +139,6 @@ test('3. Continuous 18-Biome Planetary Topography, Bathymetry & Poses', () => {
   terrainAt(VOLCANO_POS[0], VOLCANO_POS[1], t);
   assert.ok(t.volcano > 0.7, 'Expected high volcano weight at VOLCANO_POS');
 
-  // All 18 camera poses must be valid and have non-empty biome labels
   for (let i = 0; i < POSES.length; i++) {
     const p = POSES[i];
     assert.strictEqual(p.length, 6);
@@ -92,7 +147,7 @@ test('3. Continuous 18-Biome Planetary Topography, Bathymetry & Poses', () => {
   }
 });
 
-test('4. World Builder, Noniv/abyssal-garden Set-Pieces, 43 Fauna Cohorts, IK & Survival FSM', () => {
+test('4. World Builder, Noniv/abyssal-garden Set-Pieces, 43 Fauna Cohorts, Canonical Heading & Survival FSM', () => {
   const world = buildWorld();
   assert.strictEqual(world.hSize, 512);
   assert.strictEqual(world.hData.length, 512 * 512 * 4);
@@ -100,9 +155,21 @@ test('4. World Builder, Noniv/abyssal-garden Set-Pieces, 43 Fauna Cohorts, IK & 
   assert.ok(world.vegBuffers[7].instCount >= 1, 'Must place the Noniv/abyssal-garden Sunken Wooden Galleon');
   assert.ok(world.vegBuffers[8].instCount >= 50, 'Must place swaying Kelp & Coral Reef instances');
 
+  // Quadtree chunk streaming recentering test
+  const chunkOut = new Float32Array(world.chunks.chunks.length * 4);
+  updateQuadtreeChunks(1200, 450, -950, world.chunks.chunks, chunkOut, 1.2);
+  let meanX = 0, meanZ = 0;
+  for (let i = 0; i < world.chunks.chunks.length; i++) {
+    meanX += chunkOut[i * 4];
+    meanZ += chunkOut[i * 4 + 1];
+  }
+  meanX /= world.chunks.chunks.length;
+  meanZ /= world.chunks.chunks.length;
+  assert.ok(Math.abs(meanX - 1215) < 1e-3 && Math.abs(meanZ - (-945)) < 1e-3, 'updateQuadtreeChunks must center terrain grid around snapped camera anchor');
+  assert.ok(chunkOut[2] > world.chunks.chunks[0].scale, 'updateQuadtreeChunks must expand chunk scale at high altitude');
+
   assert.ok(world.wildlifeGroups.length >= 40, `Expected >= 40 wildlife cohorts across all biomes, got ${world.wildlifeGroups.length}`);
 
-  // Verify iconic new planetary species exist and have valid geometry
   const requiredSpecies = [
     'lions', 'tigers', 'gorillas', 'chimpanzees', 'elephants', 'giraffes', 'zebras',
     'whales', 'orcas', 'sharks', 'mantas', 'penguins', 'polarBears', 'seals'
@@ -128,16 +195,28 @@ test('4. World Builder, Noniv/abyssal-garden Set-Pieces, 43 Fauna Cohorts, IK & 
   const distAfter = Math.hypot(colRes.x - c0.x, colRes.z - c0.z);
   assert.ok(distAfter >= c0.r + 0.64, `Expected push-out >= ${c0.r + 0.65}, got ${distAfter}`);
 
-  // Test 120 Hz fixed-step simulation, zero-slide IK stride phase coupling, emotion packing & interpolation
+  // Test 120 Hz fixed-step simulation, zero-slide IK stride phase coupling, canonical heading & interpolation
   const lionGrp = world.wildlifeGroups.find((g) => g.name === 'lions');
   const lion0 = lionGrp.items[0];
   const phaseBefore = lion0.phase;
-  world.stepSim(world.SIM_DT, 0, 3, 0, 0.5, 0.6);
+  for (let s = 0; s < 15; s++) {
+    world.stepSim(world.SIM_DT, 0, 3, 0, 0.5, 0.6);
+  }
   world.interpolateSim(0.5, 3, 0.5);
   assert.notStrictEqual(lion0.phase, phaseBefore, 'Zero-slide IK locomotion must advance stride phase with distance moved');
+
+  // Verify moving animals align their canonical forward vector [-sin(yaw), cos(yaw)] with their velocity vector
+  const vx = wrapDelta(lion0.x - lion0.prevX);
+  const vz = wrapDelta(lion0.z - lion0.prevZ);
+  if (Math.hypot(vx, vz) > 1e-4) {
+    const [fx, fz] = yawToForward(lion0.yaw);
+    const vLen = Math.hypot(vx, vz);
+    const dot = (fx * vx + fz * vz) / vLen;
+    assert.ok(dot > 0.7, `Moving animal canonical forward vector must align with velocity (dot=${dot})`);
+  }
+
   assert.ok(Array.isArray(world.EMOTION_NAMES) && world.EMOTION_NAMES.length === 5, 'Must expose 5 creature emotional states');
 
-  // Verify expressive facial tags (uv.x = 0.12 eye, 0.18 jaw, 0.25 ear) exist in lion mesh vertices (stride = 11 floats, uv.x at offset 9)
   let hasEye = false, hasJaw = false, hasEar = false;
   for (let i = 9; i < lionGrp.verts.length; i += 11) {
     const ux = lionGrp.verts[i];
@@ -147,7 +226,6 @@ test('4. World Builder, Noniv/abyssal-garden Set-Pieces, 43 Fauna Cohorts, IK & 
   }
   assert.ok(hasEye && hasJaw && hasEar, 'Creature mesh must include wet specular eyes (0.12), articulated jaw (0.18), and mobile ear pinnae (0.25)');
 
-  // Verify packed emotion + animSpeed in instData[6]
   const packedAnim = lionGrp.instData[6];
   const emoInt = Math.floor(packedAnim);
   const spdFrac = packedAnim - emoInt;
@@ -166,7 +244,7 @@ test('4. World Builder, Noniv/abyssal-garden Set-Pieces, 43 Fauna Cohorts, IK & 
   }
 });
 
-test('5. Procedural Material Atlas Generator (32 Materials / 16 Texture Array Layers)', () => {
+test('5. Procedural Material Atlas Generator & Persistent Quality/Settings Controller', () => {
   assert.strictEqual(PROCEDURAL_MATERIALS.length, 32, 'Must define all 32 procedural materials');
   assert.strictEqual(TEX_LAYERS, 16, 'Must generate 16 texture array layers');
   const data = generateMaterialAtlas();
@@ -176,9 +254,21 @@ test('5. Procedural Material Atlas Generator (32 Materials / 16 Texture Array La
     if (data[i] > 0) nonZero++;
   }
   assert.ok(nonZero > 3000, 'Generated procedural texture atlas must contain rich non-zero texels');
+
+  // Verify quality tiers & settings controller
+  assert.strictEqual(QUALITY_TIERS.length, 4, 'Must define 4 quality tiers (Ultra, High, Balanced, Performance)');
+  const s = loadSettings();
+  assert.strictEqual(s.fov, DEFAULT_SETTINGS.fov);
+  saveSettings({ ...s, fov: 68 });
+  const r = resetSettings();
+  assert.strictEqual(r.fov, DEFAULT_SETTINGS.fov);
+  const qc = createQualityController(1);
+  assert.strictEqual(qc.tierIndex, 1);
+  qc.setTier(0);
+  assert.strictEqual(qc.tier.name, 'Ultra');
 });
 
-test('6. WGSL Shader Structural Validation, Exact 96-Float FrameU Struct & Minimalist Zero-Radius UI', () => {
+test('6. WGSL Shader Structural Validation, Exact 96-Float FrameU Struct, REALISM Branding & Minimalist UI', () => {
   for (const [name, code] of Object.entries(shaders)) {
     assert.ok(typeof code === 'string' && code.length > 100, `Shader ${name} must be non-empty`);
     let depth = 0;
@@ -197,7 +287,6 @@ test('6. WGSL Shader Structural Validation, Exact 96-Float FrameU Struct & Minim
       assert.ok(e0 < e1, `Invalid WGSL smoothstep(${e0}, ${e1}, ...) in ${name}: e0 must be < e1`);
     }
 
-    // Strip line comments and check that no WGSL reserved words are used as identifiers
     const uncommented = code.replace(/\/\/.*$/gm, '');
     const wgslReserved = [
       'NULL', 'Self', 'abstract', 'active', 'alignas', 'alignof', 'as', 'asm', 'asm_fragment', 'async',
@@ -225,14 +314,12 @@ test('6. WGSL Shader Structural Validation, Exact 96-Float FrameU Struct & Minim
     }
   }
 
-  // Verify FrameU struct in W_COMMON has 3 mat4x4f (48 floats) + 12 vec4f (48 floats) = 96 floats (384 bytes)
   const frameUMatch = shaders.W_COMMON.match(/struct\s+FrameU\s*\{([\s\S]*?)\}/);
   assert.ok(frameUMatch, 'Must define struct FrameU in W_COMMON');
   const matCount = (frameUMatch[1].match(/mat4x4f/g) || []).length;
   const vecCount = (frameUMatch[1].match(/vec4f/g) || []).length;
   assert.strictEqual(matCount * 16 + vecCount * 4, 96, `FrameU must be exactly 96 floats (384 bytes), got ${matCount * 16 + vecCount * 4}`);
 
-  // Verify exact Noniv/abyssal-garden caustic solver, Snell's Window & rock detail exist in WGSL
   assert.match(shaders.W_COMMON, /fn caus\(uv:\s*vec2f,\s*t:\s*f32\)\s*->\s*f32/, 'Must include exact Noniv/abyssal-garden caus() solver');
   assert.match(shaders.W_COMMON, /1\.769/, 'Must include exact Noniv/abyssal-garden Snell Window critical cone constant 1.769');
   assert.match(shaders.W_COMMON, /fn evalAurora/, 'Must include raymarched Aurora Borealis/Australis function');
@@ -253,5 +340,9 @@ test('6. WGSL Shader Structural Validation, Exact 96-Float FrameU Struct & Minim
 
   const tplHtml = fs.readFileSync(path.resolve(__dirname, '../template.html'), 'utf8');
   assert.match(tplHtml, /border-radius:\s*0\s*!important/, 'Minimalist UI must enforce border-radius: 0 !important');
+  assert.match(tplHtml, /REALISM/, 'Title screen and HUD must be branded REALISM');
+  assert.ok(!/Terra Primordia/i.test(tplHtml), 'template.html must not contain legacy Terra Primordia branding');
+  assert.match(tplHtml, /id="settingsModal"/, 'template.html must include full in-game #settingsModal');
+  assert.match(tplHtml, /id="openSettingsBtn"/, 'template.html must include visible top-bar #openSettingsBtn');
 });
 

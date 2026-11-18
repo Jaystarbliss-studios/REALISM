@@ -20,6 +20,28 @@ function smax(a, b, k = 0.12) {
   return -smin(-a, -b, k);
 }
 
+// Canonical Animal & Camera Forward Convention:
+// In local mesh space, +Z is forward (head/nose), -Z is tail, +Y is up, +X is right.
+// In W_ANIMAL vertex shader: wp = pos + vec3(p.x * cos(yaw) - p.z * sin(yaw), p.y, p.x * sin(yaw) + p.z * cos(yaw))
+// Therefore, rotating local forward (0, 0, 1) by yaw yields world forward (-sin(yaw), 0, cos(yaw)).
+function normAngle(a) {
+  let r = (a + PI) % TAU;
+  if (r < 0) r += TAU;
+  return r - PI;
+}
+function lerpAngle(a, b, t) {
+  return a + normAngle(b - a) * clamp(t, 0, 1);
+}
+function yawToForward(yaw, out = [0, 0]) {
+  out[0] = -sin(yaw);
+  out[1] = cos(yaw);
+  return out;
+}
+function velocityToYaw(vx, vz, fallbackYaw = 0) {
+  if (hypot(vx, vz) < 1e-5) return fallbackYaw;
+  return atan2(-vx, vz);
+}
+
 // Analytical 2-Bone Inverse Kinematics Solver for zero-slide foot pinning
 function solveTwoBoneIK(
   rootX, rootY, rootZ,
@@ -362,7 +384,8 @@ class MeshBuilder {
 
 export {
   PI, TAU, sin, cos, tan, abs, hypot, min, max, sqrt, floor, round, atan2, exp, pow,
-  clamp, saturate, lerp, smoothstep, smin, smax, solveTwoBoneIK,
+  clamp, saturate, lerp, smoothstep, smin, smax,
+  normAngle, lerpAngle, yawToForward, velocityToYaw, solveTwoBoneIK,
   WORLD_SEED, seedRng, rnd, rr, hash2, noise2, fbm2,
   vSub, vCross, vNorm, m4Mul, m4Persp, m4Ortho, m4Look, m4Inv,
   MeshBuilder

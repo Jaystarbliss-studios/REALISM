@@ -1,9 +1,11 @@
 // ============================================================================
-// Terra Primordia — Main WebGPU Engine, Interactive Planetary Map Teleport,
-// Playable Animal Embodiment (1st & 3rd Person POV) & 8 Weather Phenomena
+// REALISM — Main WebGPU Engine, Interactive 3D Planetary Globe & 2D Map,
+// Playable Animal Embodiment (1st & 3rd Person Orbit POV), Continuous
+// Surface-to-Space Transition & Full In-Game Settings Control Panel
 // ============================================================================
 import {
-  SHADOW_SIZE, AA_SAMPLES, TARGET_GPU_MS, RES_SCALE_MIN, RES_SCALE_MAX, keep
+  SHADOW_SIZE, AA_SAMPLES, TARGET_GPU_MS, RES_SCALE_MIN, RES_SCALE_MAX, keep,
+  QUALITY_TIERS, loadSettings, saveSettings, resetSettings, createQualityController
 } from './quality.js';
 
 const DPR_CAP = 2.0;
@@ -13,10 +15,13 @@ const MSAA_SAMPLES = AA_SAMPLES;
 import {
   PI, TAU, sin, cos, tan, abs, hypot, min, max, floor, round, atan2, exp, pow,
   clamp, saturate, lerp, smoothstep, WORLD_SEED, rr,
+  normAngle, lerpAngle, yawToForward, velocityToYaw,
   m4Mul, m4Persp, m4Ortho, m4Look, m4Inv
 } from './math.js';
 import {
   WORLD_HALF, FIRE_POS, VOLCANO_POS, SAVANNA_POS, BEACH_POS, REEF_POS, ABYSS_POS, POLAR_POS,
+  ATMOSPHERE_LAYERS, atmosphericLayerAt, wrapCoord, wrapDelta, worldToLatLonAlt, latLonToWorld,
+  worldToCubeSphere, updateQuadtreeChunks, spaceSectorAt, nearestBiomeAt,
   BIOME_CATALOG, terrainAt, POSES, biomeLabelAt
 } from './biomes.js';
 import { uploadMaterialTextureArray } from './assets.js';
@@ -24,7 +29,7 @@ import {
   W_SKY, W_TERRAIN, W_VEG, W_ANIMAL, W_WATER, W_PARTICLE, W_RAYS, W_RAYS_MS, W_POST, W_POST_MS
 } from './shaders.js';
 import { buildWorld } from './world.js';
-import { initAudio, updateAudio, setVolume, toggleMute, triggerSpeciesCall } from './audio.js';
+import { initAudio, updateAudio, setVolume, setAudioSettings, toggleMute, triggerSpeciesCall } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('c');
@@ -34,6 +39,9 @@ const errBox = $('err');
 const goBtn = $('go');
 const locEl = $('loc');
 const weatherEl = $('weatherLabel');
+const coordBadgeEl = $('coordBadge');
+const layerLabelEl = $('layerLabel');
+const coordLabelEl = $('coordLabel');
 const embodyLabelEl = $('embodyLabel');
 const embodyHintEl = $('embodyHint');
 const survivalLabelEl = $('survivalLabel');
@@ -48,6 +56,7 @@ const embodimentModal = $('embodimentModal');
 const speciesGrid = $('speciesGrid');
 const togglePovBtn = $('togglePovBtn');
 const modalPovToggleBtn = $('modalPovToggleBtn');
+const settingsModal = $('settingsModal');
 
 const say = async (t, p) => {
   if (lt) lt.textContent = t;
@@ -64,24 +73,27 @@ const fail = (msg) => {
 };
 
 // ============================================================================
-// Camera, Weather, Embodiment & Telemetry State
+// Camera, Weather, Embodiment, Settings & Telemetry State
 // ============================================================================
 const F = new Float64Array(16);
 const TIME = 0, LAST = 1, FLT = 2, CX = 3, CY = 4, CZ = 5, VX = 6, VY = 7, VZ = 8, YAW = 9, PIT = 10;
 
+let settings = loadSettings();
+const qualityCtrl = createQualityController(settings.qualityTier);
+
 let menu = true;
 let flyActive = false;
-let showHud = false;
-let cleanUi = false;
+let showHud = Boolean(settings.showTelemetry);
+let cleanUi = !settings.hudVisible;
 let photoMode = false;
 let lookdevMode = false;
 let autoExplore = false;
-let speedMult = 1.0;
-let weatherMode = -1; // -1 = dynamic cycle, 0..7 = 8 planetary weather phenomena
-let todIdx = 0;
+let speedMult = settings.speedMult || 1.0;
+let weatherMode = settings.weatherMode !== undefined ? settings.weatherMode : -1;
+let todIdx = settings.todIdx || 0;
 let instinctPulse = 0.0; // [Q] Instinct Sense bio-aura wave 0..1
 
-let focalMm = 33;
+let focalMm = round(18 / tan(((settings.fovDeg || 60) * PI) / 360));
 let apertureF = 2.8;
 let focusDistM = 18;
 let evComp = 0.0;
@@ -92,14 +104,16 @@ let autoTargetIdx = 0;
 let autoLegTimer = 0;
 let autoTargetX = 0, autoTargetY = 4, autoTargetZ = 0;
 
-// Playable Animal Embodiment State
+// Playable Animal Embodiment State with Decoupled 3rd-Person Orbit Camera
 const embodiedState = {
   active: false,
   groupIdx: -1,
   itemIdx: 0,
-  pov: '3rd', // '3rd' = 3rd-Person Cinema Follow, '1st' = 1st-Person True Eye POV
+  pov: settings.defaultPov === 1 ? '1st' : '3rd',
   vy: 0,
-  pitch: 0
+  pitch: 0,
+  orbitYaw: 0,
+  orbitPitch: 0.22
 };
 
 const TOD_PRESETS = [
@@ -167,9 +181,11 @@ lookAtPose(...POSES[0]);
 
 function enterWilderness() {
   initAudio(audioState);
+  setAudioSettings(settings);
   noteUserActivity();
   if (mapModal) mapModal.classList.remove('open');
   if (embodimentModal) embodimentModal.classList.remove('open');
+  if (settingsModal) settingsModal.classList.remove('open');
   setMenu(false);
   canvas.requestPointerLock?.();
 }
@@ -178,18 +194,18 @@ function enterWilderness() {
 function updateEmbodimentUI() {
   if (!embodiedState.active || embodiedState.groupIdx < 0) {
     if (embodyLabelEl) embodyLabelEl.textContent = 'Observer: Free-Fly';
-    if (embodyHintEl) embodyHintEl.textContent = 'WASD Move · Mouse Look · [E] Inhabit Nearest Animal · [M] Planetary Map · [Tab] Species Index';
+    if (embodyHintEl) embodyHintEl.textContent = 'WASD Move · Mouse Look · [E] Inhabit Nearest Animal · [M] 3D Planetary Globe · [O] Settings';
     if (togglePovBtn) togglePovBtn.textContent = 'POV: Free [V]';
     if (modalPovToggleBtn) modalPovToggleBtn.textContent = `POV: ${embodiedState.pov === '1st' ? '1st Person' : '3rd Person'} [V]`;
   } else {
     const grp = world.wildlifeGroups[embodiedState.groupIdx];
     const it = grp.items[embodiedState.itemIdx];
     const emoName = (world.EMOTION_NAMES && it) ? world.EMOTION_NAMES[clamp(round(it.emotion || 0), 0, 4)] : 'Active';
-    const povText = embodiedState.pov === '1st' ? '1st POV' : '3rd POV';
+    const povText = embodiedState.pov === '1st' ? '1st POV' : '3rd Orbit';
     if (embodyLabelEl) embodyLabelEl.textContent = `${grp.label} (${povText}) · ${emoName}`;
     if (embodyHintEl) {
       const actionVerb = grp.domain === 'water' ? '[Space] Breach · [C] Dive' : grp.domain === 'air' ? '[Space] Climb · [C] Stoop' : '[Space] Pounce/Display · [Shift] Sprint';
-      embodyHintEl.textContent = `WASD Move · [V] 1st/3rd POV · ${actionVerb} · [R] Vocalize/Roar · [Q] Sense`;
+      embodyHintEl.textContent = `WASD Move · Mouse Orbit · [V] 1st/3rd POV · ${actionVerb} · [R] Vocalize · [Q] Sense`;
     }
     if (togglePovBtn) togglePovBtn.textContent = `POV: ${embodiedState.pov === '1st' ? '1st' : '3rd'} [V]`;
     if (modalPovToggleBtn) modalPovToggleBtn.textContent = `POV: ${embodiedState.pov === '1st' ? '1st Person' : '3rd Person'} [V]`;
@@ -227,13 +243,20 @@ function inhabitAnimal(groupIdx, itemIdx = 0) {
   embodiedState.itemIdx = idx;
   embodiedState.vy = 0;
   embodiedState.pitch = 0;
+  embodiedState.orbitYaw = 0;
+  embodiedState.orbitPitch = 0.22;
   flyActive = false;
   autoExplore = false;
-  F[YAW] = it.yaw || 0;
-  F[PIT] = -0.08;
-  F[CX] = it.x - sin(F[YAW]) * grp.followDist;
-  F[CY] = it.y + grp.eyeOffset[1] + 0.8;
-  F[CZ] = it.z + cos(F[YAW]) * grp.followDist;
+
+  // Canonical local +Z rotates to world forward (-sin(yaw), 0, cos(yaw))
+  // So behind the animal is (+sin(yaw), 0, -cos(yaw))
+  const [fwdX, fwdZ] = yawToForward(it.yaw || 0);
+  const dist = grp.followDist * max(0.85, (it.scale || 1) * 0.9) * (settings.followDist || 1.0);
+  const eyeH = (grp.eyeOffset[1] * (it.scale || 1) + 0.85) * (settings.followHeight || 1.0);
+  F[CX] = it.x - fwdX * dist;
+  F[CY] = it.y + eyeH;
+  F[CZ] = it.z - fwdZ * dist;
+  lookAtPose(F[CX], F[CY], F[CZ], it.x + fwdX * 1.5, it.y + grp.eyeOffset[1] * (it.scale || 1), it.z + fwdZ * 1.5);
   triggerSpeciesCall(grp.speciesId);
   updateEmbodimentUI();
 }
@@ -241,9 +264,9 @@ function inhabitAnimal(groupIdx, itemIdx = 0) {
 function togglePovMode() {
   if (embodiedState.active) {
     embodiedState.pov = embodiedState.pov === '3rd' ? '1st' : '3rd';
+    embodiedState.orbitYaw = 0;
     updateEmbodimentUI();
   } else {
-    // If in Free-Fly Spirit mode, pressing [V] inhabits the nearest animal or opens POV
     const nearest = world.findNearestAnimal(F[CX], F[CY], F[CZ], 85);
     if (nearest) {
       inhabitAnimal(nearest.groupIdx, nearest.itemIdx);
@@ -282,8 +305,17 @@ if (speciesGrid) {
   });
 }
 
-// --- Interactive Planetary Topographic & Bathymetric Map Renderer ---
+// --- Interactive 3D Planetary Globe & 2D Topographic/Bathymetric Map Renderer ---
 let mapBaseImageData = null;
+let mapViewMode = 'globe'; // 'globe' = 3D Shaded Planetary Globe, 'flat' = 2D Topographic Map
+let globeYaw = 0.25;
+let globePitch = 0.28;
+let globeDragging = false;
+let globeDragMoved = false;
+let globeLastX = 0;
+let globeLastY = 0;
+let projectedGlobePins = [];
+
 function ensureMapBaseImage(ctx, w, h) {
   if (mapBaseImageData && mapBaseImageData.width === w && mapBaseImageData.height === h) return;
   const img = ctx.createImageData(w, h);
@@ -298,14 +330,12 @@ function ensureMapBaseImage(ctx, w, h) {
       let r = 24, g = 58, b = 34;
 
       if (el < -0.15) {
-        // Bathymetry: River channel, Sunlit Coral Reef & Deep Abyssal Garden Trench
         const depthT = clamp((-el) / 18.0, 0, 1);
         r = round(lerp(24, 6, depthT));
         g = round(lerp(132, 28, depthT));
         b = round(lerp(158, 56, depthT));
         if (mt.archMask > 0.1) { r += 35; g += 25; b += 40; }
       } else {
-        // Land Biomes
         r = round(28 + clamp(el * 3.2, 0, 65));
         g = round(68 + clamp(el * 2.4, 0, 52));
         b = round(34 + clamp(el * 1.4, 0, 35));
@@ -348,7 +378,6 @@ function ensureMapBaseImage(ctx, w, h) {
         }
       }
 
-      // Topographic & bathymetric contour lines every 2.5m
       const contour = abs(((el + 30) % 2.5) - 1.25);
       if (contour < 0.08) {
         r = round(r * 0.82); g = round(g * 0.82); b = round(b * 0.82);
@@ -366,8 +395,8 @@ function ensureMapBaseImage(ctx, w, h) {
 
 function worldToMapPx(wx, wz, w, h) {
   return [
-    ((wx / WORLD_HALF) * 0.5 + 0.5) * w,
-    ((wz / WORLD_HALF) * 0.5 + 0.5) * h
+    ((wrapCoord(wx) / WORLD_HALF) * 0.5 + 0.5) * w,
+    ((wrapCoord(wz) / WORLD_HALF) * 0.5 + 0.5) * h
   ];
 }
 function mapPxToWorld(px, py, w, h) {
@@ -377,6 +406,50 @@ function mapPxToWorld(px, py, w, h) {
   ];
 }
 
+function worldToGlobePoint(wx, wz, cx, cy, rad) {
+  const lon = (wrapCoord(wx) / WORLD_HALF) * PI;
+  const lat = -(wrapCoord(wz) / WORLD_HALF) * (PI * 0.46);
+  const cl = cos(lat), sl = sin(lat);
+  const sx = cl * sin(lon);
+  const sy = sl;
+  const sz = cl * cos(lon);
+
+  const cyw = cos(globeYaw), syw = sin(globeYaw);
+  const x1 = sx * cyw - sz * syw;
+  const z1 = sx * syw + sz * cyw;
+  const cp = cos(globePitch), sp = sin(globePitch);
+  const y2 = sy * cp - z1 * sp;
+  const z2 = sy * sp + z1 * cp;
+
+  return {
+    px: cx + x1 * rad,
+    py: cy - y2 * rad,
+    vis: z2 > -0.05,
+    z: z2
+  };
+}
+
+function globePxToWorld(px, py, cx, cy, rad) {
+  const nx = (px - cx) / rad;
+  const ny = -(py - cy) / rad;
+  const r2 = nx * nx + ny * ny;
+  if (r2 > 1.0) return null;
+  const nz = Math.sqrt(max(0, 1.0 - r2));
+
+  const cp = cos(globePitch), sp = sin(globePitch);
+  const sy = ny * cp + nz * sp;
+  const z1 = -ny * sp + nz * cp;
+  const cyw = cos(globeYaw), syw = sin(globeYaw);
+  const sx = nx * cyw + z1 * syw;
+  const sz = -nx * syw + z1 * cyw;
+
+  const lat = Math.asin(clamp(sy, -0.99, 0.99));
+  const lon = atan2(sx, sz);
+  const wx = clamp((lon / PI) * WORLD_HALF, -WORLD_HALF + 8, WORLD_HALF - 8);
+  const wz = clamp((-lat / (PI * 0.46)) * WORLD_HALF, -WORLD_HALF + 8, WORLD_HALF - 8);
+  return [wx, wz];
+}
+
 function renderPlanetaryMap() {
   if (!planetMapCanvas) return;
   const ctx = planetMapCanvas.getContext('2d');
@@ -384,9 +457,132 @@ function renderPlanetaryMap() {
   const w = planetMapCanvas.width;
   const h = planetMapCanvas.height;
   ensureMapBaseImage(ctx, w, h);
+
+  projectedGlobePins = [];
+
+  if (mapViewMode === 'globe') {
+    const out = ctx.createImageData(w, h);
+    const od = out.data;
+    const sd = mapBaseImageData.data;
+    const cx = w * 0.5, cy = h * 0.5;
+    const rad = min(w, h) * 0.43;
+
+    const tod = TOD_PRESETS[todIdx] || TOD_PRESETS[0];
+    const lx = cos(tod.sunElev) * sin(tod.sunAz + 0.5);
+    const ly = sin(tod.sunElev + 0.25);
+    const lz = max(0.35, cos(tod.sunElev) * cos(tod.sunAz));
+    const cp = cos(globePitch), sp = sin(globePitch);
+    const cyw = cos(globeYaw), syw = sin(globeYaw);
+
+    for (let py = 0; py < h; py++) {
+      const ny = -(py - cy) / rad;
+      for (let px = 0; px < w; px++) {
+        const nx = (px - cx) / rad;
+        const r2 = nx * nx + ny * ny;
+        const oIdx = (py * w + px) * 4;
+
+        if (r2 > 1.0) {
+          const rDist = Math.sqrt(r2);
+          const halo = exp(-max(0, rDist - 1.0) * 14.0);
+          const starHash = ((px * 73856093) ^ (py * 19349663)) & 1023;
+          const star = starHash === 1 ? 155 : starHash === 7 ? 90 : 0;
+          od[oIdx]     = clamp(round(4 + halo * 38 + star), 0, 255);
+          od[oIdx + 1] = clamp(round(9 + halo * 118 + star), 0, 255);
+          od[oIdx + 2] = clamp(round(18 + halo * 215 + star), 0, 255);
+          od[oIdx + 3] = 255;
+          continue;
+        }
+
+        const nz = Math.sqrt(max(0, 1.0 - r2));
+        const sy = ny * cp + nz * sp;
+        const z1 = -ny * sp + nz * cp;
+        const sx = nx * cyw + z1 * syw;
+        const sz = -nx * syw + z1 * cyw;
+
+        const lat = Math.asin(clamp(sy, -0.999, 0.999));
+        const lon = atan2(sx, sz);
+
+        const u = clamp(lon / TAU + 0.5, 0, 0.999);
+        const v = clamp(-lat / PI + 0.5, 0, 0.999);
+        const tx = floor(u * (w - 1));
+        const ty = floor(v * (h - 1));
+        const sIdx = (ty * w + tx) * 4;
+
+        const ndl = nx * lx + ny * ly + nz * lz;
+        const light = clamp(ndl * 0.78 + 0.42, 0.16, 1.18);
+        const limb = pow(1.0 - nz, 2.6);
+
+        const polarCap = smoothstep(0.76, 0.93, abs(sy));
+        let r = lerp(sd[sIdx], 228, polarCap);
+        let g = lerp(sd[sIdx + 1], 242, polarCap);
+        let b = lerp(sd[sIdx + 2], 255, polarCap);
+
+        r = r * light + limb * 48;
+        g = g * light + limb * 135;
+        b = b * light + limb * 225;
+
+        od[oIdx]     = clamp(round(r), 0, 255);
+        od[oIdx + 1] = clamp(round(g), 0, 255);
+        od[oIdx + 2] = clamp(round(b), 0, 255);
+        od[oIdx + 3] = 255;
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+
+    ctx.strokeStyle = 'rgba(125, 211, 252, 0.16)';
+    ctx.lineWidth = 1;
+    for (let lonDeg = -150; lonDeg <= 180; lonDeg += 30) {
+      ctx.beginPath();
+      let started = false;
+      for (let latDeg = -80; latDeg <= 80; latDeg += 8) {
+        const wx = (lonDeg / 180) * WORLD_HALF;
+        const wz = (-latDeg / 82) * WORLD_HALF;
+        const pt = worldToGlobePoint(wx, wz, cx, cy, rad);
+        if (pt.vis) {
+          if (!started) { ctx.moveTo(pt.px, pt.py); started = true; }
+          else ctx.lineTo(pt.px, pt.py);
+        } else {
+          started = false;
+        }
+      }
+      ctx.stroke();
+    }
+
+    ctx.font = '600 10px "Inter", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < BIOME_CATALOG.length; i++) {
+      const b = BIOME_CATALOG[i];
+      const pt = worldToGlobePoint(b.pos[0], b.pos[1], cx, cy, rad);
+      projectedGlobePins.push({ biome: b, idx: i, px: pt.px, py: pt.py, vis: pt.vis });
+      if (!pt.vis) continue;
+      const isForbidden = b.category === 'Forbidden Zones';
+      const isOcean = b.category === 'Coast & Ocean' || b.category === 'Polar Realm';
+      ctx.fillStyle = isForbidden ? 'rgba(220, 58, 58, 0.94)' : isOcean ? 'rgba(20, 148, 212, 0.94)' : 'rgba(226, 184, 87, 0.94)';
+      ctx.strokeStyle = '#060d0a';
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(pt.px - 9, pt.py - 9, 18, 18);
+      ctx.strokeRect(pt.px - 9, pt.py - 9, 18, 18);
+      ctx.fillStyle = isForbidden || isOcean ? '#ffffff' : '#09100c';
+      ctx.fillText(String(i + 1).padStart(2, '0'), pt.px, pt.py + 0.5);
+    }
+
+    const pPt = worldToGlobePoint(F[CX], F[CZ], cx, cy, rad);
+    if (pPt.vis) {
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#0ea5e9';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(pPt.px, pPt.py, 6, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+    }
+    return;
+  }
+
+  // --- 2D Flat Topographic & Bathymetric Map Mode ---
   ctx.putImageData(mapBaseImageData, 0, 0);
 
-  // Draw live wildlife herd positions
   for (let g = 0; g < world.wildlifeGroups.length; g++) {
     const grp = world.wildlifeGroups[g];
     ctx.fillStyle = grp.role === 'predator' ? '#f87171' : grp.domain === 'water' ? '#38bdf8' : grp.domain === 'air' ? '#fde047' : '#86efac';
@@ -399,13 +595,13 @@ function renderPlanetaryMap() {
     }
   }
 
-  // Draw all 18 Biome & Forbidden Zone Interactive Pins (Crisp Architectural Squares)
   ctx.font = '600 10px "Inter", system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (let i = 0; i < BIOME_CATALOG.length; i++) {
     const b = BIOME_CATALOG[i];
     const [bx, by] = worldToMapPx(b.pos[0], b.pos[1], w, h);
+    projectedGlobePins.push({ biome: b, idx: i, px: bx, py: by, vis: true });
     const isForbidden = b.category === 'Forbidden Zones';
     const isOcean = b.category === 'Coast & Ocean' || b.category === 'Polar Realm';
     ctx.fillStyle = isForbidden ? 'rgba(220, 58, 58, 0.94)' : isOcean ? 'rgba(20, 148, 212, 0.94)' : 'rgba(226, 184, 87, 0.94)';
@@ -417,7 +613,6 @@ function renderPlanetaryMap() {
     ctx.fillText(String(i + 1).padStart(2, '0'), bx, by + 0.5);
   }
 
-  // Draw Player / Embodied Animal Current Position & View Cone
   const [cx, cy] = worldToMapPx(F[CX], F[CZ], w, h);
   ctx.save();
   ctx.translate(cx, cy);
@@ -439,6 +634,23 @@ function renderPlanetaryMap() {
   ctx.stroke();
 }
 
+function ascendToPlanetaryOrbit() {
+  disembodyAnimal();
+  flyActive = false;
+  autoExplore = false;
+  const targetAlt = F[CY] < 240 ? 320 : F[CY] < 850 ? 920 : 1850;
+  lookAtPose(
+    F[CX],
+    targetAlt,
+    F[CZ],
+    F[CX] + sin(F[YAW]) * 140,
+    -210,
+    F[CZ] - cos(F[YAW]) * 140
+  );
+  if (locEl) locEl.textContent = biomeLabelAt(F[CX], F[CY], F[CZ]);
+  enterWilderness();
+}
+
 function teleportToWorldCoord(wx, wz, poseIdx = -1) {
   flyActive = false;
   autoExplore = false;
@@ -456,8 +668,8 @@ function teleportToWorldCoord(wx, wz, poseIdx = -1) {
     }
     lookAtPose(p[0], p[1], p[2], p[3], p[4], p[5]);
   } else {
-    const tx = clamp(wx, -WORLD_HALF + 15, WORLD_HALF - 15);
-    const tz = clamp(wz, -WORLD_HALF + 15, WORLD_HALF - 15);
+    const tx = wrapCoord(wx);
+    const tz = wrapCoord(wz);
     terrainAt(tx, tz, _camT);
     const ty = _camT.h < -0.5 ? max(_camT.h + 2.5, -4.5) : _camT.h + 2.6;
     if (embodiedState.active && embodiedState.groupIdx >= 0) {
@@ -489,33 +701,68 @@ if (mapPinBar) {
 }
 
 if (planetMapCanvas) {
+  planetMapCanvas.addEventListener('mousedown', (e) => {
+    if (mapViewMode === 'globe') {
+      globeDragging = true;
+      globeDragMoved = false;
+      globeLastX = e.clientX;
+      globeLastY = e.clientY;
+    }
+  });
+  window.addEventListener('mouseup', () => {
+    globeDragging = false;
+  });
   planetMapCanvas.addEventListener('mousemove', (e) => {
     const rect = planetMapCanvas.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * planetMapCanvas.width;
     const py = ((e.clientY - rect.top) / rect.height) * planetMapCanvas.height;
-    const [wx, wz] = mapPxToWorld(px, py, planetMapCanvas.width, planetMapCanvas.height);
-    terrainAt(wx, wz, _camT);
 
-    // Check if hovering near one of the 18 Biome pins
+    if (mapViewMode === 'globe' && globeDragging) {
+      const dx = e.clientX - globeLastX;
+      const dy = e.clientY - globeLastY;
+      if (hypot(dx, dy) > 2) globeDragMoved = true;
+      globeYaw = normAngle(globeYaw - dx * 0.008);
+      globePitch = clamp(globePitch + dy * 0.008, -1.25, 1.25);
+      globeLastX = e.clientX;
+      globeLastY = e.clientY;
+      renderPlanetaryMap();
+      return;
+    }
+
     let nearPin = null;
-    for (let i = 0; i < BIOME_CATALOG.length; i++) {
-      const b = BIOME_CATALOG[i];
-      const [bx, by] = worldToMapPx(b.pos[0], b.pos[1], planetMapCanvas.width, planetMapCanvas.height);
-      if (hypot(px - bx, py - by) < 16) {
-        nearPin = b;
+    for (let i = 0; i < projectedGlobePins.length; i++) {
+      const p = projectedGlobePins[i];
+      if (p.vis && hypot(px - p.px, py - p.py) < 16) {
+        nearPin = p.biome;
         break;
       }
     }
+
+    let worldCoord = null;
+    if (mapViewMode === 'globe') {
+      const w = planetMapCanvas.width, h = planetMapCanvas.height;
+      worldCoord = globePxToWorld(px, py, w * 0.5, h * 0.5, min(w, h) * 0.43);
+    } else {
+      worldCoord = mapPxToWorld(px, py, planetMapCanvas.width, planetMapCanvas.height);
+    }
+
     if (mapTooltip) {
+      if (!nearPin && !worldCoord) {
+        mapTooltip.style.display = 'none';
+        return;
+      }
       mapTooltip.style.display = 'block';
       mapTooltip.style.left = clamp(e.clientX - rect.left + 14, 8, rect.width - 250) + 'px';
       mapTooltip.style.top = clamp(e.clientY - rect.top + 14, 8, rect.height - 95) + 'px';
-      const elStr = (_camT.h >= 0 ? '+' : '') + _camT.h.toFixed(1) + 'm';
       if (nearPin) {
         mapTooltip.innerHTML = `<strong style="color:#fde047">${nearPin.id + 1}. ${nearPin.name}</strong><br><span>${nearPin.category} · Elev ${nearPin.elev} · ${nearPin.weather}</span><br><span style="color:#93c5fd">Fauna: ${nearPin.species}</span>`;
-      } else {
+      } else if (worldCoord) {
+        const [wx, wz] = worldCoord;
+        terrainAt(wx, wz, _camT);
+        const geo = worldToLatLonAlt(wx, _camT.h, wz);
+        const elStr = (_camT.h >= 0 ? '+' : '') + _camT.h.toFixed(1) + 'm';
         const bName = biomeLabelAt(wx, _camT.h < -0.5 ? _camT.h * 0.5 : _camT.h + 1.5, wz);
-        mapTooltip.innerHTML = `<strong style="color:#fde047">${bName}</strong><br><span>Coords (${round(wx)}, ${round(wz)}) · Elev/Depth ${elStr}</span><br><span style="color:#86efac">Click to teleport directly here</span>`;
+        mapTooltip.innerHTML = `<strong style="color:#fde047">${bName}</strong><br><span>${geo.lat.toFixed(1)}°N ${geo.lon.toFixed(1)}°E · Elev/Depth ${elStr}</span><br><span style="color:#86efac">Click to teleport · Drag to rotate globe</span>`;
       }
     }
   });
@@ -523,27 +770,48 @@ if (planetMapCanvas) {
     if (mapTooltip) mapTooltip.style.display = 'none';
   });
   planetMapCanvas.addEventListener('click', (e) => {
+    if (mapViewMode === 'globe' && globeDragMoved) {
+      globeDragMoved = false;
+      return;
+    }
     const rect = planetMapCanvas.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * planetMapCanvas.width;
     const py = ((e.clientY - rect.top) / rect.height) * planetMapCanvas.height;
-    for (let i = 0; i < BIOME_CATALOG.length; i++) {
-      const b = BIOME_CATALOG[i];
-      const [bx, by] = worldToMapPx(b.pos[0], b.pos[1], planetMapCanvas.width, planetMapCanvas.height);
-      if (hypot(px - bx, py - by) < 16) {
-        teleportToWorldCoord(b.pos[0], b.pos[1], i);
+    for (let i = 0; i < projectedGlobePins.length; i++) {
+      const p = projectedGlobePins[i];
+      if (p.vis && hypot(px - p.px, py - p.py) < 16) {
+        teleportToWorldCoord(p.biome.pos[0], p.biome.pos[1], p.idx);
         return;
       }
     }
-    const [wx, wz] = mapPxToWorld(px, py, planetMapCanvas.width, planetMapCanvas.height);
-    teleportToWorldCoord(wx, wz, -1);
+    if (mapViewMode === 'globe') {
+      const w = planetMapCanvas.width, h = planetMapCanvas.height;
+      const wc = globePxToWorld(px, py, w * 0.5, h * 0.5, min(w, h) * 0.43);
+      if (wc) teleportToWorldCoord(wc[0], wc[1], -1);
+    } else {
+      const [wx, wz] = mapPxToWorld(px, py, planetMapCanvas.width, planetMapCanvas.height);
+      teleportToWorldCoord(wx, wz, -1);
+    }
   });
 }
+
+function setMapViewMode(mode) {
+  mapViewMode = mode;
+  if ($('mapModeGlobeBtn')) $('mapModeGlobeBtn').style.borderColor = mode === 'globe' ? 'rgba(56, 189, 248, 0.85)' : '';
+  if ($('mapModeFlatBtn')) $('mapModeFlatBtn').style.borderColor = mode === 'flat' ? 'rgba(56, 189, 248, 0.85)' : '';
+  renderPlanetaryMap();
+}
+if ($('mapModeGlobeBtn')) $('mapModeGlobeBtn').onclick = () => setMapViewMode('globe');
+if ($('mapModeFlatBtn')) $('mapModeFlatBtn').onclick = () => setMapViewMode('flat');
+if ($('mapOrbitBtn')) $('mapOrbitBtn').onclick = () => ascendToPlanetaryOrbit();
+if ($('orbitBtn')) $('orbitBtn').onclick = () => ascendToPlanetaryOrbit();
 
 function toggleMapModal(forceState) {
   if (!mapModal) return;
   const open = forceState !== undefined ? forceState : !mapModal.classList.contains('open');
   if (open) {
     if (embodimentModal) embodimentModal.classList.remove('open');
+    if (settingsModal) settingsModal.classList.remove('open');
     document.exitPointerLock?.();
     renderPlanetaryMap();
     mapModal.classList.add('open');
@@ -557,12 +825,187 @@ function toggleEmbodimentModal(forceState) {
   const open = forceState !== undefined ? forceState : !embodimentModal.classList.contains('open');
   if (open) {
     if (mapModal) mapModal.classList.remove('open');
+    if (settingsModal) settingsModal.classList.remove('open');
     document.exitPointerLock?.();
     updateEmbodimentUI();
     embodimentModal.classList.add('open');
   } else {
     embodimentModal.classList.remove('open');
   }
+}
+
+function toggleSettingsModal(forceState) {
+  if (!settingsModal) return;
+  const open = forceState !== undefined ? forceState : !settingsModal.classList.contains('open');
+  if (open) {
+    if (mapModal) mapModal.classList.remove('open');
+    if (embodimentModal) embodimentModal.classList.remove('open');
+    document.exitPointerLock?.();
+    syncSettingsUI();
+    settingsModal.classList.add('open');
+  } else {
+    settingsModal.classList.remove('open');
+  }
+}
+
+// ============================================================================
+// Full In-Game Settings Control Panel Synchronization & Persistence
+// ============================================================================
+let applySettingsToRenderer = () => {};
+
+function applySettings() {
+  saveSettings(settings);
+  qualityCtrl.setTier(Number(settings.qualityTier) || 0);
+  qualityCtrl.setAuto(Boolean(settings.autoQuality));
+  showHud = Boolean(settings.showTelemetry);
+  cleanUi = settings.showHud === false;
+  syncBodyClasses();
+  if (infoEl) infoEl.style.display = showHud ? 'block' : 'none';
+  if (coordBadgeEl) coordBadgeEl.style.display = settings.showCoordinates ? '' : 'none';
+  focalMm = round(18 / tan((clamp(settings.fov || 54, 35, 110) * PI) / 360));
+  if ($('focalRange')) $('focalRange').value = String(focalMm);
+  if ($('focalVal')) $('focalVal').textContent = `${focalMm}mm`;
+
+  speedMult = clamp(settings.moveSpeedMult || 1.0, 0.2, 10.0);
+  if ($('speedRange')) $('speedRange').value = String(speedMult);
+  if ($('speedVal')) $('speedVal').textContent = speedMult.toFixed(1) + 'x';
+
+  if (world.setHazardAvoidance) world.setHazardAvoidance(Boolean(settings.hazardAvoidance));
+  setAudioSettings(settings);
+  if ($('volRange')) $('volRange').value = String(settings.masterVolume);
+
+  applySettingsToRenderer();
+}
+
+function syncSettingsUI() {
+  const setVal = (id, v) => { const el = $(id); if (el) el.value = String(v); };
+  const setChk = (id, v) => { const el = $(id); if (el) el.checked = Boolean(v); };
+  const setTxt = (id, t) => { const el = $(id); if (el) el.textContent = t; };
+
+  setVal('setQualityTier', settings.qualityTier);
+  setChk('setAutoQuality', settings.autoQuality);
+  setVal('setResScale', settings.resolutionScale);
+  setTxt('setResScaleVal', `${round(settings.resolutionScale * 100)}%`);
+  setVal('setViewDist', settings.viewDistance);
+  setTxt('setViewDistVal', `${Number(settings.viewDistance).toFixed(2)}x`);
+  setVal('setVegDensity', settings.foliageDensity);
+  setTxt('setVegDensityVal', `${round(settings.foliageDensity * 100)}%`);
+  setVal('setWaterQuality', settings.waterQuality);
+  setTxt('setWaterQualityVal', `${round(settings.waterQuality * 100)}%`);
+
+  setChk('setShowHud', settings.showHud);
+  setChk('setShowCoords', settings.showCoordinates);
+  setChk('setShowTelemetry', settings.showTelemetry);
+  setVal('setFov', settings.fov);
+  setTxt('setFovVal', `${round(settings.fov)}°`);
+
+  setVal('setDefaultPov', settings.defaultPov);
+  setVal('setMouseSens', settings.mouseSensitivity);
+  setTxt('setMouseSensVal', `${Number(settings.mouseSensitivity).toFixed(1)}x`);
+  setChk('setInvertY', settings.invertY);
+  setVal('setFollowDist', settings.followDistance);
+  setTxt('setFollowDistVal', `${Number(settings.followDistance).toFixed(2)}x`);
+  setVal('setFollowHeight', settings.followHeight);
+  setTxt('setFollowHeightVal', `${Number(settings.followHeight).toFixed(2)}x`);
+  setVal('setCamSmooth', settings.cameraSmoothing);
+  setTxt('setCamSmoothVal', `${round(settings.cameraSmoothing * 100)}%`);
+  setChk('setAutoRecenter', settings.autoRecenter);
+
+  setVal('setMasterVol', settings.masterVolume);
+  setTxt('setMasterVolVal', `${round(settings.masterVolume * 100)}%`);
+  setVal('setAmbientVol', settings.ambientVolume);
+  setTxt('setAmbientVolVal', `${round(settings.ambientVolume * 100)}%`);
+  setVal('setWildlifeVol', settings.wildlifeVolume);
+  setTxt('setWildlifeVolVal', `${round(settings.wildlifeVolume * 100)}%`);
+  setVal('setWaterVol', settings.waterVolume);
+  setTxt('setWaterVolVal', `${round(settings.waterVolume * 100)}%`);
+  setVal('setWeatherVol', settings.weatherVolume);
+  setTxt('setWeatherVolVal', `${round(settings.weatherVolume * 100)}%`);
+
+  setVal('setTurnSens', settings.turnSensitivity);
+  setTxt('setTurnSensVal', `${Number(settings.turnSensitivity).toFixed(1)}x`);
+  setVal('setMoveSpeed', settings.moveSpeedMult);
+  setTxt('setMoveSpeedVal', `${Number(settings.moveSpeedMult).toFixed(1)}x`);
+
+  setChk('setHazardAvoid', settings.hazardAvoidance);
+  setVal('setTimeSpeed', settings.timeSpeedMult);
+  setTxt('setTimeSpeedVal', `${Number(settings.timeSpeedMult).toFixed(1)}x`);
+}
+
+if ($('setQualityTier')) {
+  $('setQualityTier').onchange = (e) => {
+    const tierIdx = parseInt(e.target.value, 10) || 0;
+    settings.qualityTier = tierIdx;
+    const preset = QUALITY_TIERS[tierIdx];
+    if (preset) {
+      settings.resolutionScale = preset.scale;
+      settings.viewDistance = preset.terrainLodBias;
+      settings.foliageDensity = preset.vegRatio;
+      settings.animalDetail = preset.animalRatio;
+    }
+    syncSettingsUI();
+    applySettings();
+  };
+}
+const bindSettingRange = (id, valId, key, fmt) => {
+  const el = $(id);
+  if (!el) return;
+  el.oninput = () => {
+    const v = parseFloat(el.value);
+    settings[key] = v;
+    const vEl = $(valId);
+    if (vEl) vEl.textContent = fmt(v);
+    applySettings();
+  };
+};
+bindSettingRange('setResScale', 'setResScaleVal', 'resolutionScale', (v) => `${round(v * 100)}%`);
+bindSettingRange('setViewDist', 'setViewDistVal', 'viewDistance', (v) => `${v.toFixed(2)}x`);
+bindSettingRange('setVegDensity', 'setVegDensityVal', 'foliageDensity', (v) => `${round(v * 100)}%`);
+bindSettingRange('setWaterQuality', 'setWaterQualityVal', 'waterQuality', (v) => `${round(v * 100)}%`);
+bindSettingRange('setFov', 'setFovVal', 'fov', (v) => `${round(v)}°`);
+bindSettingRange('setMouseSens', 'setMouseSensVal', 'mouseSensitivity', (v) => `${v.toFixed(1)}x`);
+bindSettingRange('setFollowDist', 'setFollowDistVal', 'followDistance', (v) => `${v.toFixed(2)}x`);
+bindSettingRange('setFollowHeight', 'setFollowHeightVal', 'followHeight', (v) => `${v.toFixed(2)}x`);
+bindSettingRange('setCamSmooth', 'setCamSmoothVal', 'cameraSmoothing', (v) => `${round(v * 100)}%`);
+bindSettingRange('setMasterVol', 'setMasterVolVal', 'masterVolume', (v) => `${round(v * 100)}%`);
+bindSettingRange('setAmbientVol', 'setAmbientVolVal', 'ambientVolume', (v) => `${round(v * 100)}%`);
+bindSettingRange('setWildlifeVol', 'setWildlifeVolVal', 'wildlifeVolume', (v) => `${round(v * 100)}%`);
+bindSettingRange('setWaterVol', 'setWaterVolVal', 'waterVolume', (v) => `${round(v * 100)}%`);
+bindSettingRange('setWeatherVol', 'setWeatherVolVal', 'weatherVolume', (v) => `${round(v * 100)}%`);
+bindSettingRange('setTurnSens', 'setTurnSensVal', 'turnSensitivity', (v) => `${v.toFixed(1)}x`);
+bindSettingRange('setMoveSpeed', 'setMoveSpeedVal', 'moveSpeedMult', (v) => `${v.toFixed(1)}x`);
+bindSettingRange('setTimeSpeed', 'setTimeSpeedVal', 'timeSpeedMult', (v) => `${v.toFixed(1)}x`);
+
+const bindSettingCheck = (id, key) => {
+  const el = $(id);
+  if (!el) return;
+  el.onchange = () => {
+    settings[key] = Boolean(el.checked);
+    applySettings();
+  };
+};
+bindSettingCheck('setAutoQuality', 'autoQuality');
+bindSettingCheck('setShowHud', 'showHud');
+bindSettingCheck('setShowCoords', 'showCoordinates');
+bindSettingCheck('setShowTelemetry', 'showTelemetry');
+bindSettingCheck('setInvertY', 'invertY');
+bindSettingCheck('setAutoRecenter', 'autoRecenter');
+bindSettingCheck('setHazardAvoid', 'hazardAvoidance');
+
+if ($('setDefaultPov')) {
+  $('setDefaultPov').onchange = (e) => {
+    settings.defaultPov = parseInt(e.target.value, 10) === 1 ? 1 : 0;
+    embodiedState.pov = settings.defaultPov === 1 ? '1st' : '3rd';
+    updateEmbodimentUI();
+    applySettings();
+  };
+}
+if ($('resetSettingsBtn')) {
+  $('resetSettingsBtn').onclick = () => {
+    settings = resetSettings();
+    syncSettingsUI();
+    applySettings();
+  };
 }
 
 // Wire up HUD & Menu Buttons immediately so they work in all environments
@@ -572,6 +1015,9 @@ if ($('closeMapBtn')) $('closeMapBtn').onclick = () => toggleMapModal(false);
 if ($('openEmbodyBtn')) $('openEmbodyBtn').onclick = () => toggleEmbodimentModal();
 if ($('menuEmbodyBtn')) $('menuEmbodyBtn').onclick = () => toggleEmbodimentModal(true);
 if ($('closeEmbodyBtn')) $('closeEmbodyBtn').onclick = () => toggleEmbodimentModal(false);
+if ($('openSettingsBtn')) $('openSettingsBtn').onclick = () => toggleSettingsModal();
+if ($('menuSettingsBtn')) $('menuSettingsBtn').onclick = () => toggleSettingsModal(true);
+if ($('closeSettingsBtn')) $('closeSettingsBtn').onclick = () => toggleSettingsModal(false);
 if ($('disembodyBtn')) $('disembodyBtn').onclick = () => { disembodyAnimal(); toggleEmbodimentModal(false); };
 if (togglePovBtn) togglePovBtn.onclick = () => togglePovMode();
 if (modalPovToggleBtn) modalPovToggleBtn.onclick = () => togglePovMode();
@@ -579,8 +1025,10 @@ if ($('instinctBtn')) $('instinctBtn').onclick = () => { instinctPulse = 0.02; }
 if ($('weatherCycleBtn')) {
   $('weatherCycleBtn').onclick = () => {
     weatherMode = weatherMode < 0 ? 0 : (weatherMode + 1) >= WEATHER_PRESETS.length ? -1 : weatherMode + 1;
+    settings.weatherMode = weatherMode;
     const sel = $('weatherSel');
     if (sel) sel.value = String(weatherMode);
+    saveSettings(settings);
   };
 }
 if (goBtn) goBtn.onclick = enterWilderness;
@@ -593,9 +1041,13 @@ document.querySelectorAll('[data-pose]').forEach((btn) => {
   };
 });
 
+syncSettingsUI();
+applySettings();
+
 // Expose planetary test & inspection hooks on window
 window.__terraPrimordia = {
   world,
+  settings,
   BIOME_CATALOG,
   POSES,
   embodiedState,
@@ -603,10 +1055,13 @@ window.__terraPrimordia = {
   disembodyAnimal,
   togglePovMode,
   teleportToWorldCoord,
+  ascendToPlanetaryOrbit,
   toggleMapModal,
   toggleEmbodimentModal,
+  toggleSettingsModal,
   getCameraPos: () => [F[CX], F[CY], F[CZ]]
 };
+window.__realism = window.__terraPrimordia;
 
 // ============================================================================
 // Keyboard, Mouse, Touch & UI Event Listeners
@@ -652,6 +1107,16 @@ window.addEventListener('keydown', (e) => {
     toggleMapModal();
     return;
   }
+  if (e.code === 'KeyO') {
+    e.preventDefault();
+    toggleSettingsModal();
+    return;
+  }
+  if (e.code === 'KeyG') {
+    e.preventDefault();
+    ascendToPlanetaryOrbit();
+    return;
+  }
   if (e.code === 'Tab') {
     e.preventDefault();
     toggleEmbodimentModal();
@@ -687,6 +1152,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'Escape') {
+    if (settingsModal?.classList.contains('open')) { toggleSettingsModal(false); return; }
     if (mapModal?.classList.contains('open')) { toggleMapModal(false); return; }
     if (embodimentModal?.classList.contains('open')) { toggleEmbodimentModal(false); return; }
     setMenu(!menu);
@@ -698,9 +1164,13 @@ window.addEventListener('keydown', (e) => {
     if (flyActive && menu) enterWilderness();
   } else if (e.code === 'KeyH') {
     showHud = !showHud;
+    settings.showTelemetry = showHud;
+    saveSettings(settings);
     if (infoEl) infoEl.style.display = showHud ? 'block' : 'none';
   } else if (e.code === 'KeyU') {
     cleanUi = !cleanUi;
+    settings.hudVisible = !cleanUi;
+    saveSettings(settings);
     syncBodyClasses();
   } else if (e.code === 'KeyP') {
     photoMode = !photoMode;
@@ -712,13 +1182,19 @@ window.addEventListener('keydown', (e) => {
     syncBodyClasses();
   } else if (e.code === 'KeyW' && e.altKey) {
     weatherMode = weatherMode < 0 ? 0 : (weatherMode + 1) >= WEATHER_PRESETS.length ? -1 : weatherMode + 1;
+    settings.weatherMode = weatherMode;
+    saveSettings(settings);
     const sel = $('weatherSel');
     if (sel) sel.value = String(weatherMode);
   } else if (e.code === 'KeyT') {
     todIdx = (todIdx + 1) % TOD_PRESETS.length;
+    settings.todIdx = todIdx;
+    saveSettings(settings);
   } else if (e.code === 'KeyN') {
     initAudio(audioState);
     const m = toggleMute();
+    settings.muteAudio = m;
+    saveSettings(settings);
     const mb = $('muteBtn');
     if (mb) mb.textContent = m ? 'Audio: Off' : 'Audio: On';
   } else if (e.code.startsWith('Digit')) {
@@ -765,8 +1241,12 @@ if ($('cleanUiBtn')) $('cleanUiBtn').onclick = () => { cleanUi = !cleanUi; syncB
 const speedSlider = $('speedRange'), speedVal = $('speedVal');
 if (speedSlider) {
   speedSlider.oninput = () => {
-    speedMult = parseFloat(speedSlider.value);
+    speedMult = clamp(parseFloat(speedSlider.value) || 1.0, 0.2, 10.0);
+    settings.moveSpeedMult = speedMult;
     if (speedVal) speedVal.textContent = speedMult.toFixed(1) + 'x';
+    if ($('setMoveSpeed')) $('setMoveSpeed').value = String(speedMult);
+    if ($('setMoveSpeedVal')) $('setMoveSpeedVal').textContent = speedMult.toFixed(1) + 'x';
+    saveSettings(settings);
   };
 }
 const weatherSel = $('weatherSel');
@@ -1136,7 +1616,7 @@ const pipePost = device.createRenderPipeline({
 // ============================================================================
 // Dynamic Resolution Render Targets & Timestamp Query Setup
 // ============================================================================
-let W = 0, H = 0, resScale = 1.0;
+let W = 0, H = 0, resScale = clamp(settings.resolutionScale || 1.0, RES_SCALE_MIN, RES_SCALE_MAX);
 let hdrTex = null, hdrMsaaTex = null, depthTex = null, rayTex = null;
 let hdrView = null, hdrMsaaView = null, depthView = null, rayView = null;
 let bgRays = null, bgPost = null;
@@ -1206,6 +1686,14 @@ function rebuildTargets() {
 }
 rebuildTargets();
 window.addEventListener('resize', rebuildTargets);
+
+applySettingsToRenderer = () => {
+  const wantScale = clamp(settings.resolutionScale || 1.0, RES_SCALE_MIN, RES_SCALE_MAX);
+  if (abs(wantScale - resScale) > 0.01) {
+    resScale = wantScale;
+    rebuildTargets();
+  }
+};
 
 let qs = null, qResolveBuf = null, qReadBuf = null, qPending = false, gpuMs = 0;
 if (canTimestamp) {
@@ -1292,16 +1780,19 @@ function updateUniforms(dt) {
   const rx = cy, ry = 0, rz = syw;
   const ux = ry * fz - rz * fy, uy = rz * fx - rx * fz, uz = rx * fy - ry * fx;
 
-  const fov = 2 * Math.atan(18 / max(12, focalMm));
+  const fov = 2 * Math.atan(18 / max(10, focalMm));
   const asp = W / max(1, H);
   eyeV[0] = F[CX]; eyeV[1] = F[CY]; eyeV[2] = F[CZ];
   tgtV[0] = F[CX] + fx; tgtV[1] = F[CY] + fy; tgtV[2] = F[CZ] + fz;
-  m4Persp(fov, asp, 0.15, 720, mProj);
+  const farPlane = max(920, 720 * (settings.viewDistance || 1.0) + max(0, F[CY]) * 2.5);
+  m4Persp(fov, asp, 0.15, farPlane, mProj);
   m4Look(eyeV, tgtV, upV, mView);
   m4Mul(mProj, mView, mVp);
   m4Inv(mVp, mInvVp);
 
-  m4Look([F[CX] + sx * 80, sy * 80, F[CZ] + sz * 80], [F[CX], 0, F[CZ]], [0, 1, 0], mSunView);
+  const sunFocusX = wrapCoord(F[CX]);
+  const sunFocusZ = wrapCoord(F[CZ]);
+  m4Look([sunFocusX + sx * 80, sy * 80, sunFocusZ + sz * 80], [sunFocusX, 0, sunFocusZ], [0, 1, 0], mSunView);
   m4Mul(mSunProj, mSunView, mSunVp);
 
   const dofStrength = photoMode ? clamp((4.5 - apertureF) / 3.1, 0.08, 1.0) : 0.0;
@@ -1327,8 +1818,9 @@ function updateUniforms(dt) {
   UB[76] = tod.hor[0] * sTint[0]; UB[77] = tod.hor[1] * sTint[1]; UB[78] = tod.hor[2] * sTint[2]; UB[79] = mist;
   UB[80] = tod.fog[0] * sTint[0]; UB[81] = tod.fog[1] * sTint[1]; UB[82] = tod.fog[2] * sTint[2]; UB[83] = fireStr;
   // Nearest fire/volcano heat source + focusDistM in firePos.w
-  const dFire = hypot(F[CX] - FIRE_POS[0], F[CZ] - FIRE_POS[1]);
-  const dVolc = hypot(F[CX] - VOLCANO_POS[0], F[CZ] - VOLCANO_POS[1]);
+  const wCx = wrapCoord(F[CX]), wCz = wrapCoord(F[CZ]);
+  const dFire = hypot(wCx - FIRE_POS[0], wCz - FIRE_POS[1]);
+  const dVolc = hypot(wCx - VOLCANO_POS[0], wCz - VOLCANO_POS[1]);
   const heatPos = dVolc < dFire ? VOLCANO_POS : FIRE_POS;
   UB[84] = heatPos[0]; UB[85] = 4.5; UB[86] = heatPos[1]; UB[87] = focusDistM;
   // wind.xy = windDir, wind.z = windSpeed, wind.w = exposureScale
@@ -1341,17 +1833,30 @@ function updateUniforms(dt) {
 
   Q.writeBuffer(uBuf, 0, UB);
 
+  // Camera-centered cube-sphere quadtree terrain chunk streaming
+  updateQuadtreeChunks(F[CX], F[CY], F[CZ], world.chunks.chunks, chunkInstData, settings.viewDistance || 1.0);
+  Q.writeBuffer(terInstBuf, 0, chunkInstData);
+
   if (lookdevMode) {
     world.updateLookdevRig(F[CX], F[CY], F[CZ], F[YAW], F[PIT]);
     Q.writeBuffer(lookdevGpu.instBuf, 0, world.lookdevRig.instData);
   }
-  updateAudio(F[CX], F[CY], F[CZ], activeWeatherIdx, fireStr, windLevel);
+  updateAudio(wCx, F[CY], wCz, activeWeatherIdx, fireStr, windLevel);
 }
 
 function render(dt) {
   updateUniforms(dt);
 
+  const vegScale = clamp(settings.foliageDensity || 1.0, 0.25, 1.25);
+  for (let i = 0; i < vegGpu.length; i++) {
+    const baseCount = world.vegBuffers[i].instCount;
+    vegGpu[i].instCount = i === 7 ? baseCount : max(1, round(baseCount * min(1.0, vegScale)));
+  }
+
+  const faunaScale = clamp(settings.animalDetail || 1.0, 0.25, 1.25);
   for (let i = 0; i < animalGpu.length; i++) {
+    const baseCount = world.wildlifeGroups[i].instCount;
+    animalGpu[i].instCount = max(1, round(baseCount * min(1.0, faunaScale)));
     Q.writeBuffer(animalGpu[i].instBuf, 0, world.wildlifeGroups[i].instData);
   }
 
@@ -1558,7 +2063,8 @@ function frame(now) {
   const dtr = now - F[LAST];
   F[LAST] = now;
   const dt = clamp(dtr / 1000, 0.001, 0.05);
-  F[TIME] += dt;
+  const timeScale = clamp(settings.timeSpeedMult ?? 1.0, 0.0, 10.0);
+  F[TIME] += dt * max(0.05, timeScale);
 
   if (!photoMode && dtr < 500 && dynT >= 0) {
     dynT += dtr; dynN++;
@@ -1586,46 +2092,68 @@ function frame(now) {
     if (F[FLT] >= FLY_DURATION) flyActive = false;
   } else if (!menu && embodiedState.active && embodiedState.groupIdx >= 0 && typeof window.__flyOverride === 'undefined') {
     // ========================================================================
-    // Playable Animal Embodiment Controller (1st-Person & 3rd-Person POV)
+    // Playable Animal Embodiment Controller (Canonical +Z Forward & Orbit POV)
     // ========================================================================
     const grp = world.wildlifeGroups[embodiedState.groupIdx];
     const it = grp.items[embodiedState.itemIdx];
 
-    // Smooth mouse look + A/D turn
+    const mSens = 0.0022 * (settings.mouseSensitivity || 1.0);
+    const ySign = settings.invertY ? -1 : 1;
+    const hadMouseInput = abs(mdx) > 0.01 || abs(mdy) > 0.01;
     const kq = 1 - exp(-dt * 28);
-    lkx += mdx * 0.0022; lky += mdy * 0.0022;
+    lkx += mdx * mSens;
+    lky += mdy * mSens * ySign;
     mdx = 0; mdy = 0;
     const ax = lkx * kq, ay = lky * kq;
     lkx -= ax; lky -= ay;
-    F[YAW] += ax + (kr - kl) * 1.85 * dt;
-    F[PIT] = clamp(F[PIT] - ay, -1.35, 1.35);
+
+    // Mouse orbits independent camera around the animal
+    embodiedState.orbitYaw = normAngle(embodiedState.orbitYaw + ax);
+    embodiedState.orbitPitch = clamp(embodiedState.orbitPitch + ay, -0.75, 1.25);
 
     it.prevX = it.x; it.prevY = it.y; it.prevZ = it.z; it.prevYaw = it.yaw;
-    it.yaw = F[YAW];
+
+    // A/D turns the animal's body heading directly
+    // In W_ANIMAL, local +Z rotates to (-sin(yaw), cos(yaw)),
+    // so increasing yaw turns left and decreasing yaw turns right.
+    const turnInput = kl - kr;
+    const turnRate = (grp.turnSpeed || 2.1) * (settings.turnSensitivity || 1.0);
+    it.yaw = normAngle(it.yaw + turnInput * turnRate * dt);
 
     const moveFwd = kf - kb;
     const moveUp = ku - kd;
     const speedFactor = kShift ? 1.95 : kCtrl ? 0.42 : 1.0;
     const spd = grp.baseSpeed * speedMult * speedFactor;
 
-    const dirX = sin(F[YAW]), dirZ = -cos(F[YAW]);
-    const wantVx = dirX * moveFwd * spd;
-    const wantVz = dirZ * moveFwd * spd;
-    const kVel = 1 - exp(-dt * 6.5);
+    // When moving forward, gently steer animal toward camera orbit look and recenter orbitYaw
+    if (abs(moveFwd) > 0.01 && abs(embodiedState.orbitYaw) > 0.005) {
+      const alignRate = hadMouseInput ? 2.4 : (settings.autoRecenter ? 4.2 : 1.6);
+      const steerDelta = embodiedState.orbitYaw * min(1, dt * alignRate);
+      it.yaw = normAngle(it.yaw + steerDelta);
+      if (settings.autoRecenter && !hadMouseInput) {
+        embodiedState.orbitYaw = normAngle(embodiedState.orbitYaw - steerDelta);
+      }
+    }
+
+    // Canonical world forward vector for creature heading it.yaw: [-sin(yaw), cos(yaw)]
+    const [fwdX, fwdZ] = yawToForward(it.yaw);
+    const wantVx = fwdX * moveFwd * spd;
+    const wantVz = fwdZ * moveFwd * spd;
+    const kVel = 1 - exp(-dt * 7.5);
     F[VX] = lerp(F[VX], wantVx, kVel);
     F[VZ] = lerp(F[VZ], wantVz, kVel);
 
-    let nextX = clamp(it.x + F[VX] * dt, -WORLD_HALF + 10, WORLD_HALF - 10);
-    let nextZ = clamp(it.z + F[VZ] * dt, -WORLD_HALF + 10, WORLD_HALF - 10);
+    let nextX = wrapCoord(it.x + F[VX] * dt);
+    let nextZ = wrapCoord(it.z + F[VZ] * dt);
     terrainAt(nextX, nextZ, _camT);
 
     if (grp.domain === 'water') {
       // 6-DOF Marine Swimming + Surface Breaching
-      const wantVy = (sin(F[PIT]) * moveFwd + moveUp * 0.75) * spd * 0.65;
+      const pitchClimb = -sin(embodiedState.orbitPitch) * moveFwd;
+      const wantVy = (pitchClimb + moveUp * 0.75) * spd * 0.65;
       embodiedState.vy = lerp(embodiedState.vy, wantVy, kVel);
       let nextY = it.y + embodiedState.vy * dt;
       if (it.y > 0.1) {
-        // Gravity arc during Whale/Orca surface breach
         embodiedState.vy -= 14.5 * dt;
         nextY = it.y + embodiedState.vy * dt;
       }
@@ -1633,9 +2161,10 @@ function frame(now) {
       it.x = nextX; it.y = nextY; it.z = nextZ;
     } else if (grp.domain === 'air') {
       // Avian Wingbeat Climb, Thermal Soaring & Raptor Stoop Dive
-      const wantVy = (sin(F[PIT]) * moveFwd + moveUp * 0.85) * spd * 0.72;
+      const pitchClimb = -sin(embodiedState.orbitPitch) * moveFwd;
+      const wantVy = (pitchClimb + moveUp * 0.85) * spd * 0.72;
       embodiedState.vy = lerp(embodiedState.vy, wantVy, kVel);
-      const nextY = clamp(it.y + embodiedState.vy * dt, _camT.h + 0.6, 95);
+      const nextY = clamp(it.y + embodiedState.vy * dt, _camT.h + 0.6, 195);
       it.x = nextX; it.y = nextY; it.z = nextZ;
     } else {
       // Terrestrial Zero-Slide IK Quadruped / Biped / Ape Locomotion
@@ -1646,14 +2175,14 @@ function frame(now) {
         embodiedState.vy = 0;
       }
       world.resolveWorldCollision(nextX, nextY + 0.35, nextZ, clamp(0.45 * it.scale, 0.2, 0.95), F[VX], F[VZ], _camCol, 0.0);
-      it.x = _camCol.x;
-      it.z = _camCol.z;
+      it.x = wrapCoord(_camCol.x);
+      it.z = wrapCoord(_camCol.z);
       terrainAt(it.x, it.z, _camT);
       it.y = max(_camT.h, nextY);
     }
 
     // Zero-Slide Stride Phase Coupling: advance limb animation strictly with actual distance moved
-    const stepDist = hypot(it.x - it.prevX, it.z - it.prevZ);
+    const stepDist = hypot(wrapDelta(it.x - it.prevX), wrapDelta(it.z - it.prevZ));
     if (stepDist > 1e-4) {
       it.phase = (it.phase + (stepDist / max(0.18, it.strideLen)) * 1.45) % TAU;
       it.state = kShift ? 'chase' : 'forage';
@@ -1663,23 +2192,48 @@ function frame(now) {
       if (it.roarTimer <= 0) it.emotion = 0;
     }
 
-    // Mount Camera to either 1st-Person True Eye POV or 3rd-Person Cinema Follow POV
-    const eyeH = grp.eyeOffset[1] * it.scale;
-    const eyeFwd = grp.eyeOffset[2] * it.scale;
+    // Mount Camera to either 1st-Person True Eye POV or 3rd-Person Orbit Follow POV
+    const sc = it.scale || 1.0;
+    const eyeH = grp.eyeOffset[1] * sc;
+    const eyeFwd = grp.eyeOffset[2] * sc;
     if (embodiedState.pov === '1st') {
       const bob = sin(it.phase * 2.0) * 0.04 * min(1, stepDist * 25);
-      F[CX] = it.x + dirX * (eyeFwd + 0.22 * it.scale);
+      F[CX] = it.x + fwdX * (eyeFwd + 0.24 * sc);
       F[CY] = it.y + eyeH + bob;
-      F[CZ] = it.z + dirZ * (eyeFwd + 0.22 * it.scale);
+      F[CZ] = it.z + fwdZ * (eyeFwd + 0.24 * sc);
+      const lookYaw = normAngle(it.yaw + embodiedState.orbitYaw);
+      const [lfx, lfz] = yawToForward(lookYaw);
+      F[YAW] = atan2(lfx, -lfz);
+      F[PIT] = clamp(-embodiedState.orbitPitch, -1.35, 1.35);
     } else {
-      const dist = grp.followDist * max(0.85, it.scale * 0.9);
-      const camTargetX = it.x - dirX * dist * cos(F[PIT] * 0.5);
-      const camTargetZ = it.z - dirZ * dist * cos(F[PIT] * 0.5);
+      const camAnimalYaw = normAngle(it.yaw + embodiedState.orbitYaw);
+      const [camFwdX, camFwdZ] = yawToForward(camAnimalYaw);
+      const dist = grp.followDist * max(0.85, sc * 0.9) * (settings.followDistance || 1.0);
+      const hMult = settings.followHeight || 1.0;
+      const cp = cos(embodiedState.orbitPitch), sp = sin(embodiedState.orbitPitch);
+
+      // Place camera BEHIND the animal (-camFwd) and elevated by orbitPitch
+      const camTargetX = it.x - camFwdX * dist * cp;
+      const camTargetZ = it.z - camFwdZ * dist * cp;
       terrainAt(camTargetX, camTargetZ, _camT);
-      const camTargetY = max(_camT.h + 0.45, it.y + eyeH + 0.85 - sin(F[PIT]) * dist * 0.55);
-      F[CX] = lerp(F[CX], camTargetX, 1 - exp(-dt * 12));
-      F[CY] = lerp(F[CY], camTargetY, 1 - exp(-dt * 12));
-      F[CZ] = lerp(F[CZ], camTargetZ, 1 - exp(-dt * 12));
+      const camTargetY = max(_camT.h + 0.42, it.y + (eyeH + 0.65) * hMult + sp * dist * 0.65);
+
+      const smoothRate = lerp(24, 6, clamp(settings.cameraSmoothing || 0.85, 0.1, 0.98));
+      const kCam = 1 - exp(-dt * smoothRate);
+      F[CX] = F[CX] + wrapDelta(camTargetX - F[CX]) * kCam;
+      F[CY] = lerp(F[CY], camTargetY, kCam);
+      F[CZ] = F[CZ] + wrapDelta(camTargetZ - F[CZ]) * kCam;
+
+      // Orient camera to look at the creature's upper back / head target
+      const lookTargetX = it.x + fwdX * (eyeFwd * 0.65);
+      const lookTargetY = it.y + eyeH * 0.95;
+      const lookTargetZ = it.z + fwdZ * (eyeFwd * 0.65);
+      const dx = wrapDelta(lookTargetX - F[CX]);
+      const dy = lookTargetY - F[CY];
+      const dz = wrapDelta(lookTargetZ - F[CZ]);
+      const d = hypot(dx, dy, dz) || 1;
+      F[YAW] = atan2(dx, -dz);
+      F[PIT] = Math.asin(clamp(dy / d, -0.98, 0.98));
     }
   } else if (!menu && typeof window.__flyOverride === 'undefined') {
     const idleSec = (now - lastActivityAt) / 1000;
@@ -1690,15 +2244,12 @@ function frame(now) {
 
     if (autoExplore) {
       autoLegTimer -= dt;
-      const dxT = autoTargetX - F[CX], dzT = autoTargetZ - F[CZ];
+      const dxT = wrapDelta(autoTargetX - F[CX]), dzT = wrapDelta(autoTargetZ - F[CZ]);
       const distT = hypot(dxT, dzT);
       if (distT < 8.5 || autoLegTimer <= 0) pickNextExploreTarget();
 
       const wantYaw = atan2(dxT, -dzT) + sin(F[TIME] * 0.24) * 0.28;
-      let dYaw = wantYaw - F[YAW];
-      while (dYaw > PI) dYaw -= TAU;
-      while (dYaw < -PI) dYaw += TAU;
-      F[YAW] += dYaw * (1 - exp(-dt * 1.15));
+      F[YAW] = lerpAngle(F[YAW], wantYaw, 1 - exp(-dt * 1.15));
 
       terrainAt(F[CX], F[CZ], _camT);
       const cruiseAlt = max(_camT.h + 2.4, autoTargetY + sin(F[TIME] * 0.31) * 1.8);
@@ -1712,26 +2263,33 @@ function frame(now) {
       F[VY] = lerp(F[VY], clamp((cruiseAlt - F[CY]) * 0.85, -3.5, 3.5), kVel);
       F[VZ] = lerp(F[VZ], dirZ * cruiseSpd, kVel);
 
-      const nextX = clamp(F[CX] + F[VX] * dt, -WORLD_HALF + 15, WORLD_HALF - 15);
-      const nextY = clamp(F[CY] + F[VY] * dt, -20.0, 115);
-      const nextZ = clamp(F[CZ] + F[VZ] * dt, -WORLD_HALF + 15, WORLD_HALF - 15);
+      const nextX = F[CX] + F[VX] * dt;
+      const nextY = clamp(F[CY] + F[VY] * dt, -24.0, 3200);
+      const nextZ = F[CZ] + F[VZ] * dt;
       world.resolveWorldCollision(nextX, nextY, nextZ, 0.72, F[VX], F[VZ], _camCol, 0.75);
       F[CX] = _camCol.x; F[CY] = _camCol.y; F[CZ] = _camCol.z;
       F[VX] = _camCol.vx; F[VZ] = _camCol.vz;
     } else {
+      // Unbounded Free-Fly Observer Mode: Abyssal Trench (-24m) -> Atmosphere -> Orbital Space (4800m)
+      const mSens = 0.0022 * (settings.mouseSensitivity || 1.0);
+      const ySign = settings.invertY ? -1 : 1;
       const kq = 1 - exp(-dt * 28);
-      lkx += mdx * 0.0022; lky += mdy * 0.0022;
+      lkx += mdx * mSens;
+      lky += mdy * mSens * ySign;
       mdx = 0; mdy = 0;
       const ax = lkx * kq, ay = lky * kq;
       lkx -= ax; lky -= ay;
       l2x += ax; l2y += ay;
       const dyw = l2x * kq, dpt = l2y * kq;
       l2x -= dyw; l2y -= dpt;
-      F[YAW] += dyw;
+      F[YAW] += dyw + (kr - kl) * 0.35 * (settings.turnSensitivity || 1.0) * dt;
       F[PIT] = clamp(F[PIT] - dpt, -1.52, 1.52);
 
-      const baseSpeed = kShift ? 28.0 : kCtrl ? 3.2 : 10.5;
-      const sp = baseSpeed * speedMult;
+      // Altitude-adaptive planetary & hyper-orbital velocity scaling (1x..10x warp)
+      const altBoost = 1.0 + max(0, F[CY] - 42) * 0.052 + max(0, F[CY] - 220) * 0.14;
+      const warpMult = speedMult <= 3.0 ? speedMult : 3.0 * pow(speedMult / 3.0, 2.35);
+      const baseSpeed = (kShift ? 36.0 : kCtrl ? 3.2 : 12.0) * altBoost;
+      const sp = baseSpeed * warpMult;
       const mf = kf - kb;
       const mr = kr - kl;
       const mu = ku - kd;
@@ -1739,28 +2297,28 @@ function frame(now) {
       const tx = (sy * cp * mf + cy * mr) * sp;
       const ty = (sin(F[PIT]) * mf + mu) * sp;
       const tz = (-cy * cp * mf + sy * mr) * sp;
-      const kVel = 1 - exp(-dt * 5.2);
+      const kVel = 1 - exp(-dt * 5.8);
       F[VX] = lerp(F[VX], tx, kVel);
       F[VY] = lerp(F[VY], ty, kVel);
       F[VZ] = lerp(F[VZ], tz, kVel);
 
-      const nextX = clamp(F[CX] + F[VX] * dt, -WORLD_HALF + 12, WORLD_HALF - 12);
-      const nextY = clamp(F[CY] + F[VY] * dt, -22.0, 115);
-      const nextZ = clamp(F[CZ] + F[VZ] * dt, -WORLD_HALF + 12, WORLD_HALF - 12);
+      const nextX = F[CX] + F[VX] * dt;
+      const nextY = clamp(F[CY] + F[VY] * dt, -24.0, 7500);
+      const nextZ = F[CZ] + F[VZ] * dt;
       const minClear = nextY < 0.05 ? 0.42 : 0.58;
       world.resolveWorldCollision(nextX, nextY, nextZ, 0.65, F[VX], F[VZ], _camCol, minClear);
-      F[CX] = clamp(_camCol.x, -WORLD_HALF + 12, WORLD_HALF - 12);
-      F[CY] = clamp(_camCol.y, -22.0, 115);
-      F[CZ] = clamp(_camCol.z, -WORLD_HALF + 12, WORLD_HALF - 12);
+      F[CX] = _camCol.x;
+      F[CY] = clamp(_camCol.y, -24.0, 7500);
+      F[CZ] = _camCol.z;
       F[VX] = _camCol.vx;
       F[VZ] = _camCol.vz;
       if (_camCol.hitGround && F[VY] < 0) F[VY] = 0;
     }
   }
 
-  audioState.camX = F[CX];
+  audioState.camX = wrapCoord(F[CX]);
   audioState.camY = F[CY];
-  audioState.camZ = F[CZ];
+  audioState.camZ = wrapCoord(F[CZ]);
 
   simAcc = min(simAcc + dt, FIXED_DT * 4);
   while (simAcc >= FIXED_DT) {
@@ -1772,7 +2330,7 @@ function frame(now) {
   render(dt);
 
   // Refresh live Planetary Map if open
-  if (mapModal?.classList.contains('open')) {
+  if (mapModal?.classList.contains('open') && !globeDragging) {
     renderPlanetaryMap();
   }
 
@@ -1780,11 +2338,20 @@ function frame(now) {
   hudT += dtr;
   if (dtr > hudMax) hudMax = dtr;
   hudTextTimer += dtr;
-  if (hudTextTimer > 420) {
+  if (hudTextTimer > 380) {
     if (locEl) locEl.textContent = biomeLabelAt(F[CX], F[CY], F[CZ]);
     if (weatherEl) {
       const exploreTag = autoExplore ? ' · Auto' : '';
       weatherEl.textContent = `${WEATHER_NAMES[activeWeatherIdx]} · ${TOD_NAMES[todIdx]} · ${focalMm}mm${exploreTag}`;
+    }
+    if (settings.showCoordinates && layerLabelEl && coordLabelEl) {
+      const layer = atmosphericLayerAt(F[CY]);
+      const geo = worldToLatLonAlt(F[CX], F[CY], F[CZ]);
+      const latDir = geo.lat >= 0 ? 'N' : 'S';
+      const lonDir = geo.lon >= 0 ? 'E' : 'W';
+      const altTxt = F[CY] >= 1200 ? `${(geo.altKm).toFixed(0)}km` : `${F[CY] >= 0 ? '+' : ''}${F[CY].toFixed(1)}m`;
+      layerLabelEl.textContent = layer.code;
+      coordLabelEl.textContent = `${abs(geo.lat).toFixed(1)}°${latDir} ${abs(geo.lon).toFixed(1)}°${lonDir} · ${altTxt}`;
     }
     if (embodiedState.active && embodiedState.groupIdx >= 0) {
       updateEmbodimentUI();
@@ -1796,7 +2363,7 @@ function frame(now) {
         const emoStr = world.EMOTION_NAMES ? world.EMOTION_NAMES[clamp(round(nIt.emotion || 0), 0, 4)] : '';
         embodyLabelEl.textContent = `Nearby: ${nGrp.label} (${emoStr})`;
       } else {
-        embodyLabelEl.textContent = 'Observer: Free-Fly';
+        embodyLabelEl.textContent = F[CY] > 380 ? `Orbital Flight · ${spaceSectorAt(F[CX], F[CY], F[CZ]).name}` : 'Observer: Free-Fly';
       }
     }
     if (survivalLabelEl && world.getActiveSurvivalEvent) {
@@ -1804,8 +2371,9 @@ function frame(now) {
     }
     if (showHud && infoEl) {
       const fps = round((hudFrames * 1000) / max(1, hudT));
-      const modeTag = embodiedState.active ? ` · Embody (${embodiedState.pov})` : autoExplore ? ' · Auto-Explore' : lookdevMode ? ' · Lookdev' : photoMode ? ' · Photo' : F[CY] < -0.02 ? ' · Submerged' : '';
-      infoEl.textContent = `${fps} fps · max ${hudMax.toFixed(1)} ms · GPU ${gpuMs ? gpuMs.toFixed(2) + ' ms' : 'n/a'} · ${W}×${H}\nSeed ${WORLD_SEED} · ${focalMm}mm f/${apertureF.toFixed(1)} · EV ${(evScale).toFixed(2)}${modeTag}`;
+      const cs = worldToCubeSphere(F[CX], F[CY], F[CZ]);
+      const modeTag = embodiedState.active ? ` · Embody (${embodiedState.pov})` : autoExplore ? ' · Auto-Explore' : lookdevMode ? ' · Lookdev' : photoMode ? ' · Photo' : F[CY] < -0.02 ? ' · Submerged' : F[CY] > 380 ? ' · Orbit' : '';
+      infoEl.textContent = `${fps} fps · max ${hudMax.toFixed(1)} ms · GPU ${gpuMs ? gpuMs.toFixed(2) + ' ms' : 'n/a'} · ${W}×${H} · Face ${cs.face}\nSeed ${WORLD_SEED} · ${focalMm}mm f/${apertureF.toFixed(1)} · EV ${(evScale).toFixed(2)}${modeTag}`;
     }
     hudFrames = 0; hudT = 0; hudMax = 0; hudTextTimer = 0;
   }

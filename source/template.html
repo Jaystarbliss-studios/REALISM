@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Terra Primordia — The Living WebGPU Planet</title>
-<meta name="description" content="A seamless, human-free, photorealistic raw-WebGPU planetary ecosystem featuring 18 biomes, the Abyssal Garden ocean trench, interactive planetary map teleportation, and playable wildlife embodiment in 1st and 3rd person POV.">
-<meta property="og:title" content="Terra Primordia — The Living WebGPU Planet">
-<meta property="og:description" content="Explore 18 seamless biomes from the Serengeti Savanna and Amazon Canopy to the Abyssal Garden Ocean Trench and Polar Ice Planet. Teleport anywhere via the live Planetary Map or inhabit any animal in 1st or 3rd Person POV.">
+<title>REALISM — Earth-Scale Procedural Planet &amp; Abyssal Garden WebGPU Engine</title>
+<meta name="description" content="An Earth-scale (6,371 km) raw-WebGPU planetary, deep-ocean, and orbital simulation featuring 18 seamless biomes, Abyssal Garden procedural reefs and kelp forests, 3D planetary globe navigation, persistent settings, and playable wildlife embodiment.">
+<meta property="og:title" content="REALISM — Earth-Scale Procedural Planet &amp; Abyssal Garden WebGPU Engine">
+<meta property="og:description" content="Explore an Earth-scale procedural planet from the Abyssal Garden ocean trench and Serengeti Savanna to the Stratosphere, Exosphere, and Deep Universe. Teleport via the 3D Planetary Globe or inhabit any animal in 1st or 3rd Person POV.">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#060d0a">
 <style>
@@ -58,7 +58,7 @@ body:not(.g) #hud, body.clean #hud { opacity: 0; pointer-events: none; }
 }
 .hud-cell {
   display: flex; align-items: center; gap: 8px;
-  height: 100%; padding: 0 14px;
+  height: 100%; padding: 0 12px;
   border-right: 1px solid var(--line);
   white-space: nowrap; font-size: 11px; color: var(--muted);
 }
@@ -67,6 +67,8 @@ body:not(.g) #hud, body.clean #hud { opacity: 0; pointer-events: none; }
   letter-spacing: 0.08em; font-size: 11px;
 }
 #embodyBadge strong { color: var(--cyan); }
+#coordBadge strong { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+#coordBadge span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
 #survivalBadge { border-right: 0; color: var(--muted); }
 
 #quickBar {
@@ -75,7 +77,7 @@ body:not(.g) #hud, body.clean #hud { opacity: 0; pointer-events: none; }
 .nav-btn {
   background: transparent; color: var(--text);
   border: 0; border-left: 1px solid var(--line);
-  padding: 0 14px; font: 600 11px/1 inherit;
+  padding: 0 12px; font: 600 11px/1 inherit;
   text-transform: uppercase; letter-spacing: 0.08em;
   cursor: pointer; transition: background 0.15s ease, color 0.15s ease;
   white-space: nowrap;
@@ -83,6 +85,8 @@ body:not(.g) #hud, body.clean #hud { opacity: 0; pointer-events: none; }
 .nav-btn:hover { background: rgba(242, 240, 230, 0.09); }
 .nav-btn.accent { color: var(--accent); }
 .nav-btn.accent:hover { background: var(--accent); color: var(--accent-ink); }
+.nav-btn.cyan { color: var(--cyan); }
+.nav-btn.cyan:hover { background: var(--cyan); color: var(--accent-ink); }
 
 /* Minimalist Bottom Status & Keybind Strip */
 #bottomStrip {
@@ -121,7 +125,7 @@ body.g #m { opacity: 0; visibility: hidden; pointer-events: none; }
 body.m #l, body.l #g { display: none; }
 
 .mast {
-  width: min(860px, 94vw);
+  width: min(900px, 94vw);
   border-top: 1px solid var(--line-strong);
   border-bottom: 1px solid var(--line-strong);
   padding: 28px 0;
@@ -134,8 +138,8 @@ body.m #l, body.l #g { display: none; }
 }
 .hero-title {
   margin: 0;
-  font: 300 clamp(1.85rem, 3.6vw, 2.75rem)/1 "Inter", system-ui, sans-serif;
-  letter-spacing: 0.16em; text-transform: uppercase; color: var(--text);
+  font: 300 clamp(2.0rem, 4.0vw, 3.0rem)/1 "Inter", system-ui, sans-serif;
+  letter-spacing: 0.22em; text-transform: uppercase; color: var(--text);
 }
 .hero-sub {
   margin: 0; font-size: 11px; letter-spacing: 0.14em;
@@ -143,7 +147,7 @@ body.m #l, body.l #g { display: none; }
 }
 .lead {
   margin: 14px 0 18px; color: var(--muted); font-size: 12.5px; line-height: 1.55;
-  max-width: 72ch;
+  max-width: 78ch;
 }
 .bar {
   width: 100%; height: 2px;
@@ -156,14 +160,14 @@ body.m #l, body.l #g { display: none; }
 }
 
 .cta-row {
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   border: 1px solid var(--line-strong);
   margin-bottom: 18px;
 }
 .cta {
-  padding: 13px 16px; border: 0; border-right: 1px solid var(--line-strong);
+  padding: 13px 14px; border: 0; border-right: 1px solid var(--line-strong);
   background: transparent; color: var(--text);
-  font: 600 11.5px/1 inherit; text-transform: uppercase; letter-spacing: 0.12em;
+  font: 600 11px/1 inherit; text-transform: uppercase; letter-spacing: 0.11em;
   cursor: pointer; transition: background 0.15s ease, color 0.15s ease;
 }
 .cta:last-child { border-right: 0; }
@@ -206,9 +210,10 @@ body.m #l, body.l #g { display: none; }
   white-space: nowrap;
 }
 .btn-sm:hover, .ctrl-group select:hover { background: rgba(242, 240, 230, 0.10); }
+.btn-sm.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .ctrl-group select option { background: var(--surface-solid); color: var(--text); }
 
-/* Minimalist Architectural Modals (Planetary Map & Species Embodiment) */
+/* Minimalist Architectural Modals (Planetary Globe/Map, Species Embodiment & Settings) */
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 25;
   display: none; place-content: center;
@@ -218,13 +223,14 @@ body.m #l, body.l #g { display: none; }
 }
 .modal-backdrop.open { display: grid; }
 .modal-box {
-  width: min(920px, 96vw); max-height: 92vh; overflow-y: auto;
+  width: min(940px, 96vw); max-height: 92vh; overflow-y: auto;
   background: var(--surface-solid);
   border: 1px solid var(--line-strong);
   color: var(--text);
 }
 .modal-header {
   display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 10px;
   padding: 12px 16px; border-bottom: 1px solid var(--line);
 }
 .modal-header h2 {
@@ -236,16 +242,17 @@ body.m #l, body.l #g { display: none; }
 .map-wrap {
   position: relative; width: 100%;
   border: 1px solid var(--line);
-  background: #041017;
+  background: #030b11;
 }
 canvas#planetMapCanvas {
-  width: 100%; height: auto; aspect-ratio: 16 / 10; display: block; cursor: crosshair;
+  width: 100%; height: auto; aspect-ratio: 16 / 10; display: block; cursor: grab;
 }
+canvas#planetMapCanvas:active { cursor: grabbing; }
 #mapTooltip {
   position: absolute; pointer-events: none; display: none;
   padding: 7px 10px;
   background: rgba(6, 13, 10, 0.94); border: 1px solid var(--accent);
-  font-size: 11px; color: var(--text); max-width: 260px;
+  font-size: 11px; color: var(--text); max-width: 280px;
 }
 #mapPinBar {
   display: grid; grid-template-columns: repeat(6, 1fr);
@@ -275,6 +282,41 @@ canvas#planetMapCanvas {
 .sp-card.active b { color: var(--accent); }
 .sp-card span { font-size: 10.5px; color: var(--muted); display: block; }
 
+/* Architectural In-Game Settings Grid */
+.settings-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  border-top: 1px solid var(--line); border-left: 1px solid var(--line);
+}
+.settings-section {
+  padding: 14px 16px;
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.settings-section h3 {
+  margin: 0 0 12px; font: 600 11px/1 inherit;
+  text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent);
+  padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.set-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 6px 0; font-size: 11.5px; color: var(--text);
+}
+.set-row span.set-label { color: var(--muted); }
+.set-ctrl {
+  display: flex; align-items: center; gap: 8px;
+}
+.set-ctrl input[type=range] { width: 115px; accent-color: var(--accent); cursor: pointer; }
+.set-ctrl input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+.set-ctrl select {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line-strong);
+  padding: 4px 8px; font: 500 11px/1 inherit;
+  text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer;
+}
+.set-val {
+  min-width: 44px; text-align: right;
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent);
+}
+
 /* Minimalist Optical Lens Strip ([P]) */
 #photoBar {
   position: fixed; bottom: 28px; left: 0; right: 0; z-index: 6;
@@ -291,12 +333,11 @@ body.clean #photoBar { display: none; }
   background: rgba(160, 35, 35, 0.25); border: 1px solid rgba(255, 110, 110, 0.45);
   color: #ffd6d6; font-size: 12px;
 }
-@media (max-width: 780px) {
+@media (max-width: 820px) {
   .loc-grid, #mapPinBar { grid-template-columns: repeat(3, 1fr); }
-  .species-grid { grid-template-columns: repeat(2, 1fr); }
-  .cta-row { grid-template-columns: 1fr; }
-  .cta { border-right: 0; border-bottom: 1px solid var(--line-strong); }
-  .hud-cell:nth-child(n+3) { display: none; }
+  .species-grid, .settings-grid { grid-template-columns: 1fr; }
+  .cta-row { grid-template-columns: repeat(2, 1fr); }
+  .hud-cell:nth-child(n+4) { display: none; }
 }
 </style>
 </head>
@@ -310,6 +351,10 @@ body.clean #photoBar { display: none; }
       <strong id="loc">The River Sanctuary</strong>
       <span id="weatherLabel">Golden Sunlight · 33mm</span>
     </div>
+    <div class="hud-cell" id="coordBadge">
+      <strong id="layerLabel">TROPO</strong>
+      <span id="coordLabel">3.8°S 11.0°E · +3m</span>
+    </div>
     <div class="hud-cell" id="embodyBadge">
       <strong id="embodyLabel">Observer: Free-Fly</strong>
     </div>
@@ -318,11 +363,13 @@ body.clean #photoBar { display: none; }
     </div>
   </div>
   <nav id="quickBar" aria-label="Primary Controls">
-    <button class="nav-btn accent" id="openMapBtn" type="button">Map [M]</button>
+    <button class="nav-btn accent" id="openMapBtn" type="button">Globe [M]</button>
     <button class="nav-btn accent" id="openEmbodyBtn" type="button">Species [Tab]</button>
     <button class="nav-btn" id="togglePovBtn" type="button">POV: Free [V]</button>
+    <button class="nav-btn cyan" id="orbitBtn" type="button">Orbit [G]</button>
     <button class="nav-btn" id="instinctBtn" type="button">Sense [Q]</button>
     <button class="nav-btn" id="weatherCycleBtn" type="button">Weather [W]</button>
+    <button class="nav-btn accent" id="openSettingsBtn" type="button">&#9881; Settings [O]</button>
   </nav>
 </header>
 
@@ -340,20 +387,25 @@ body.clean #photoBar { display: none; }
 
 <!-- Minimalist Bottom Keybind & Embodiment Guidance Strip -->
 <footer id="bottomStrip">
-  <span id="embodyHint">WASD Move · Mouse Look · [E] Inhabit Nearest Animal · [R] Vocalize / Display · [Space] Action</span>
-  <span id="hint">[M] Map · [Tab] Species · [V] 1st/3rd POV · [Q] Sense · [P] Optics · [U] Clean UI</span>
+  <span id="embodyHint">WASD Move · Mouse Look · [E] Inhabit Nearest Animal · [G] Ascend to Orbit · [O] Settings</span>
+  <span id="hint">[M] 3D Globe · [Tab] Species · [V] 1st/3rd POV · [Q] Sense · [P] Optics · [O] Settings</span>
 </footer>
 
-<!-- Interactive Planetary Topographic & Bathymetric Map -->
-<div id="mapModal" class="modal-backdrop" role="dialog" aria-label="Planetary Topographic and Bathymetric Map">
+<!-- Interactive 3D Planetary Globe & 2D Topographic/Bathymetric Map -->
+<div id="mapModal" class="modal-backdrop" role="dialog" aria-label="Planetary Globe and Topographic Map">
   <div class="modal-box">
     <div class="modal-header">
-      <h2>Planetary Topographic &amp; Bathymetric Map — Click Any Coordinate or Pin to Teleport</h2>
-      <button class="btn-sm" id="closeMapBtn" type="button">Close [M]</button>
+      <h2>REALISM Planetary Navigator — Drag 3D Globe to Rotate · Click Any Biome or Coordinate to Teleport</h2>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-sm active" id="mapModeGlobeBtn" type="button">3D Planetary Globe</button>
+        <button class="btn-sm" id="mapModeFlatBtn" type="button">2D Topographic Map</button>
+        <button class="btn-sm" id="mapOrbitBtn" type="button">Ascend to Orbit [G]</button>
+        <button class="btn-sm" id="closeMapBtn" type="button">Close [M]</button>
+      </div>
     </div>
     <div class="modal-body">
       <div class="map-wrap">
-        <canvas id="planetMapCanvas" width="820" height="512"></canvas>
+        <canvas id="planetMapCanvas" width="840" height="520"></canvas>
         <div id="mapTooltip"></div>
       </div>
       <div id="mapPinBar"></div>
@@ -378,24 +430,252 @@ body.clean #photoBar { display: none; }
   </div>
 </div>
 
+<!-- Full In-Game Settings Modal ([O] or Gear Button) -->
+<div id="settingsModal" class="modal-backdrop" role="dialog" aria-label="REALISM Engine Settings">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>&#9881; REALISM Engine &amp; Planetary Simulation Settings</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn-sm" id="resetSettingsBtn" type="button">Reset Defaults</button>
+        <button class="btn-sm active" id="closeSettingsBtn" type="button">Done [O]</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="settings-grid">
+        <!-- 01 Graphics & Quality -->
+        <section class="settings-section">
+          <h3>01 · Graphics &amp; WebGPU Quality</h3>
+          <div class="set-row">
+            <span class="set-label">Quality Preset</span>
+            <div class="set-ctrl">
+              <select id="setQualityTier">
+                <option value="0">Ultra (Native 100%)</option>
+                <option value="1">High (92% Scale)</option>
+                <option value="2">Balanced (80% Scale)</option>
+                <option value="3">Performance (68% Scale)</option>
+              </select>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Auto-Adaptive FPS Governor</span>
+            <div class="set-ctrl">
+              <input id="setAutoQuality" type="checkbox" checked>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Resolution Scale Multiplier</span>
+            <div class="set-ctrl">
+              <input id="setResScale" type="range" min="0.55" max="1.25" step="0.05" value="1.0">
+              <span class="set-val" id="setResScaleVal">100%</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Quadtree Horizon View Distance</span>
+            <div class="set-ctrl">
+              <input id="setViewDist" type="range" min="0.6" max="1.6" step="0.05" value="1.0">
+              <span class="set-val" id="setViewDistVal">1.00x</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Foliage &amp; Kelp Forest Density</span>
+            <div class="set-ctrl">
+              <input id="setVegDensity" type="range" min="0.4" max="1.0" step="0.05" value="1.0">
+              <span class="set-val" id="setVegDensityVal">100%</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Abyssal Ocean &amp; Caustics Quality</span>
+            <div class="set-ctrl">
+              <input id="setWaterQuality" type="range" min="0.5" max="1.25" step="0.05" value="1.0">
+              <span class="set-val" id="setWaterQualityVal">100%</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 02 Display & Telemetry -->
+        <section class="settings-section">
+          <h3>02 · Display &amp; Geodesic Telemetry</h3>
+          <div class="set-row">
+            <span class="set-label">Show Top &amp; Bottom HUD Bars</span>
+            <div class="set-ctrl">
+              <input id="setShowHud" type="checkbox" checked>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Show Lat/Lon &amp; Atmospheric Layer</span>
+            <div class="set-ctrl">
+              <input id="setShowCoords" type="checkbox" checked>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Show Technical Frame Readout [H]</span>
+            <div class="set-ctrl">
+              <input id="setShowTelemetry" type="checkbox">
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Field of View (Vertical Degrees)</span>
+            <div class="set-ctrl">
+              <input id="setFov" type="range" min="35" max="85" step="1" value="54">
+              <span class="set-val" id="setFovVal">54°</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 03 Camera & Third-Person Orbit -->
+        <section class="settings-section">
+          <h3>03 · Camera &amp; 3rd-Person Animal Orbit</h3>
+          <div class="set-row">
+            <span class="set-label">Default Embodiment POV</span>
+            <div class="set-ctrl">
+              <select id="setDefaultPov">
+                <option value="0">3rd-Person Behind Orbit</option>
+                <option value="1">1st-Person Creature Eyes</option>
+              </select>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Mouse Look / Orbit Sensitivity</span>
+            <div class="set-ctrl">
+              <input id="setMouseSens" type="range" min="0.3" max="2.5" step="0.1" value="1.0">
+              <span class="set-val" id="setMouseSensVal">1.0x</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Invert Vertical Look Axis</span>
+            <div class="set-ctrl">
+              <input id="setInvertY" type="checkbox">
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">3rd-Person Follow Distance</span>
+            <div class="set-ctrl">
+              <input id="setFollowDist" type="range" min="0.5" max="2.2" step="0.05" value="1.0">
+              <span class="set-val" id="setFollowDistVal">1.00x</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">3rd-Person Follow Height</span>
+            <div class="set-ctrl">
+              <input id="setFollowHeight" type="range" min="0.5" max="2.0" step="0.05" value="1.0">
+              <span class="set-val" id="setFollowHeightVal">1.00x</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Camera Spring Smoothing</span>
+            <div class="set-ctrl">
+              <input id="setCamSmooth" type="range" min="0.1" max="0.98" step="0.02" value="0.85">
+              <span class="set-val" id="setCamSmoothVal">85%</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Auto-Recenter Orbit When Moving</span>
+            <div class="set-ctrl">
+              <input id="setAutoRecenter" type="checkbox" checked>
+            </div>
+          </div>
+        </section>
+
+        <!-- 04 Audio & Bio-Acoustic Buses -->
+        <section class="settings-section">
+          <h3>04 · Bio-Acoustic &amp; Orbital Audio</h3>
+          <div class="set-row">
+            <span class="set-label">Master Gain</span>
+            <div class="set-ctrl">
+              <input id="setMasterVol" type="range" min="0" max="1" step="0.05" value="0.75">
+              <span class="set-val" id="setMasterVolVal">75%</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Ambient Wind &amp; Orbital Drone</span>
+            <div class="set-ctrl">
+              <input id="setAmbientVol" type="range" min="0" max="1" step="0.05" value="0.85">
+              <span class="set-val" id="setAmbientVolVal">85%</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Wildlife Calls &amp; Whale Songs</span>
+            <div class="set-ctrl">
+              <input id="setWildlifeVol" type="range" min="0" max="1" step="0.05" value="0.90">
+              <span class="set-val" id="setWildlifeVolVal">90%</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Rivers, Surf &amp; Abyssal Hydrophone</span>
+            <div class="set-ctrl">
+              <input id="setWaterVol" type="range" min="0" max="1" step="0.05" value="0.80">
+              <span class="set-val" id="setWaterVolVal">80%</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Monsoon Rain, Fire &amp; Caldera</span>
+            <div class="set-ctrl">
+              <input id="setWeatherVol" type="range" min="0" max="1" step="0.05" value="0.80">
+              <span class="set-val" id="setWeatherVolVal">80%</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 05 Controls & Locomotion -->
+        <section class="settings-section">
+          <h3>05 · Creature Locomotion &amp; Controls</h3>
+          <div class="set-row">
+            <span class="set-label">Animal Steering Turn Rate</span>
+            <div class="set-ctrl">
+              <input id="setTurnSens" type="range" min="0.4" max="2.2" step="0.1" value="1.0">
+              <span class="set-val" id="setTurnSensVal">1.0x</span>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Movement &amp; Orbital Warp Speed (1–10x)</span>
+            <div class="set-ctrl">
+              <input id="setMoveSpeed" type="range" min="0.3" max="10.0" step="0.1" value="1.0">
+              <span class="set-val" id="setMoveSpeedVal">1.0x</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 06 Gameplay & Planetary Simulation -->
+        <section class="settings-section">
+          <h3>06 · Planetary Simulation &amp; Ecology</h3>
+          <div class="set-row">
+            <span class="set-label">AI Hazard &amp; Stranding Avoidance</span>
+            <div class="set-ctrl">
+              <input id="setHazardAvoid" type="checkbox" checked>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-label">Diurnal / Time Flying Speed (1–10x)</span>
+            <div class="set-ctrl">
+              <input id="setTimeSpeed" type="range" min="0.0" max="10.0" step="0.1" value="1.0">
+              <span class="set-val" id="setTimeSpeedVal">1.0x</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Minimalist Architectural Title Screen -->
 <div id="m">
   <div class="mast">
     <div class="mast-header">
-      <h1 class="hero-title">Terra Primordia</h1>
-      <p class="hero-sub">18 Seamless Biomes · Abyssal Garden Ocean · Living Wildlife</p>
+      <h1 class="hero-title">REALISM</h1>
+      <p class="hero-sub">Earth-Scale 6,371 km Planet · Abyssal Garden Ocean · Orbital Space</p>
     </div>
     <div id="l">
-      <p class="lead" id="lt">Initializing planetary heightmap, Abyssal Garden reefs &amp; expressive wildlife anatomy…</p>
+      <p class="lead" id="lt">Initializing Earth-scale geodesic quadtree, Abyssal Garden reefs &amp; expressive wildlife anatomy…</p>
       <div class="bar"><span id="lb"></span></div>
       <div id="err"></div>
     </div>
     <div id="g">
-      <p class="lead">A continuous, human-free WebGPU planet spanning the Everglades, Amazon, Serengeti Savanna, Overgrown Plantations, Golden Beach, Abyssal Garden Trench, Polar Ice Shelf, and 4 Forbidden Zones.</p>
+      <p class="lead">An Earth-scale (6,371 km radius), boundary-free WebGPU planetary ecosystem spanning 18 seamless biomes—from the Abyssal Garden hydrothermal trench, Coral Reef kelp forests, Amazon Canopy, and Serengeti Savanna up through the Stratosphere, Exosphere, and Deep Universe.</p>
       <div class="cta-row">
         <button class="cta primary" id="go" type="button">Enter Planet</button>
-        <button class="cta" id="menuMapBtn" type="button">Planetary Map [M]</button>
+        <button class="cta" id="menuMapBtn" type="button">3D Planetary Globe [M]</button>
         <button class="cta" id="menuEmbodyBtn" type="button">Inhabit Species [Tab]</button>
+        <button class="cta" id="menuSettingsBtn" type="button">&#9881; Settings [O]</button>
       </div>
       <p class="section-label">Direct Biome Teleport Index</p>
       <div class="loc-grid">
@@ -419,7 +699,7 @@ body.clean #photoBar { display: none; }
         <button class="loc-btn" data-pose="17" type="button">18 Red Dunes</button>
       </div>
       <div class="controls-bar">
-        <label class="ctrl-group">Speed <input id="speedRange" type="range" min="0.3" max="3.0" step="0.1" value="1.0"><span id="speedVal">1.0x</span></label>
+        <label class="ctrl-group">Speed <input id="speedRange" type="range" min="0.3" max="10.0" step="0.1" value="1.0"><span id="speedVal">1.0x</span></label>
         <label class="ctrl-group">Weather
           <select id="weatherSel">
             <option value="-1">Dynamic Cycle</option>
@@ -435,7 +715,7 @@ body.clean #photoBar { display: none; }
         </label>
         <div class="ctrl-group">
           <button class="btn-sm" id="muteBtn" type="button">Audio: On</button>
-          <input id="volRange" type="range" min="0" max="1" step="0.05" value="0.7" title="Master Volume">
+          <input id="volRange" type="range" min="0" max="1" step="0.05" value="0.75" title="Master Volume">
         </div>
       </div>
     </div>
@@ -445,4 +725,3 @@ body.clean #photoBar { display: none; }
 <script>/*SCRIPT*/</script>
 </body>
 </html>
-
