@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Terra Primordia — The Living WebGPU Planet</title>
+<meta name="description" content="A seamless, human-free, photorealistic raw-WebGPU planetary ecosystem featuring 18 biomes, the Abyssal Garden ocean trench, interactive planetary map teleportation, and playable wildlife embodiment in 1st and 3rd person POV.">
+<meta property="og:title" content="Terra Primordia — The Living WebGPU Planet">
+<meta property="og:description" content="Explore 18 seamless biomes from the Serengeti Savanna and Amazon Canopy to the Abyssal Garden Ocean Trench and Polar Ice Planet. Teleport anywhere via the live Planetary Map or inhabit any animal in 1st or 3rd Person POV.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#060d0a">
+<style>
+:root {
+  --bg: #060d0a;
+  --surface: rgba(6, 13, 10, 0.88);
+  --surface-solid: #08110d;
+  --line: rgba(240, 238, 228, 0.14);
+  --line-strong: rgba(240, 238, 228, 0.34);
+  --text: #f2f0e6;
+  --muted: #9cb0a2;
+  --accent: #e2b857;
+  --accent-ink: #09100c;
+  --cyan: #5cc8f2;
+}
+*, *::before, *::after {
+  box-sizing: border-box;
+  border-radius: 0 !important;
+}
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 12px/1.4 "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  letter-spacing: 0.02em;
+  -webkit-user-select: none; user-select: none;
+}
+canvas#c {
+  position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+  touch-action: none; cursor: crosshair;
+  transition: filter 0.5s ease, opacity 0.6s ease;
+}
+body:not(.g) canvas#c { filter: brightness(0.45) contrast(1.05); }
+body.l canvas#c { opacity: 0; }
+
+/* Minimalist Top Architectural Bar (Zero Cards, Zero Rounded Boxes) */
+#hud {
+  position: fixed; top: 0; left: 0; right: 0; height: 36px; z-index: 6;
+  display: flex; align-items: stretch; justify-content: space-between;
+  background: rgba(6, 13, 10, 0.82);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+  transition: opacity 0.25s ease;
+}
+body:not(.g) #hud, body.clean #hud { opacity: 0; pointer-events: none; }
+
+.hud-telemetry {
+  display: flex; align-items: center; overflow: hidden;
+}
+.hud-cell {
+  display: flex; align-items: center; gap: 8px;
+  height: 100%; padding: 0 14px;
+  border-right: 1px solid var(--line);
+  white-space: nowrap; font-size: 11px; color: var(--muted);
+}
+.hud-cell strong {
+  color: var(--text); font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.08em; font-size: 11px;
+}
+#embodyBadge strong { color: var(--cyan); }
+#survivalBadge { border-right: 0; color: var(--muted); }
+
+#quickBar {
+  display: flex; align-items: stretch;
+}
+.nav-btn {
+  background: transparent; color: var(--text);
+  border: 0; border-left: 1px solid var(--line);
+  padding: 0 14px; font: 600 11px/1 inherit;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  cursor: pointer; transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+.nav-btn:hover { background: rgba(242, 240, 230, 0.09); }
+.nav-btn.accent { color: var(--accent); }
+.nav-btn.accent:hover { background: var(--accent); color: var(--accent-ink); }
+
+/* Minimalist Bottom Status & Keybind Strip */
+#bottomStrip {
+  position: fixed; bottom: 0; left: 0; right: 0; height: 28px; z-index: 5;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 14px;
+  background: rgba(6, 13, 10, 0.76);
+  border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--muted);
+  letter-spacing: 0.04em; pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+body:not(.g) #bottomStrip, body.clean #bottomStrip { opacity: 0; }
+
+/* Technical Diagnostic Readout ([H]) */
+#info {
+  position: fixed; top: 44px; left: 14px; z-index: 5;
+  display: none; white-space: pre;
+  padding: 8px 10px; background: rgba(6, 13, 10, 0.88);
+  border: 1px solid var(--line);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted); pointer-events: none;
+}
+
+/* Minimalist Title Overlay (#m) — No Cards, Pure Architectural Grid */
+#m {
+  position: fixed; inset: 0; z-index: 10;
+  display: grid; place-content: center;
+  padding: 24px;
+  background: rgba(5, 11, 8, 0.80);
+  backdrop-filter: blur(10px);
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+  overflow-y: auto;
+}
+body.g #m { opacity: 0; visibility: hidden; pointer-events: none; }
+body.m #l, body.l #g { display: none; }
+
+.mast {
+  width: min(860px, 94vw);
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+  padding: 28px 0;
+  text-align: left;
+}
+.mast-header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+  padding-bottom: 16px; border-bottom: 1px solid var(--line);
+}
+.hero-title {
+  margin: 0;
+  font: 300 clamp(1.85rem, 3.6vw, 2.75rem)/1 "Inter", system-ui, sans-serif;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--text);
+}
+.hero-sub {
+  margin: 0; font-size: 11px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--accent);
+}
+.lead {
+  margin: 14px 0 18px; color: var(--muted); font-size: 12.5px; line-height: 1.55;
+  max-width: 72ch;
+}
+.bar {
+  width: 100%; height: 2px;
+  background: rgba(255, 255, 255, 0.10); overflow: hidden; margin: 14px 0 8px;
+}
+.bar > span {
+  display: block; height: 100%; width: 0%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.cta-row {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  border: 1px solid var(--line-strong);
+  margin-bottom: 18px;
+}
+.cta {
+  padding: 13px 16px; border: 0; border-right: 1px solid var(--line-strong);
+  background: transparent; color: var(--text);
+  font: 600 11.5px/1 inherit; text-transform: uppercase; letter-spacing: 0.12em;
+  cursor: pointer; transition: background 0.15s ease, color 0.15s ease;
+}
+.cta:last-child { border-right: 0; }
+.cta.primary { background: var(--accent); color: var(--accent-ink); }
+.cta:hover { background: rgba(242, 240, 230, 0.12); color: var(--text); }
+.cta.primary:hover { background: #efd07a; color: var(--accent-ink); }
+
+.section-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.14em; color: var(--muted); margin: 0 0 8px;
+}
+.loc-grid {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  border-top: 1px solid var(--line); border-left: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.loc-btn {
+  background: rgba(255, 255, 255, 0.015); color: var(--muted);
+  border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  padding: 8px 9px; text-align: left; font: 500 11px/1.25 inherit;
+  cursor: pointer; transition: background 0.12s ease, color 0.12s ease;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.loc-btn:hover { background: rgba(226, 184, 87, 0.14); color: var(--text); }
+
+.controls-bar {
+  display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between;
+  padding-top: 14px; border-top: 1px solid var(--line); font-size: 11px;
+}
+.ctrl-group {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em;
+}
+.ctrl-group input[type=range] { width: 84px; accent-color: var(--accent); cursor: pointer; }
+.ctrl-group select, .btn-sm {
+  background: transparent; color: var(--text);
+  border: 1px solid var(--line-strong);
+  padding: 6px 11px; font: 600 11px/1 inherit;
+  text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer;
+  white-space: nowrap;
+}
+.btn-sm:hover, .ctrl-group select:hover { background: rgba(242, 240, 230, 0.10); }
+.ctrl-group select option { background: var(--surface-solid); color: var(--text); }
+
+/* Minimalist Architectural Modals (Planetary Map & Species Embodiment) */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 25;
+  display: none; place-content: center;
+  padding: 20px;
+  background: rgba(4, 9, 7, 0.84);
+  backdrop-filter: blur(8px);
+}
+.modal-backdrop.open { display: grid; }
+.modal-box {
+  width: min(920px, 96vw); max-height: 92vh; overflow-y: auto;
+  background: var(--surface-solid);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+}
+.modal-header h2 {
+  margin: 0; font: 600 12px/1 inherit;
+  text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent);
+}
+.modal-body { padding: 14px 16px; }
+
+.map-wrap {
+  position: relative; width: 100%;
+  border: 1px solid var(--line);
+  background: #041017;
+}
+canvas#planetMapCanvas {
+  width: 100%; height: auto; aspect-ratio: 16 / 10; display: block; cursor: crosshair;
+}
+#mapTooltip {
+  position: absolute; pointer-events: none; display: none;
+  padding: 7px 10px;
+  background: rgba(6, 13, 10, 0.94); border: 1px solid var(--accent);
+  font-size: 11px; color: var(--text); max-width: 260px;
+}
+#mapPinBar {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  border-top: 1px solid var(--line); border-left: 1px solid var(--line);
+  margin-top: 12px;
+}
+
+.species-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--line); border-left: 1px solid var(--line);
+  margin-top: 10px;
+}
+.sp-card {
+  padding: 10px 12px; text-align: left;
+  background: transparent;
+  border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  color: var(--text); cursor: pointer;
+  transition: background 0.12s ease;
+}
+.sp-card:hover, .sp-card.active {
+  background: rgba(226, 184, 87, 0.15);
+}
+.sp-card b {
+  display: block; font-size: 11.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--text); margin-bottom: 3px;
+}
+.sp-card.active b { color: var(--accent); }
+.sp-card span { font-size: 10.5px; color: var(--muted); display: block; }
+
+/* Minimalist Optical Lens Strip ([P]) */
+#photoBar {
+  position: fixed; bottom: 28px; left: 0; right: 0; z-index: 6;
+  display: none; flex-wrap: wrap; gap: 18px; align-items: center; justify-content: center;
+  padding: 8px 16px;
+  background: rgba(6, 13, 10, 0.90); border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--muted);
+}
+body.photo #photoBar { display: flex; }
+body.clean #photoBar { display: none; }
+
+#err {
+  display: none; margin-top: 12px; padding: 10px 12px;
+  background: rgba(160, 35, 35, 0.25); border: 1px solid rgba(255, 110, 110, 0.45);
+  color: #ffd6d6; font-size: 12px;
+}
+@media (max-width: 780px) {
+  .loc-grid, #mapPinBar { grid-template-columns: repeat(3, 1fr); }
+  .species-grid { grid-template-columns: repeat(2, 1fr); }
+  .cta-row { grid-template-columns: 1fr; }
+  .cta { border-right: 0; border-bottom: 1px solid var(--line-strong); }
+  .hud-cell:nth-child(n+3) { display: none; }
+}
+</style>
+</head>
+<body class="l">
+<canvas id="c"></canvas>
+
+<!-- Minimalist Top Architectural Bar -->
+<header id="hud">
+  <div class="hud-telemetry">
+    <div class="hud-cell">
+      <strong id="loc">The River Sanctuary</strong>
+      <span id="weatherLabel">Golden Sunlight · 33mm</span>
+    </div>
+    <div class="hud-cell" id="embodyBadge">
+      <strong id="embodyLabel">Observer: Free-Fly</strong>
+    </div>
+    <div class="hud-cell" id="survivalBadge">
+      <span id="survivalLabel">Lions stalking Plains Zebras</span>
+    </div>
+  </div>
+  <nav id="quickBar" aria-label="Primary Controls">
+    <button class="nav-btn accent" id="openMapBtn" type="button">Map [M]</button>
+    <button class="nav-btn accent" id="openEmbodyBtn" type="button">Species [Tab]</button>
+    <button class="nav-btn" id="togglePovBtn" type="button">POV: Free [V]</button>
+    <button class="nav-btn" id="instinctBtn" type="button">Sense [Q]</button>
+    <button class="nav-btn" id="weatherCycleBtn" type="button">Weather [W]</button>
+  </nav>
+</header>
+
+<div id="info"></div>
+
+<!-- Minimalist Optical Camera Strip ([P]) -->
+<div id="photoBar">
+  <label class="ctrl-group">Focal <input id="focalRange" type="range" min="18" max="85" step="1" value="33"><span id="focalVal">33mm</span></label>
+  <label class="ctrl-group">Aperture <input id="apertureRange" type="range" min="1.4" max="11" step="0.2" value="2.8"><span id="apertureVal">f/2.8</span></label>
+  <label class="ctrl-group">Focus <input id="focusRange" type="range" min="2" max="120" step="1" value="18"><span id="focusVal">18m</span></label>
+  <label class="ctrl-group">EV <input id="evRange" type="range" min="-1.5" max="1.5" step="0.05" value="0"><span id="evVal">+0.0</span></label>
+  <span class="ctrl-group">Shutter <strong id="shutterVal" style="color:var(--accent)">1/250s</strong></span>
+  <button class="btn-sm" id="cleanUiBtn" type="button">Hide UI [U]</button>
+</div>
+
+<!-- Minimalist Bottom Keybind & Embodiment Guidance Strip -->
+<footer id="bottomStrip">
+  <span id="embodyHint">WASD Move · Mouse Look · [E] Inhabit Nearest Animal · [R] Vocalize / Display · [Space] Action</span>
+  <span id="hint">[M] Map · [Tab] Species · [V] 1st/3rd POV · [Q] Sense · [P] Optics · [U] Clean UI</span>
+</footer>
+
+<!-- Interactive Planetary Topographic & Bathymetric Map -->
+<div id="mapModal" class="modal-backdrop" role="dialog" aria-label="Planetary Topographic and Bathymetric Map">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>Planetary Topographic &amp; Bathymetric Map — Click Any Coordinate or Pin to Teleport</h2>
+      <button class="btn-sm" id="closeMapBtn" type="button">Close [M]</button>
+    </div>
+    <div class="modal-body">
+      <div class="map-wrap">
+        <canvas id="planetMapCanvas" width="820" height="512"></canvas>
+        <div id="mapTooltip"></div>
+      </div>
+      <div id="mapPinBar"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Playable Animal Embodiment & POV Selector -->
+<div id="embodimentModal" class="modal-backdrop" role="dialog" aria-label="Animal Embodiment Selector">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>Species Embodiment — Select an Animal to Inhabit in 1st or 3rd Person POV</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn-sm" id="modalPovToggleBtn" type="button">POV: 3rd Person [V]</button>
+        <button class="btn-sm" id="disembodyBtn" type="button">Free-Fly Observer</button>
+        <button class="btn-sm" id="closeEmbodyBtn" type="button">Close [Tab]</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="species-grid" id="speciesGrid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Minimalist Architectural Title Screen -->
+<div id="m">
+  <div class="mast">
+    <div class="mast-header">
+      <h1 class="hero-title">Terra Primordia</h1>
+      <p class="hero-sub">18 Seamless Biomes · Abyssal Garden Ocean · Living Wildlife</p>
+    </div>
+    <div id="l">
+      <p class="lead" id="lt">Initializing planetary heightmap, Abyssal Garden reefs &amp; expressive wildlife anatomy…</p>
+      <div class="bar"><span id="lb"></span></div>
+      <div id="err"></div>
+    </div>
+    <div id="g">
+      <p class="lead">A continuous, human-free WebGPU planet spanning the Everglades, Amazon, Serengeti Savanna, Overgrown Plantations, Golden Beach, Abyssal Garden Trench, Polar Ice Shelf, and 4 Forbidden Zones.</p>
+      <div class="cta-row">
+        <button class="cta primary" id="go" type="button">Enter Planet</button>
+        <button class="cta" id="menuMapBtn" type="button">Planetary Map [M]</button>
+        <button class="cta" id="menuEmbodyBtn" type="button">Inhabit Species [Tab]</button>
+      </div>
+      <p class="section-label">Direct Biome Teleport Index</p>
+      <div class="loc-grid">
+        <button class="loc-btn" data-pose="0" type="button">01 River Sanctuary</button>
+        <button class="loc-btn" data-pose="1" type="button">02 Cypress Swamp</button>
+        <button class="loc-btn" data-pose="2" type="button">03 Amazon Canopy</button>
+        <button class="loc-btn" data-pose="3" type="button">04 Mangrove Passage</button>
+        <button class="loc-btn" data-pose="4" type="button">05 Wildlife Clearing</button>
+        <button class="loc-btn" data-pose="5" type="button">06 Wild Plantations</button>
+        <button class="loc-btn" data-pose="6" type="button">07 Serengeti Savanna</button>
+        <button class="loc-btn" data-pose="7" type="button">08 Bamboo Jungle</button>
+        <button class="loc-btn" data-pose="8" type="button">09 Ape Highlands</button>
+        <button class="loc-btn" data-pose="9" type="button">10 Golden Beach</button>
+        <button class="loc-btn" data-pose="10" type="button">11 Coral Reef &amp; Kelp</button>
+        <button class="loc-btn" data-pose="11" type="button">12 Abyssal Trench</button>
+        <button class="loc-btn" data-pose="12" type="button">13 Penguin Rookery</button>
+        <button class="loc-btn" data-pose="13" type="button">14 Polar Ice Shelf</button>
+        <button class="loc-btn" data-pose="14" type="button">15 Burning Forest</button>
+        <button class="loc-btn" data-pose="15" type="button">16 Volcanic Caldera</button>
+        <button class="loc-btn" data-pose="16" type="button">17 Cenote Cavern</button>
+        <button class="loc-btn" data-pose="17" type="button">18 Red Dunes</button>
+      </div>
+      <div class="controls-bar">
+        <label class="ctrl-group">Speed <input id="speedRange" type="range" min="0.3" max="3.0" step="0.1" value="1.0"><span id="speedVal">1.0x</span></label>
+        <label class="ctrl-group">Weather
+          <select id="weatherSel">
+            <option value="-1">Dynamic Cycle</option>
+            <option value="0">Golden Sunlight</option>
+            <option value="1">Swamp Morning Mist</option>
+            <option value="2">Tropical Monsoon Storm</option>
+            <option value="3">Savanna Heat Haze</option>
+            <option value="4">Coastal Shorebreak Surf</option>
+            <option value="5">Polar Blizzard</option>
+            <option value="6">Polar Night Aurora</option>
+            <option value="7">Volcanic Ash &amp; Wildfire</option>
+          </select>
+        </label>
+        <div class="ctrl-group">
+          <button class="btn-sm" id="muteBtn" type="button">Audio: On</button>
+          <input id="volRange" type="range" min="0" max="1" step="0.05" value="0.7" title="Master Volume">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="s" style="display:none"></div>
+<script>/*SCRIPT*/</script>
+</body>
+</html>
+
