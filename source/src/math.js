@@ -126,6 +126,259 @@ function fbm2(x, z, oct = 4) {
   return v;
 }
 
+// Seamless 3D value noise & FBM for pole-free, non-repeating spherical planets
+function hash3(ix, iy, iz) {
+  let n = Math.imul(ix, 374761393) + Math.imul(iy, 668265263) + Math.imul(iz, 2147483647) + 0x56455244;
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+function noise3(x, y, z) {
+  const ix = floor(x), iy = floor(y), iz = floor(z);
+  const fx = x - ix, fy = y - iy, fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const uz = fz * fz * (3 - 2 * fz);
+  const c000 = hash3(ix,     iy,     iz);
+  const c100 = hash3(ix + 1, iy,     iz);
+  const c010 = hash3(ix,     iy + 1, iz);
+  const c110 = hash3(ix + 1, iy + 1, iz);
+  const c001 = hash3(ix,     iy,     iz + 1);
+  const c101 = hash3(ix + 1, iy,     iz + 1);
+  const c011 = hash3(ix,     iy + 1, iz + 1);
+  const c111 = hash3(ix + 1, iy + 1, iz + 1);
+  const x00 = lerp(c000, c100, ux);
+  const x10 = lerp(c010, c110, ux);
+  const x01 = lerp(c001, c101, ux);
+  const x11 = lerp(c011, c111, ux);
+  return lerp(lerp(x00, x10, uy), lerp(x01, x11, uy), uz);
+}
+function fbm3(x, y, z, oct = 5) {
+  let v = 0, a = 0.5, norm = 0;
+  let sx = x, sy = y, sz = z;
+  for (let i = 0; i < oct; i++) {
+    v += a * noise3(sx, sy, sz);
+    norm += a;
+    const nx = sx * 1.62 - sz * 1.18 + 13.7;
+    const ny = sy * 1.98 + 7.3;
+    const nz = sx * 1.18 + sz * 1.62 + 29.1;
+    sx = nx; sy = ny; sz = nz;
+    a *= 0.5;
+  }
+  return norm > 0 ? v / norm : 0.5;
+}
+function ridged3(x, y, z, oct = 4) {
+  let v = 0, a = 0.5, norm = 0, weight = 1.0;
+  let sx = x, sy = y, sz = z;
+  for (let i = 0; i < oct; i++) {
+    let n = 1.0 - abs(noise3(sx, sy, sz) * 2.0 - 1.0);
+    n = n * n * weight;
+    weight = clamp(n * 1.85, 0.2, 1.0);
+    v += n * a;
+    norm += a;
+    const nx = sx * 1.72 - sy * 0.94 + 19.1;
+    const ny = sx * 0.94 + sy * 1.72 - 11.4;
+    const nz = sz * 1.96 + 23.7;
+    sx = nx; sy = ny; sz = nz;
+    a *= 0.5;
+  }
+  return norm > 0 ? v / norm : 0;
+}
+
+// ============================================================================
+// WGS-84 Oblate Earth Geodesy, Double-Precision ECEF, Local ENU & Cube-Sphere
+// Right-handed ECEF: +Y = North Pole, +Z = Prime Meridian (0° lon), +X = 90°E
+// Local GPU Frame:   +X = East, +Y = Up (geodetic normal), +Z = South (-North)
+// ============================================================================
+const DEG2RAD = PI / 180;
+const RAD2DEG = 180 / PI;
+const EARTH_MEAN_R = 6371000.0;
+const EARTH_EQ_R = 6378137.0;
+const EARTH_POL_R = 6356752.0;
+
+function oblateRadiusAtSinLat(sinLat) {
+  const s2 = sinLat * sinLat;
+  const c2 = 1.0 - s2;
+  const a2 = EARTH_EQ_R * EARTH_EQ_R;
+  const b2 = EARTH_POL_R * EARTH_POL_R;
+  const num = a2 * a2 * c2 + b2 * b2 * s2;
+  const den = a2 * c2 + b2 * s2;
+  return sqrt(num / max(1, den));
+}
+
+function latLonToDir(latRad, lonRad, out = [0, 0, 1]) {
+  const cl = cos(latRad);
+  out[0] = cl * sin(lonRad);
+  out[1] = sin(latRad);
+  out[2] = cl * cos(lonRad);
+  return out;
+}
+
+function dirToLatLon(nx, ny, nz, out = {}) {
+  const l = hypot(nx, ny, nz) || 1;
+  const x = nx / l, y = clamp(ny / l, -1, 1), z = nz / l;
+  const latRad = Math.asin(y);
+  const lonRad = atan2(x, z);
+  out.latRad = latRad;
+  out.lonRad = lonRad;
+  out.latDeg = latRad * RAD2DEG;
+  out.lonDeg = lonRad * RAD2DEG;
+  out.nx = x; out.ny = y; out.nz = z;
+  return out;
+}
+
+function geodeticToEcef(latRad, lonRad, altMeters = 0, out = [0, 0, 0]) {
+  const cl = cos(latRad);
+  const sl = sin(latRad);
+  const r = oblateRadiusAtSinLat(sl) + altMeters;
+  out[0] = r * cl * sin(lonRad);
+  out[1] = r * sl;
+  out[2] = r * cl * cos(lonRad);
+  return out;
+}
+
+function ecefToGeodetic(x, y, z, out = {}) {
+  const r = hypot(x, y, z) || EARTH_MEAN_R;
+  const nx = x / r, ny = clamp(y / r, -1, 1), nz = z / r;
+  const latRad = Math.asin(ny);
+  const lonRad = atan2(nx, nz);
+  const surfaceRadius = oblateRadiusAtSinLat(ny);
+  out.latRad = latRad;
+  out.lonRad = lonRad;
+  out.latDeg = latRad * RAD2DEG;
+  out.lonDeg = lonRad * RAD2DEG;
+  out.altMeters = r - surfaceRadius;
+  out.surfaceRadius = surfaceRadius;
+  out.nx = nx; out.ny = ny; out.nz = nz;
+  return out;
+}
+
+// Local orthonormal tangent basis at (latRad, lonRad):
+// east (+X), up (+Y), south (+Z = -north), north (-Z)
+function localENUFrame(latRad, lonRad, out = {}) {
+  const sl = sin(latRad), cl = cos(latRad);
+  const sLon = sin(lonRad), cLon = cos(lonRad);
+  const ux = cl * sLon, uy = sl, uz = cl * cLon;
+  const ex = cLon, ey = 0, ez = -sLon;
+  // North = Up x East
+  const nx = -sl * sLon, ny = cl, nz = -sl * cLon;
+  out.east  = [ex, ey, ez];
+  out.up    = [ux, uy, uz];
+  out.north = [nx, ny, nz];
+  out.south = [-nx, -ny, -nz];
+  return out;
+}
+
+// Exact spherical great-circle displacement along tangent (dEastMeters, dNorthMeters)
+// Handles ±180° longitude and both North/South poles continuously without singularities!
+function moveAlongGeodesic(latRad, lonRad, dEastMeters, dNorthMeters, out = {}) {
+  const dist = hypot(dEastMeters, dNorthMeters);
+  if (dist < 1e-9) {
+    out.latRad = latRad;
+    out.lonRad = normAngle(lonRad);
+    out.latDeg = out.latRad * RAD2DEG;
+    out.lonDeg = out.lonRad * RAD2DEG;
+    out.headingShift = 0;
+    return out;
+  }
+  const sl = sin(latRad);
+  const R = oblateRadiusAtSinLat(sl);
+  const ang = dist / R;
+  const basis = localENUFrame(latRad, lonRad);
+  const tFracE = dEastMeters / dist;
+  const tFracN = dNorthMeters / dist;
+  // Tangent unit direction in ECEF
+  const tx = basis.east[0] * tFracE + basis.north[0] * tFracN;
+  const ty = basis.east[1] * tFracE + basis.north[1] * tFracN;
+  const tz = basis.east[2] * tFracE + basis.north[2] * tFracN;
+  // New unit normal on sphere: n' = n * cos(ang) + t * sin(ang)
+  const ca = cos(ang), sa = sin(ang);
+  const nx = basis.up[0] * ca + tx * sa;
+  const ny = clamp(basis.up[1] * ca + ty * sa, -1, 1);
+  const nz = basis.up[2] * ca + tz * sa;
+  const nl = hypot(nx, ny, nz) || 1;
+  const ux = nx / nl, uy = clamp(ny / nl, -1, 1), uz = nz / nl;
+
+  const newLatRad = Math.asin(uy);
+  let newLonRad = atan2(ux, uz);
+  // If crossing directly over a pole, preserve continuous meridian direction
+  if (hypot(ux, uz) < 1e-9) newLonRad = normAngle(lonRad + PI);
+
+  // Parallel-transported travel tangent at new point: t' = -n * sin(ang) + t * cos(ang)
+  const tpx = -basis.up[0] * sa + tx * ca;
+  const tpy = -basis.up[1] * sa + ty * ca;
+  const tpz = -basis.up[2] * sa + tz * ca;
+  const newBasis = localENUFrame(newLatRad, newLonRad);
+  const newE = tpx * newBasis.east[0] + tpy * newBasis.east[1] + tpz * newBasis.east[2];
+  const newN = tpx * newBasis.north[0] + tpy * newBasis.north[1] + tpz * newBasis.north[2];
+  const oldBearing = atan2(tFracE, tFracN);
+  const newBearing = atan2(newE, newN);
+
+  out.latRad = newLatRad;
+  out.lonRad = normAngle(newLonRad);
+  out.latDeg = out.latRad * RAD2DEG;
+  out.lonDeg = out.lonRad * RAD2DEG;
+  out.nx = ux; out.ny = uy; out.nz = uz;
+  out.headingShift = normAngle(newBearing - oldBearing);
+  return out;
+}
+
+// Haversine / great-circle distance in meters on mean oblate Earth
+function greatCircleDistanceMeters(lat1Deg, lon1Deg, lat2Deg, lon2Deg) {
+  const p1 = lat1Deg * DEG2RAD;
+  const p2 = lat2Deg * DEG2RAD;
+  const dp = (lat2Deg - lat1Deg) * DEG2RAD;
+  const dl = (lon2Deg - lon1Deg) * DEG2RAD;
+  const sp = sin(dp * 0.5);
+  const sl = sin(dl * 0.5);
+  const a = sp * sp + cos(p1) * cos(p2) * sl * sl;
+  const c = 2 * atan2(sqrt(max(0, a)), sqrt(max(0, 1 - a)));
+  const midSinLat = sin((p1 + p2) * 0.5);
+  return oblateRadiusAtSinLat(midSinLat) * c;
+}
+
+// Exact invertible 6-face Cube-Sphere projection (+X=0, -X=1, +Y=2, -Y=3, +Z=4, -Z=5)
+function cubeFaceUVToDir(face, u, v, out = [0, 0, 1]) {
+  let x = 0, y = 0, z = 0;
+  switch (face) {
+    case 0: x =  1; y =  v; z = -u; break; // +X
+    case 1: x = -1; y =  v; z =  u; break; // -X
+    case 2: x =  u; y =  1; z = -v; break; // +Y (North Pole)
+    case 3: x =  u; y = -1; z =  v; break; // -Y (South Pole)
+    case 4: x =  u; y =  v; z =  1; break; // +Z
+    default: x = -u; y = v; z = -1; break; // -Z
+  }
+  const l = hypot(x, y, z) || 1;
+  out[0] = x / l;
+  out[1] = y / l;
+  out[2] = z / l;
+  return out;
+}
+
+function dirToCubeFaceUV(nx, ny, nz, out = {}) {
+  const ax = abs(nx), ay = abs(ny), az = abs(nz);
+  let face = 0, u = 0, v = 0, ma = 1;
+  if (ax >= ay && ax >= az) {
+    ma = ax || 1;
+    face = nx >= 0 ? 0 : 1;
+    u = (nx >= 0 ? -nz : nz) / ma;
+    v = ny / ma;
+  } else if (ay >= ax && ay >= az) {
+    ma = ay || 1;
+    face = ny >= 0 ? 2 : 3;
+    u = nx / ma;
+    v = (ny >= 0 ? -nz : nz) / ma;
+  } else {
+    ma = az || 1;
+    face = nz >= 0 ? 4 : 5;
+    u = (nz >= 0 ? nx : -nx) / ma;
+    v = ny / ma;
+  }
+  out.face = face;
+  out.u = u;
+  out.v = v;
+  return out;
+}
+
 const vSub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const vCross = (a, b) => [
   a[1] * b[2] - a[2] * b[1],
@@ -352,7 +605,8 @@ class MeshBuilder {
   ribbon(p0, p1, w0, w1, arch, col0, col1, u = 1, v0 = 0, v1 = 1, segs = 4) {
     const base = (this.v.length / 11) | 0;
     const dir = vNorm(vSub(p1, p0));
-    const side = vNorm(vCross(dir, [0, 1, 0]));
+    const refAxis = abs(dir[1]) > 0.90 ? [1, 0, 0] : [0, 1, 0];
+    const side = vNorm(vCross(dir, refAxis));
     const up = vNorm(vCross(side, dir));
     for (let s = 0; s <= segs; s++) {
       const f = s / segs;
@@ -383,10 +637,14 @@ class MeshBuilder {
 }
 
 export {
-  PI, TAU, sin, cos, tan, abs, hypot, min, max, sqrt, floor, round, atan2, exp, pow,
+  PI, TAU, DEG2RAD, RAD2DEG, EARTH_MEAN_R, EARTH_EQ_R, EARTH_POL_R,
+  sin, cos, tan, abs, hypot, min, max, sqrt, floor, round, atan2, exp, pow,
   clamp, saturate, lerp, smoothstep, smin, smax,
   normAngle, lerpAngle, yawToForward, velocityToYaw, solveTwoBoneIK,
-  WORLD_SEED, seedRng, rnd, rr, hash2, noise2, fbm2,
+  WORLD_SEED, seedRng, rnd, rr, hash2, noise2, fbm2, hash3, noise3, fbm3, ridged3,
+  oblateRadiusAtSinLat, latLonToDir, dirToLatLon, geodeticToEcef, ecefToGeodetic,
+  localENUFrame, moveAlongGeodesic, greatCircleDistanceMeters,
+  cubeFaceUVToDir, dirToCubeFaceUV,
   vSub, vCross, vNorm, m4Mul, m4Persp, m4Ortho, m4Look, m4Inv,
   MeshBuilder
 };

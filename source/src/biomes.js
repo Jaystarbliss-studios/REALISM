@@ -1,646 +1,802 @@
 // ============================================================================
-// REALISM — Earth-Scale Planetary Geodesy (6,371 km Radius), 6-Face Cube-Sphere
-// Quadtree Terrain Streamer, Atmospheric-to-Space Layers & 18 Seamless Biomes
+// REALISM — Genuine Earth-Scale Planetary Geodesy (6,371 km Oblate Sphere),
+// 6-Face Cube-Sphere Quadtree Terrain Streamer, Distinct Continents,
+// 18 Distributed Global Biomes & Continuous Atmospheric Re-Entry State Machine
 // ============================================================================
 import {
-  PI, TAU, sin, cos, abs, hypot, min, max, sqrt, floor, atan2,
-  clamp, saturate, lerp, smoothstep, fbm2
+  PI, TAU, DEG2RAD, RAD2DEG, EARTH_MEAN_R, EARTH_EQ_R, EARTH_POL_R,
+  sin, cos, tan, abs, hypot, min, max, sqrt, floor, atan2, exp,
+  clamp, saturate, lerp, smoothstep, normAngle,
+  fbm3, ridged3, oblateRadiusAtSinLat, latLonToDir, dirToLatLon,
+  geodeticToEcef, ecefToGeodetic, localENUFrame, moveAlongGeodesic,
+  greatCircleDistanceMeters, cubeFaceUVToDir, dirToCubeFaceUV
 } from './math.js';
 
-export const WORLD_SIZE = 720;
-export const WORLD_HALF = 360;
 export const WATER_LEVEL = 0.0;
 
 // Earth-Scale Planetary Constants (WGS-84 Oblate Spheroid & Geodesic Reference)
-export const PLANET_RADIUS = 6371000;            // Mean Earth radius in meters (6,371 km)
-export const PLANET_EQUATORIAL_RADIUS = 6378137; // Equatorial radius in meters
-export const PLANET_POLAR_RADIUS = 6356752;      // Polar radius in meters
-export const PLANET_CIRCUMFERENCE = 40075017;    // Equatorial circumference in meters (40,075 km)
-export const PLANET_SURFACE_KM2 = 510072000;     // 510.072 million sq km (~196.94 million sq miles)
-export const KARMAN_LINE_ALT = 100000;           // 100 km atmospheric exit boundary
-export const OCEAN_COVERAGE = 0.71;              // 71% Marine/Ocean, 29% Continental Land
+export const PLANET_RADIUS = EARTH_MEAN_R;               // 6,371,000 m (6,371 km)
+export const PLANET_EQUATORIAL_RADIUS = EARTH_EQ_R;      // 6,378,137 m
+export const PLANET_POLAR_RADIUS = EARTH_POL_R;          // 6,356,752 m
+export const PLANET_CIRCUMFERENCE = 40075017;            // ~40,075.017 km equatorial
+export const PLANET_SURFACE_KM2 = 510072000;             // ~510.072 million km^2
+export const KARMAN_LINE_ALT = 100000;                   // 100 km Kármán line (meters)
+export const OCEAN_COVERAGE = 0.71;                      // ~71% Ocean, ~29% Continental Land
 
-// Vertical Atmospheric & Orbital Space Layers
+// Real-Scale Vertical Atmospheric & Orbital Space Layers (ALL IN TRUE METERS)
 export const ATMOSPHERE_LAYERS = [
-  { id: 0, name: 'Abyssal & Pelagic Ocean', code: 'OCEAN', minAlt: -12000, maxAlt: -0.05, realKm: '-11 - 0 km', desc: 'Photic coral reefs, mesopelagic twilight & Abyssal Garden hydrothermal trenches' },
-  { id: 1, name: 'Troposphere', code: 'TROPO', minAlt: -0.05, maxAlt: 160, realKm: '0 - 12 km', desc: 'Dense breathable air, cumulus clouds, active weather & terrestrial biosphere' },
-  { id: 2, name: 'Stratosphere', code: 'STRATO', minAlt: 160, maxAlt: 380, realKm: '12 - 50 km', desc: 'Ozone layer, calm winds, deep cobalt sky & curved planetary horizon limb' },
-  { id: 3, name: 'Mesosphere', code: 'MESO', minAlt: 380, maxAlt: 720, realKm: '50 - 85 km', desc: 'Rarified upper air, noctilucent ice crystals & emerging celestial starfield' },
-  { id: 4, name: 'Thermosphere', code: 'THERMO', minAlt: 720, maxAlt: 1250, realKm: '85 - 600 km', desc: 'Geomagnetic auroral curtains, low-Earth orbital horizon & near-vacuum sky' },
-  { id: 5, name: 'Exosphere', code: 'EXO', minAlt: 1250, maxAlt: 2300, realKm: '600 - 10,000 km', desc: 'Kármán orbital space, full 3D spherical planet globe & atmospheric limb halo' },
-  { id: 6, name: 'Deep Universe', code: 'COSMOS', minAlt: 2300, maxAlt: 1e12, realKm: '> 10,000 km', desc: 'Unbounded procedural universe, star clusters, nebulae & galactic sectors' }
+  { id: 0, name: 'Abyssal & Pelagic Ocean', code: 'OCEAN',  minAlt: -12000,   maxAlt: -0.05,    realKm: '-11 – 0 km',        desc: 'Photic coral reefs, mesopelagic twilight & Abyssal Garden trenches' },
+  { id: 1, name: 'Troposphere',             code: 'TROPO',  minAlt: -0.05,    maxAlt: 12000,    realKm: '0 – 12 km',         desc: 'Dense breathable air, cumulus clouds, active weather & terrestrial biosphere' },
+  { id: 2, name: 'Stratosphere',            code: 'STRATO', minAlt: 12000,    maxAlt: 50000,    realKm: '12 – 50 km',        desc: 'Ozone layer, calm winds, deep cobalt sky & curved planetary horizon limb' },
+  { id: 3, name: 'Mesosphere',              code: 'MESO',   minAlt: 50000,    maxAlt: 85000,    realKm: '50 – 85 km',        desc: 'Rarified upper air, meteor ablation zone & emerging celestial starfield' },
+  { id: 4, name: 'Thermosphere',            code: 'THERMO', minAlt: 85000,    maxAlt: 600000,   realKm: '85 – 600 km',       desc: 'Kármán line (100 km), auroral oval & Low-Earth Orbit' },
+  { id: 5, name: 'Exosphere',               code: 'EXO',    minAlt: 600000,   maxAlt: 10000000, realKm: '600 – 10,000 km',   desc: 'High orbital space, full 3D Earth globe & thin blue atmospheric limb' },
+  { id: 6, name: 'Deep Universe',           code: 'COSMOS', minAlt: 10000000, maxAlt: 1e12,     realKm: '> 10,000 km',       desc: 'Interplanetary space, distant planets, star clusters & spiral galaxies' }
 ];
 
+export const atmosphericDensityAt = (altMeters) => {
+  if (altMeters <= 0) return 1.0;
+  if (altMeters >= 600000) return 0.0;
+  // Standard atmospheric scale height (~8,500 m) with upper thermosphere tail
+  const lower = exp(-altMeters / 8500.0);
+  const upper = exp(-altMeters / 28000.0) * 0.008;
+  return clamp(lower + upper * smoothstep(20000, 120000, altMeters) * (1.0 - smoothstep(180000, 600000, altMeters)), 0, 1);
+};
+
+export const gravityAt = (altMeters) => {
+  const r = PLANET_RADIUS + max(0, altMeters);
+  const ratio = PLANET_RADIUS / r;
+  return 9.80665 * ratio * ratio;
+};
+
 export const atmosphericLayerAt = (altMeters) => {
+  const a = Number.isFinite(altMeters) ? altMeters : 0;
   for (let i = ATMOSPHERE_LAYERS.length - 1; i >= 0; i--) {
-    if (altMeters >= ATMOSPHERE_LAYERS[i].minAlt) {
+    if (a >= ATMOSPHERE_LAYERS[i].minAlt) {
       const layer = ATMOSPHERE_LAYERS[i];
-      const span = Math.max(1, layer.maxAlt - layer.minAlt);
-      const t = clamp((altMeters - layer.minAlt) / span, 0, 1);
-      let equivKm = 0;
-      if (altMeters < 0) equivKm = (altMeters / 22) * 4.2;
-      else if (altMeters < 160) equivKm = (altMeters / 160) * 12;
-      else if (altMeters < 380) equivKm = 12 + ((altMeters - 160) / 220) * 38;
-      else if (altMeters < 720) equivKm = 50 + ((altMeters - 380) / 340) * 35;
-      else if (altMeters < 1250) equivKm = 85 + ((altMeters - 720) / 530) * 515;
-      else if (altMeters < 2300) equivKm = 600 + ((altMeters - 1250) / 1050) * 9400;
-      else equivKm = 10000 + (altMeters - 2300) * 28;
-      const spaceFactor = clamp((altMeters - 140) / 960, 0, 1);
-      return { ...layer, progress: t, equivKm, spaceFactor };
+      const span = max(1, layer.maxAlt - layer.minAlt);
+      const t = clamp((a - layer.minAlt) / span, 0, 1);
+      const equivKm = a / 1000.0;
+      const spaceFactor = clamp((a - 18000) / (KARMAN_LINE_ALT - 18000), 0, 1);
+      const density = atmosphericDensityAt(a);
+      return { ...layer, progress: t, equivKm, altKm: equivKm, spaceFactor, density };
     }
   }
-  return { ...ATMOSPHERE_LAYERS[0], progress: 0, equivKm: -1.0, spaceFactor: 0 };
+  return { ...ATMOSPHERE_LAYERS[0], progress: 0, equivKm: a / 1000.0, altKm: a / 1000.0, spaceFactor: 0, density: 1.0 };
 };
 
-// Geodesic Spherical Wrapping:
-// Moving continuously across the planetary surface wraps smoothly around the globe (period = WORLD_SIZE)
-export const wrapCoord = (v) => {
-  if (!Number.isFinite(v)) return 0;
-  const s = WORLD_SIZE;
-  return ((((v + WORLD_HALF) % s) + s) % s) - WORLD_HALF;
-};
-
-export const wrapDelta = (a, b = 0) => wrapCoord(a - b);
-
-// Convert continuous world (x, y, z) to Spherical Geodesic (latDeg, lonDeg, altMeters, unitNormal)
-// and 6-Face Cube-Sphere coordinates (face 0..5, u, v in [-1, 1])
-export const worldToLatLonAlt = (x, y, z) => {
-  const wx = wrapCoord(x);
-  const wz = wrapCoord(z);
-  const lonDeg = (wx / WORLD_HALF) * 180.0;
-  const latDeg = clamp((-wz / WORLD_HALF) * 85.0, -89.9, 89.9);
-  const latRad = (latDeg * PI) / 180.0;
-  const lonRad = (lonDeg * PI) / 180.0;
-  const cl = cos(latRad);
-  const nx = cl * sin(lonRad);
-  const ny = sin(latRad);
-  const nz = cl * cos(lonRad);
-  const earthArcKm = hypot(x, z) * (40075.017 / WORLD_SIZE);
-  const layer = atmosphericLayerAt(y);
-  return {
-    lat: latDeg,
-    lon: lonDeg,
-    latDeg,
-    lonDeg,
-    altMeters: y,
-    altKm: layer.equivKm,
-    nx,
-    ny,
-    nz,
-    wrappedX: wx,
-    wrappedZ: wz,
-    earthArcKm
-  };
-};
-
-export const latLonToWorld = (latDeg, lonDeg) => {
-  const x = (clamp(lonDeg, -180, 180) / 180.0) * WORLD_HALF;
-  const z = (-clamp(latDeg, -85, 85) / 85.0) * WORLD_HALF;
-  return { x, z };
-};
-
-// 6-Face Cube-Sphere Projection (+X=0, -X=1, +Y=2, -Y=3, +Z=4, -Z=5)
-export const worldToCubeSphere = (x, y, z) => {
-  const g = worldToLatLonAlt(x, y, z);
-  const ax = abs(g.nx), ay = abs(g.ny), az = abs(g.nz);
-  let face = 0, u = 0, v = 0, ma = ax;
-  if (ax >= ay && ax >= az) {
-    ma = ax;
-    face = g.nx >= 0 ? 0 : 1;
-    u = (g.nx >= 0 ? -g.nz : g.nz) / ma;
-    v = g.ny / ma;
-  } else if (ay >= ax && ay >= az) {
-    ma = ay;
-    face = g.ny >= 0 ? 2 : 3;
-    u = g.nx / ma;
-    v = (g.ny >= 0 ? -g.nz : g.nz) / ma;
-  } else {
-    ma = az || 1;
-    face = g.nz >= 0 ? 4 : 5;
-    u = (g.nz >= 0 ? g.nx : -g.nx) / ma;
-    v = g.ny / ma;
-  }
-  // Oblate spheroid radius at latitude
-  const sinLat2 = g.ny * g.ny;
-  const radiusAtLat = lerp(PLANET_EQUATORIAL_RADIUS, PLANET_POLAR_RADIUS, sinLat2);
-  return {
-    face,
-    u,
-    v,
-    nx: g.nx,
-    ny: g.ny,
-    nz: g.nz,
-    radiusAtLat,
-    latDeg: g.latDeg,
-    lonDeg: g.lonDeg
-  };
-};
-
-// Dynamic Camera-Centered Quadtree Chunk Streamer (Floating-Origin Terrain Grid)
-// Streams terrain chunks continuously around (camX, camZ) so the player can circumnavigate
-// the entire planet without ever reaching the edge of the terrain mesh.
-export const updateQuadtreeChunks = (camX, camY, camZ, baseChunks, outInstData, viewDistScale = 1.0) => {
-  const snapSize = 45.0;
-  const anchorX = Math.round(camX / snapSize) * snapSize;
-  const anchorZ = Math.round(camZ / snapSize) * snapSize;
-  const altScale = clamp(1.0 + Math.max(0, camY - 90) * 0.008, 1.0, 4.5) * clamp(viewDistScale, 0.6, 1.6);
-
-  for (let i = 0; i < baseChunks.length; i++) {
-    const c = baseChunks[i];
-    outInstData[i * 4]     = anchorX + c.ox * altScale;
-    outInstData[i * 4 + 1] = anchorZ + c.oz * altScale;
-    outInstData[i * 4 + 2] = c.scale * altScale;
-    outInstData[i * 4 + 3] = 0;
-  }
-  return outInstData;
-};
-
-// Deterministic procedural universe sector generator for high-altitude / deep-space exploration
-export const spaceSectorAt = (x, y, z) => {
-  const sx = Math.floor(x / 500);
-  const sy = Math.floor(Math.max(0, y - 1100) / 500);
-  const sz = Math.floor(z / 500);
-  const h = Math.abs(Math.sin(sx * 127.1 + sy * 311.7 + sz * 74.7) * 43758.5453);
-  const idx = Math.floor((h % 1) * 6);
-  const names = [
-    'Orion-Cygnus Spiral Arm',
-    'Carina Nebula Filament',
-    'Magellanic Tidal Stream',
-    'Perseus Molecular Cloud',
-    'Vela Supernova Remnant',
-    'Local Bubble Interstellar Void'
-  ];
-  return {
-    sectorX: sx,
-    sectorY: sy,
-    sectorZ: sz,
-    name: names[idx] || names[0]
-  };
+export const reentryStageAt = (altMeters, groundH = 0, velU = 0) => {
+  const agl = altMeters - max(WATER_LEVEL, groundH);
+  if (altMeters >= 600000) return 'EXOSPHERE';
+  if (altMeters >= 100000) return 'ORBITAL_THERMOSPHERE';
+  if (altMeters >= 85000) return 'THERMOSPHERE';
+  if (altMeters >= 50000) return 'MESOSPHERE';
+  if (altMeters >= 12000) return 'STRATOSPHERE';
+  if (altMeters >= 4500) return 'TROPOSPHERE';
+  if (altMeters >= 1400) return 'CLOUD_APPROACH';
+  if (agl >= 140) return 'REGIONAL_FLIGHT';
+  if (agl >= 12) return 'NEAR_SURFACE';
+  return velU < -0.5 ? 'LANDING_TOUCHDOWN' : 'GROUND_SURFACE';
 };
 
 // ============================================================================
-// 18 Canonical Planetary Biome Coordinates (Aligned with W_TERRAIN & W_WATER)
+// 7 Distinct Major Tectonic Continents & Polar Realms (~29% Land / ~71% Ocean)
+// Each continent is defined by multiple elliptical/lobe plates on the 3D unit sphere
+// so outlines are coherent, recognizable, and completely free of periodic grids.
 // ============================================================================
-export const LAGOON_POS     = [22, 16];
-export const POND_POS       = [-35, -30];
-export const CYPRESS_POS    = [-95, 25];
-export const AMAZON_POS     = [108, -72];
-export const MANGROVE_POS   = [82, 58];
-export const CLEARING_POS   = [-18, -88];
-export const PLANTATION_POS = [64, -148];
-export const SAVANNA_POS    = [-215, -35];
-export const BAMBOO_POS     = [192, -142];
-export const HIGHLAND_POS   = [198, 22];
-export const BEACH_POS      = [0, 168];
-export const REEF_POS       = [-55, 225];
-export const ABYSS_POS      = [55, 265];
-export const ROOKERY_POS    = [-215, 245];
-export const POLAR_POS      = [215, 255];
-export const FIRE_POS       = [-128, 118];
-export const VOLCANO_POS    = [245, 38];
-export const FORGOTTEN_POS  = [-148, -125];
-export const DUNE_POS       = [-235, -185];
+const CONTINENT_PLATES = [
+  // 0: Amazonia-Verdea (South-West Equatorial Continent — Amazon, Rivers, Andes, Mangroves, Cenote)
+  { id: 0, name: 'Amazonia-Verdea', lat: -6.0,  lon: -62.0, rx: 0.42, ry: 0.46, peak: 1.05, ridge: 0.65, ridgeLon: -74.0 },
+  { id: 0, name: 'Amazonia-Verdea', lat: -22.0, lon: -64.0, rx: 0.28, ry: 0.36, peak: 0.92, ridge: 0.72, ridgeLon: -70.0 },
+  { id: 0, name: 'Amazonia-Verdea', lat: 14.0,  lon: -84.0, rx: 0.24, ry: 0.22, peak: 0.78, ridge: 0.35, ridgeLon: -88.0 },
+  // 1: Borealia & Subtropica (Northern Western Continent — Cypress Swamp, Clearings, Wildfire Ridges)
+  { id: 1, name: 'Borealia',        lat: 44.0,  lon: -102.0, rx: 0.48, ry: 0.42, peak: 1.02, ridge: 0.78, ridgeLon: -116.0 },
+  { id: 1, name: 'Borealia',        lat: 30.0,  lon: -88.0,  rx: 0.28, ry: 0.24, peak: 0.72, ridge: 0.20, ridgeLon: -84.0 },
+  { id: 1, name: 'Borealia',        lat: 62.0,  lon: -114.0, rx: 0.42, ry: 0.28, peak: 0.85, ridge: 0.45, ridgeLon: -128.0 },
+  // 2: Afro-Serengeti (Central-Eastern Continent — Savanna, Virunga Highlands, Skeleton Coast Dunes)
+  { id: 2, name: 'Afro-Serengeti',  lat: 8.0,   lon: 18.0,  rx: 0.52, ry: 0.44, peak: 1.04, ridge: 0.48, ridgeLon: 32.0 },
+  { id: 2, name: 'Afro-Serengeti',  lat: -14.0, lon: 24.0,  rx: 0.36, ry: 0.42, peak: 0.98, ridge: 0.62, ridgeLon: 29.5 },
+  // 3: Indus-Monsoonia (Eurasian-Eastern Monsoon Continent — Plantations, Bamboo Jungle, Himalayas, Ring-of-Fire)
+  { id: 3, name: 'Indus-Monsoonia', lat: 46.0,  lon: 82.0,  rx: 0.62, ry: 0.42, peak: 1.12, ridge: 0.95, ridgeLon: 86.0 },
+  { id: 3, name: 'Indus-Monsoonia', lat: 24.0,  lon: 106.0, rx: 0.42, ry: 0.34, peak: 0.96, ridge: 0.75, ridgeLon: 102.0 },
+  { id: 3, name: 'Indus-Monsoonia', lat: 52.0,  lon: 24.0,  rx: 0.34, ry: 0.26, peak: 0.82, ridge: 0.40, ridgeLon: 12.0 },
+  { id: 3, name: 'Indus-Monsoonia', lat: 35.2,  lon: 138.7, rx: 0.14, ry: 0.16, peak: 0.88, ridge: 0.85, ridgeLon: 138.7 }, // Volcanic Island Arc
+  // 4: Australis & Indo-Pacific Archipelago (Outback, Tropical Atolls, Coral Barrier Shelf)
+  { id: 4, name: 'Australis',       lat: -24.0, lon: 134.0, rx: 0.36, ry: 0.28, peak: 0.88, ridge: 0.35, ridgeLon: 146.0 },
+  { id: 4, name: 'Australis',       lat: -16.8, lon: 146.2, rx: 0.10, ry: 0.10, peak: 0.68, ridge: 0.20, ridgeLon: 146.2 }, // Tropical Atoll Coast
+  // 5: Antarctica (Southern Polar Continent)
+  { id: 5, name: 'Antarctica',      lat: -82.0, lon: 40.0,  rx: 0.56, ry: 0.46, peak: 1.06, ridge: 0.62, ridgeLon: 165.0 },
+  { id: 5, name: 'Antarctica',      lat: -74.0, lon: -65.0, rx: 0.28, ry: 0.24, peak: 0.86, ridge: 0.58, ridgeLon: -63.0 },
+  // 6: Arctic Glacial Archipelago (High Northern Polar Shelf & Greenland-like Ice Cap)
+  { id: 6, name: 'Arctic Shelf',    lat: 74.0,  lon: -42.0, rx: 0.28, ry: 0.24, peak: 0.92, ridge: 0.50, ridgeLon: -40.0 }
+];
 
+// Precompute 3D unit vectors for each tectonic plate
+const PLATES = CONTINENT_PLATES.map((p) => {
+  const dir = latLonToDir(p.lat * DEG2RAD, p.lon * DEG2RAD);
+  return { ...p, nx: dir[0], ny: dir[1], nz: dir[2] };
+});
+
+// ============================================================================
+// 18 Curated Planetary Biome Destinations — Distributed Across Genuine Continents
+// & Oceans (Thousands of Kilometres Apart)
+// ============================================================================
 export const BIOME_CATALOG = [
   {
-    id: 0,
-    key: 'river',
-    name: 'The River Sanctuary',
+    id: 0, key: 'river', name: 'The River Sanctuary',
     subtitle: 'Emerald Floodplain, Otter Lagoon & Heron Shallows',
-    category: 'Wetlands & Rivers',
-    region: 'Central Basin',
-    forbidden: false,
-    pos: LAGOON_POS,
-    center: LAGOON_POS,
-    radius: 75,
-    elev: '-1.4m to +3.2m',
-    weather: 'Golden Sunlight',
+    category: 'Wetlands & Rivers', continent: 'Amazonia-Verdea', region: 'Amazonia Central Basin',
+    forbidden: false, latDeg: -3.20, lonDeg: -60.00, basinRadiusKm: 42,
+    elev: '-2.2m to +12m', weather: 'Golden Sunlight',
     species: 'Giant River Otter, Manatee, Alligator, Kingfisher'
   },
   {
-    id: 1,
-    key: 'swamp',
-    name: 'The Cypress Swamp',
+    id: 1, key: 'swamp', name: 'The Cypress Swamp',
     subtitle: 'Buttressed Knees, Duckweed Bayous & Spanish Moss',
-    category: 'Wetlands & Rivers',
-    region: 'Western Lowlands',
-    forbidden: false,
-    pos: CYPRESS_POS,
-    center: CYPRESS_POS,
-    radius: 78,
-    elev: '-0.8m to +2.1m',
-    weather: 'Swamp Morning Mist',
+    category: 'Wetlands & Rivers', continent: 'Borealia', region: 'Subtropical Bayou Delta',
+    forbidden: false, latDeg: 29.50, lonDeg: -89.50, basinRadiusKm: 48,
+    elev: '-1.0m to +6m', weather: 'Swamp Morning Mist',
     species: 'American Alligator, Green Anaconda, Great White Egret, Florida Panther'
   },
   {
-    id: 2,
-    key: 'canopy',
-    name: 'The Amazon Emerald Canopy',
+    id: 2, key: 'canopy', name: 'The Amazon Emerald Canopy',
     subtitle: 'Layered Kapok Crowns, Lianas & Macaw Thermals',
-    category: 'Rainforests',
-    region: 'Eastern Rainforest',
-    forbidden: false,
-    pos: AMAZON_POS,
-    center: AMAZON_POS,
-    radius: 82,
-    elev: '+2.5m to +14.8m',
-    weather: 'Golden Sunlight',
+    category: 'Rainforests', continent: 'Amazonia-Verdea', region: 'Western Amazon Rainforest',
+    forbidden: false, latDeg: -5.80, lonDeg: -64.50, basinRadiusKm: 65,
+    elev: '+18m to +240m', weather: 'Golden Sunlight',
     species: 'Scarlet Macaw, Toco Toucan, Spider Monkey, Three-Toed Sloth, Tapir'
   },
   {
-    id: 3,
-    key: 'mangrove',
-    name: 'The Mangrove Passage',
+    id: 3, key: 'mangrove', name: 'The Mangrove Passage',
     subtitle: 'Intertidal Stilt Roots, Brackish Channels & Caimans',
-    category: 'Wetlands & Rivers',
-    region: 'Southeast Estuary',
-    forbidden: false,
-    pos: MANGROVE_POS,
-    center: MANGROVE_POS,
-    radius: 72,
-    elev: '-0.9m to +1.8m',
-    weather: 'Golden Sunlight',
+    category: 'Wetlands & Rivers', continent: 'Amazonia-Verdea', region: 'Equatorial Atlantic Estuary',
+    forbidden: false, latDeg: 0.80, lonDeg: -49.50, basinRadiusKm: 44,
+    elev: '-1.2m to +5m', weather: 'Golden Sunlight',
     species: 'Black Caiman, Mangrove Raccoon, Green Iguana, Roseate Spoonbill'
   },
   {
-    id: 4,
-    key: 'clearing',
-    name: 'The Sunlit Wildlife Clearing',
+    id: 4, key: 'clearing', name: 'The Sunlit Wildlife Clearing',
     subtitle: 'Wildflower Meadows, Clover & Grazing Deer Herds',
-    category: 'Grasslands & Terraces',
-    region: 'Heartland Terrace',
-    forbidden: false,
-    pos: CLEARING_POS,
-    center: CLEARING_POS,
-    radius: 74,
-    elev: '+1.8m to +4.5m',
-    weather: 'Golden Sunlight',
+    category: 'Grasslands & Terraces', continent: 'Borealia', region: 'Temperate Highland Meadow',
+    forbidden: false, latDeg: 41.20, lonDeg: -105.50, basinRadiusKm: 52,
+    elev: '+120m to +480m', weather: 'Golden Sunlight',
     species: 'White-Tailed Deer, Black Bear, Blue Morpho Butterfly'
   },
   {
-    id: 5,
-    key: 'plantation',
-    name: 'Overgrown Heritage Plantations',
+    id: 5, key: 'plantation', name: 'Overgrown Heritage Plantations',
     subtitle: 'Wild-Reclaimed Banana, Cacao & Bamboo Terraces',
-    category: 'Grasslands & Terraces',
-    region: 'Northern Terraces',
-    forbidden: false,
-    pos: PLANTATION_POS,
-    center: PLANTATION_POS,
-    radius: 76,
-    elev: '+2.8m to +7.4m',
-    weather: 'Golden Sunlight',
+    category: 'Grasslands & Terraces', continent: 'Indus-Monsoonia', region: 'Indochina River Terraces',
+    forbidden: false, latDeg: 14.50, lonDeg: 101.20, basinRadiusKm: 50,
+    elev: '+45m to +260m', weather: 'Golden Sunlight',
     species: 'Wild Chimpanzee, Toco Toucan, Hercules Beetle'
   },
   {
-    id: 6,
-    key: 'savanna',
-    name: 'The Serengeti Savanna & Kopjes',
+    id: 6, key: 'savanna', name: 'The Serengeti Savanna & Kopjes',
     subtitle: 'Golden Grasslands, Umbrella Acacias & Lion Prides',
-    category: 'Grasslands & Terraces',
-    region: 'Western Plains',
-    forbidden: false,
-    pos: SAVANNA_POS,
-    center: SAVANNA_POS,
-    radius: 92,
-    elev: '+1.6m to +8.2m',
-    weather: 'Savanna Heat Haze & Dust Devils',
+    category: 'Grasslands & Terraces', continent: 'Afro-Serengeti', region: 'East African Rift Plains',
+    forbidden: false, latDeg: -2.40, lonDeg: 34.80, basinRadiusKm: 75,
+    elev: '+85m to +420m', weather: 'Savanna Heat Haze & Dust Devils',
     species: 'African Lion, African Bush Elephant, Reticulated Giraffe, Plains Zebra'
   },
   {
-    id: 7,
-    key: 'bamboo',
-    name: 'The Misty Bamboo & Monsoon Jungle',
+    id: 7, key: 'bamboo', name: 'The Misty Bamboo & Monsoon Jungle',
     subtitle: 'Giant Culm Grottos, Bengal Tigers & Monsoon Mist',
-    category: 'Rainforests',
-    region: 'Northeast Highlands',
-    forbidden: false,
-    pos: BAMBOO_POS,
-    center: BAMBOO_POS,
-    radius: 85,
-    elev: '+3.5m to +12.4m',
-    weather: 'Tropical Monsoon Storm',
+    category: 'Rainforests', continent: 'Indus-Monsoonia', region: 'Sichuan-Monsoon Highlands',
+    forbidden: false, latDeg: 27.80, lonDeg: 104.50, basinRadiusKm: 62,
+    elev: '+180m to +980m', weather: 'Tropical Monsoon Storm',
     species: 'Bengal Tiger, Crowned Harpy Eagle, Pileated Woodpecker'
   },
   {
-    id: 8,
-    key: 'ape_highlands',
-    name: 'The Virunga Ape Highlands',
+    id: 8, key: 'ape_highlands', name: 'The Virunga Ape Highlands',
     subtitle: 'Cloud-Forest Ridges, Silverback Gorillas & Chimpanzees',
-    category: 'Rainforests',
-    region: 'Eastern Escarpment',
-    forbidden: false,
-    pos: HIGHLAND_POS,
-    center: HIGHLAND_POS,
-    radius: 86,
-    elev: '+5.5m to +16.2m',
-    weather: 'Swamp Morning Mist',
+    category: 'Rainforests', continent: 'Afro-Serengeti', region: 'Virunga Volcanic Rift',
+    forbidden: false, latDeg: -1.40, lonDeg: 29.50, basinRadiusKm: 58,
+    elev: '+450m to +1850m', weather: 'Swamp Morning Mist',
     species: 'Silverback Mountain Gorilla, Wild Chimpanzee, Harpy Eagle'
   },
   {
-    id: 9,
-    key: 'beach',
-    name: 'The Golden Tropical Beach & Atoll',
+    id: 9, key: 'beach', name: 'The Golden Tropical Beach & Atoll',
     subtitle: 'Coconut Palms, Wet Swash Zone & Shorebreak Surf',
-    category: 'Coast & Ocean',
-    region: 'Southern Coastline',
-    forbidden: false,
-    pos: BEACH_POS,
-    center: BEACH_POS,
-    radius: 78,
-    elev: '-0.5m to +2.4m',
-    weather: 'Coastal Shorebreak Surf',
+    category: 'Coast & Ocean', continent: 'Australis', region: 'Coral Sea Barrier Atoll',
+    forbidden: false, latDeg: -16.80, lonDeg: 146.20, basinRadiusKm: 34,
+    elev: '-2m to +12m', weather: 'Coastal Shorebreak Surf',
     species: 'Caribbean Flamingo, Green Sea Turtle, Coconut Crab'
   },
   {
-    id: 10,
-    key: 'coral_reef',
-    name: 'The Sunlit Coral Reef & Kelp Basin',
+    id: 10, key: 'coral_reef', name: 'The Sunlit Coral Reef & Kelp Basin',
     subtitle: 'Caustic Shallows, Giant Kelp Forests & Reef Schools',
-    category: 'Coast & Ocean',
-    region: 'Pelagic Shelf',
-    forbidden: false,
-    pos: REEF_POS,
-    center: REEF_POS,
-    radius: 84,
-    elev: '-6.8m to -2.2m',
-    weather: 'Coastal Shorebreak Surf',
+    category: 'Coast & Ocean', continent: 'Pacific Ocean', region: 'Outer Barrier Reef Shelf',
+    forbidden: false, latDeg: -17.20, lonDeg: 146.85, basinRadiusKm: 36,
+    elev: '-12m to -2.5m', weather: 'Coastal Shorebreak Surf',
     species: 'Oceanic Manta Ray, Great White Shark, Green Sea Turtle, Reef Fish Schools'
   },
   {
-    id: 11,
-    key: 'abyssal_garden',
-    name: 'The Abyssal Garden & Hydrothermal Trench',
+    id: 11, key: 'abyssal_garden', name: 'The Abyssal Garden & Hydrothermal Trench',
     subtitle: 'Sunken Galleon, Bioluminescent Plumes & Whale Pods',
-    category: 'Coast & Ocean',
-    region: 'Deep Ocean Trench',
-    forbidden: false,
-    pos: ABYSS_POS,
-    center: ABYSS_POS,
-    radius: 90,
-    elev: '-16.5m to -7.5m',
-    weather: 'Coastal Shorebreak Surf',
+    category: 'Coast & Ocean', continent: 'Pacific Ocean', region: 'Coral Sea Deep Trench',
+    forbidden: false, latDeg: -18.50, lonDeg: 149.20, basinRadiusKm: 55,
+    elev: '-45m to -12m (Trench to -6500m)', weather: 'Coastal Shorebreak Surf',
     species: 'Humpback Whale, Orca, Great White Shark, Oceanic Manta Ray'
   },
   {
-    id: 12,
-    key: 'sub_antarctic',
-    name: 'The Sub-Antarctic Penguin Rookery',
+    id: 12, key: 'sub_antarctic', name: 'The Sub-Antarctic Penguin Rookery',
     subtitle: 'Basalt Headlands, Tussock Grass & Diving Penguins',
-    category: 'Polar Realm',
-    region: 'Southwest Convergence',
-    forbidden: false,
-    pos: ROOKERY_POS,
-    center: ROOKERY_POS,
-    radius: 84,
-    elev: '-1.5m to +6.5m',
-    weather: 'Polar Blizzard',
+    category: 'Polar Realm', continent: 'Antarctica', region: 'Antarctic Peninsula Coast',
+    forbidden: false, latDeg: -64.80, lonDeg: -62.50, basinRadiusKm: 52,
+    elev: '-4m to +180m', weather: 'Polar Blizzard',
     species: 'Emperor Penguin, Leopard Seal, Orca'
   },
   {
-    id: 13,
-    key: 'ice_planet',
-    name: 'The Polar Ice Planet & Glacial Shelf',
+    id: 13, key: 'ice_planet', name: 'The Polar Ice Planet & Glacial Shelf',
     subtitle: 'Tabular Icebergs, Sea-Ice Leads, Polar Bears & Aurora',
-    category: 'Polar Realm',
-    region: 'Southeast Antarctic Pole',
-    forbidden: false,
-    pos: POLAR_POS,
-    center: POLAR_POS,
-    radius: 96,
-    elev: '-2.0m to +9.5m',
-    weather: 'Polar Night & Aurora',
+    category: 'Polar Realm', continent: 'Antarctica', region: 'Ross Glacial Ice Shelf',
+    forbidden: false, latDeg: -76.50, lonDeg: 165.00, basinRadiusKm: 75,
+    elev: '-6m to +320m', weather: 'Polar Night & Aurora',
     species: 'Polar Bear, Emperor Penguin, Leopard Seal, Humpback Whale'
   },
   {
-    id: 14,
-    key: 'burning_forest',
-    name: 'Forbidden Zone I: The Burning Forest',
+    id: 14, key: 'burning_forest', name: 'Forbidden Zone I: The Burning Forest',
     subtitle: 'Lightning Wildfire Front, Glowing Embers & Ash Plumes',
-    category: 'Forbidden Zones',
-    region: 'Forbidden Southwest',
-    forbidden: true,
-    pos: FIRE_POS,
-    center: FIRE_POS,
-    radius: 82,
-    elev: '+1.2m to +7.8m',
-    weather: 'Volcanic Ash & Wildfire',
+    category: 'Forbidden Zones', continent: 'Borealia', region: 'Sierra Wildfire Ridge',
+    forbidden: true, latDeg: 38.80, lonDeg: -120.40, basinRadiusKm: 42,
+    elev: '+180m to +720m', weather: 'Volcanic Ash & Wildfire',
     species: 'Fleeing Wildlife & Fire-Adapted Raptors'
   },
   {
-    id: 15,
-    key: 'volcanic_caldera',
-    name: 'Forbidden Zone II: Obsidian Volcanic Caldera',
+    id: 15, key: 'volcanic_caldera', name: 'Forbidden Zone II: Obsidian Volcanic Caldera',
     subtitle: 'Molten Pahoehoe Lava Rivers, Basalt Columns & Steam Vents',
-    category: 'Forbidden Zones',
-    region: 'Forbidden East Rim',
-    forbidden: true,
-    pos: VOLCANO_POS,
-    center: VOLCANO_POS,
-    radius: 84,
-    elev: '+2.5m to +18.5m',
-    weather: 'Volcanic Ash & Wildfire',
+    category: 'Forbidden Zones', continent: 'Indus-Monsoonia', region: 'Pacific Ring-of-Fire Caldera',
+    forbidden: true, latDeg: 35.20, lonDeg: 138.70, basinRadiusKm: 42,
+    elev: '+240m to +1950m', weather: 'Volcanic Ash & Wildfire',
     species: 'Thermophilic Vents & Circling Eagles'
   },
   {
-    id: 16,
-    key: 'cenote_cavern',
-    name: 'Forbidden Zone III: Bioluminescent Cenote',
+    id: 16, key: 'cenote_cavern', name: 'Forbidden Zone III: Bioluminescent Cenote',
     subtitle: 'Collapsed Karst Sinkhole, Turquoise Pool & Glow Spores',
-    category: 'Forbidden Zones',
-    region: 'Forbidden Northwest Sinkhole',
-    forbidden: true,
-    pos: FORGOTTEN_POS,
-    center: FORGOTTEN_POS,
-    radius: 76,
-    elev: '-3.5m to +8.4m',
-    weather: 'Swamp Morning Mist',
+    category: 'Forbidden Zones', continent: 'Amazonia-Verdea', region: 'Yucatán Karst Peninsula',
+    forbidden: true, latDeg: 19.50, lonDeg: -88.20, basinRadiusKm: 36,
+    elev: '-8m to +48m', weather: 'Swamp Morning Mist',
     species: 'Amazonian Jaguar, Spectacled Owl, Bioluminescent Mycena'
   },
   {
-    id: 17,
-    key: 'skeleton_coast',
-    name: 'Forbidden Zone IV: The Skeleton Coast & Red Dunes',
+    id: 17, key: 'skeleton_coast', name: 'Forbidden Zone IV: The Skeleton Coast & Red Dunes',
     subtitle: 'Towering Iron-Oxide Dunes, Desert Lions & Surf Fog',
-    category: 'Forbidden Zones',
-    region: 'Forbidden Northwest Desert',
-    forbidden: true,
-    pos: DUNE_POS,
-    center: DUNE_POS,
-    radius: 84,
-    elev: '+2.0m to +14.5m',
-    weather: 'Savanna Heat Haze & Dust Devils',
+    category: 'Forbidden Zones', continent: 'Afro-Serengeti', region: 'Namib Red Dune Coast',
+    forbidden: true, latDeg: -22.50, lonDeg: 14.40, basinRadiusKm: 56,
+    elev: '+4m to +280m', weather: 'Savanna Heat Haze & Dust Devils',
     species: 'Desert-Adapted Lion, Desert Elephant'
   }
 ];
 
+// Enrich each biome with precomputed 3D unit vector & local ENU basis
+for (const b of BIOME_CATALOG) {
+  b.latRad = b.latDeg * DEG2RAD;
+  b.lonRad = b.lonDeg * DEG2RAD;
+  b.dir = latLonToDir(b.latRad, b.lonRad);
+  b.enu = localENUFrame(b.latRad, b.lonRad);
+  b.basinRad = (b.basinRadiusKm * 1000) / PLANET_RADIUS;
+  b.pos = [0, 0]; // Local origin within the biome's own regional tangent frame
+  b.center = [0, 0];
+}
+
 export const BIOMES = BIOME_CATALOG;
 
-// 18 Cinematic Camera Poses [cx, cy, cz, tx, ty, tz] for the 18 Planetary Biomes
-export const POSES = [
-  [LAGOON_POS[0] - 12,     3.2,  LAGOON_POS[1] + 18,     LAGOON_POS[0] + 6,      1.2,  LAGOON_POS[1] - 6],
-  [CYPRESS_POS[0] - 14,    2.8,  CYPRESS_POS[1] + 16,    CYPRESS_POS[0] + 4,     1.4,  CYPRESS_POS[1] - 8],
-  [AMAZON_POS[0] - 16,     7.5,  AMAZON_POS[1] + 18,     AMAZON_POS[0] + 6,      5.5,  AMAZON_POS[1] - 8],
-  [MANGROVE_POS[0] - 12,   2.6,  MANGROVE_POS[1] + 15,   MANGROVE_POS[0] + 5,    1.2,  MANGROVE_POS[1] - 6],
-  [CLEARING_POS[0] - 14,   4.2,  CLEARING_POS[1] + 18,   CLEARING_POS[0] + 4,    2.6,  CLEARING_POS[1] - 6],
-  [PLANTATION_POS[0] - 14, 5.8,  PLANTATION_POS[1] + 18, PLANTATION_POS[0] + 4,  4.0,  PLANTATION_POS[1] - 6],
-  [SAVANNA_POS[0] - 18,    4.8,  SAVANNA_POS[1] + 22,    SAVANNA_POS[0] + 8,     3.2,  SAVANNA_POS[1] - 8],
-  [BAMBOO_POS[0] - 16,     7.2,  BAMBOO_POS[1] + 18,     BAMBOO_POS[0] + 6,      5.0,  BAMBOO_POS[1] - 6],
-  [HIGHLAND_POS[0] - 16,   9.8,  HIGHLAND_POS[1] + 18,   HIGHLAND_POS[0] + 6,    7.5,  HIGHLAND_POS[1] - 6],
-  [BEACH_POS[0] - 15,      2.8,  BEACH_POS[1] - 16,      BEACH_POS[0] + 4,       0.8,  BEACH_POS[1] + 18],
-  [REEF_POS[0] - 10,      -1.8,  REEF_POS[1] - 14,       REEF_POS[0] + 4,       -3.5,  REEF_POS[1] + 10],
-  [ABYSS_POS[0] - 12,     -6.2,  ABYSS_POS[1] - 15,      ABYSS_POS[0] - 2,      -9.5,  ABYSS_POS[1] + 4],
-  [ROOKERY_POS[0] + 14,    4.6,  ROOKERY_POS[1] - 16,    ROOKERY_POS[0] - 4,     2.5,  ROOKERY_POS[1] + 6],
-  [POLAR_POS[0] - 16,      5.2,  POLAR_POS[1] - 18,      POLAR_POS[0] + 6,       3.0,  POLAR_POS[1] + 8],
-  [FIRE_POS[0] - 16,       5.5,  FIRE_POS[1] + 18,       FIRE_POS[0] + 4,        3.5,  FIRE_POS[1] - 6],
-  [VOLCANO_POS[0] - 20,    9.5,  VOLCANO_POS[1] + 20,    VOLCANO_POS[0] + 4,     6.5,  VOLCANO_POS[1] - 4],
-  [FORGOTTEN_POS[0] - 14,  4.8,  FORGOTTEN_POS[1] + 16,  FORGOTTEN_POS[0] + 4,   2.2,  FORGOTTEN_POS[1] - 6],
-  [DUNE_POS[0] + 16,       6.4,  DUNE_POS[1] + 18,       DUNE_POS[0] - 6,        4.2,  DUNE_POS[1] - 6]
-];
+// Local anchor coordinates within each biome's regional tangent frame (meters around biome center)
+export const LAGOON_POS     = [0, 0];
+export const POND_POS       = [-35, -30];
+export const CYPRESS_POS    = [0, 0];
+export const AMAZON_POS     = [0, 0];
+export const MANGROVE_POS   = [0, 0];
+export const CLEARING_POS   = [0, 0];
+export const PLANTATION_POS = [0, 0];
+export const SAVANNA_POS    = [0, 0];
+export const BAMBOO_POS     = [0, 0];
+export const HIGHLAND_POS   = [0, 0];
+export const BEACH_POS      = [0, 0];
+export const REEF_POS       = [0, 0];
+export const ABYSS_POS      = [0, 0];
+export const ROOKERY_POS    = [0, 0];
+export const POLAR_POS      = [0, 0];
+export const FIRE_POS       = [0, 0];
+export const VOLCANO_POS    = [0, 0];
+export const FORGOTTEN_POS  = [0, 0];
+export const DUNE_POS       = [0, 0];
 
-// Fast CPU-side analytical terrain & bathymetry evaluator matching GPU W_TERRAIN
-// Completely boundary-free: coordinates wrap geodesically around the spherical planet with zero outer walls.
-export const terrainAt = (rawX, rawZ, out = {}) => {
-  const x = wrapCoord(rawX);
-  const z = wrapCoord(rawZ);
+// Active Floating-Origin Regional Tangent Anchor (defaults to River Sanctuary)
+let _activeOrigin = {
+  latDeg: BIOME_CATALOG[0].latDeg,
+  lonDeg: BIOME_CATALOG[0].lonDeg,
+  latRad: BIOME_CATALOG[0].latRad,
+  lonRad: BIOME_CATALOG[0].lonRad,
+  enu: localENUFrame(BIOME_CATALOG[0].latRad, BIOME_CATALOG[0].lonRad),
+  biomeId: 0
+};
 
-  // 1. Primary meandering river valley through the central sanctuary (passes through LAGOON_POS = [22, 16])
-  const riverCenterZ = 16.0 + sin((x - 22.0) * 0.022) * 18.0;
-  const distRiver = abs(z - riverCenterZ);
-  const distLagoon = hypot(wrapDelta(x, LAGOON_POS[0]), wrapDelta(z, LAGOON_POS[1]));
-  const distPond = hypot(wrapDelta(x, POND_POS[0]), wrapDelta(z, POND_POS[1]));
+export const setActiveOrigin = (latDeg, lonDeg, biomeId = -1) => {
+  const lat = clamp(latDeg, -89.999, 89.999);
+  const lon = normAngle(lonDeg * DEG2RAD) * RAD2DEG;
+  const latRad = lat * DEG2RAD;
+  const lonRad = lon * DEG2RAD;
+  _activeOrigin = {
+    latDeg: lat,
+    lonDeg: lon,
+    latRad,
+    lonRad,
+    enu: localENUFrame(latRad, lonRad),
+    biomeId: biomeId >= 0 ? biomeId : nearestBiomeAtGeo(lat, lon).biome.id
+  };
+  return _activeOrigin;
+};
 
-  // 2. Biome proximity distances (using wrapped geodesic deltas)
-  const dSwamp      = hypot(wrapDelta(x, CYPRESS_POS[0]),    wrapDelta(z, CYPRESS_POS[1]));
-  const dAmazon     = hypot(wrapDelta(x, AMAZON_POS[0]),     wrapDelta(z, AMAZON_POS[1]));
-  const dMangrove   = hypot(wrapDelta(x, MANGROVE_POS[0]),   wrapDelta(z, MANGROVE_POS[1]));
-  const dClearing   = hypot(wrapDelta(x, CLEARING_POS[0]),   wrapDelta(z, CLEARING_POS[1]));
-  const dPlantation = hypot(wrapDelta(x, PLANTATION_POS[0]), wrapDelta(z, PLANTATION_POS[1]));
-  const dSavanna    = hypot(wrapDelta(x, SAVANNA_POS[0]),    wrapDelta(z, SAVANNA_POS[1]));
-  const dBamboo     = hypot(wrapDelta(x, BAMBOO_POS[0]),     wrapDelta(z, BAMBOO_POS[1]));
-  const dHighland   = hypot(wrapDelta(x, HIGHLAND_POS[0]),   wrapDelta(z, HIGHLAND_POS[1]));
-  const dBeach      = hypot(wrapDelta(x, BEACH_POS[0]),      wrapDelta(z, BEACH_POS[1]));
-  const dReef       = hypot(wrapDelta(x, REEF_POS[0]),       wrapDelta(z, REEF_POS[1]));
-  const dAbyss      = hypot(wrapDelta(x, ABYSS_POS[0]),      wrapDelta(z, ABYSS_POS[1]));
-  const dRookery    = hypot(wrapDelta(x, ROOKERY_POS[0]),    wrapDelta(z, ROOKERY_POS[1]));
-  const dPolar      = hypot(wrapDelta(x, POLAR_POS[0]),      wrapDelta(z, POLAR_POS[1]));
-  const dFire       = hypot(wrapDelta(x, FIRE_POS[0]),       wrapDelta(z, FIRE_POS[1]));
-  const dVolcano    = hypot(wrapDelta(x, VOLCANO_POS[0]),    wrapDelta(z, VOLCANO_POS[1]));
-  const dCenote     = hypot(wrapDelta(x, FORGOTTEN_POS[0]),  wrapDelta(z, FORGOTTEN_POS[1]));
-  const dDune       = hypot(wrapDelta(x, DUNE_POS[0]),       wrapDelta(z, DUNE_POS[1]));
+export const getActiveOrigin = () => _activeOrigin;
 
-  // North Antarctica / Arctic Polar Ice Continent (z < -220) & South Antarctica Continent
-  const northPolarBand = smoothstep(-215.0, -275.0, z + sin(x * 0.025) * 14.0);
-  const southPolarBand = smoothstep(285.0, 335.0, z + cos(x * 0.025) * 12.0) * (1.0 - smoothstep(85.0, 20.0, dAbyss));
+// Convert local tangent meters (dx = East, dz = South) around an origin onto the 3D unit sphere
+export const localMetersToDir = (dxMeters, dzMeters, origin = _activeOrigin, out = [0, 0, 1]) => {
+  const o = origin || _activeOrigin;
+  const R = oblateRadiusAtSinLat(sin(o.latRad));
+  const rx = dxMeters / R;
+  const rz = dzMeters / R;
+  const e = o.enu.east;
+  const u = o.enu.up;
+  const s = o.enu.south;
+  // Exact exponential map on sphere for small/large tangent offsets
+  const ang = hypot(rx, rz);
+  if (ang < 1e-11) {
+    out[0] = u[0]; out[1] = u[1]; out[2] = u[2];
+    return out;
+  }
+  const ca = cos(ang), sa = sin(ang) / ang;
+  const x = u[0] * ca + (e[0] * rx + s[0] * rz) * sa;
+  const y = u[1] * ca + (e[1] * rx + s[1] * rz) * sa;
+  const z = u[2] * ca + (e[2] * rx + s[2] * rz) * sa;
+  const l = hypot(x, y, z) || 1;
+  out[0] = x / l; out[1] = y / l; out[2] = z / l;
+  return out;
+};
 
-  // Biome influence weights [0..1]
-  const wRiver      = clamp(smoothstep(26.0, 4.0, distRiver) + smoothstep(34.0, 6.0, distLagoon) * 0.65, 0, 1);
-  const wSwamp      = clamp(smoothstep(82.0, 18.0, dSwamp), 0, 1);
-  const wAmazon     = clamp(smoothstep(92.0, 18.0, dAmazon), 0, 1);
-  const wMangrove   = clamp(smoothstep(76.0, 16.0, dMangrove), 0, 1);
-  const wClearing   = clamp(smoothstep(74.0, 16.0, dClearing), 0, 1);
-  const wPlantation = clamp(smoothstep(78.0, 22.0, dPlantation), 0, 1);
-  const wSavanna    = clamp(smoothstep(105.0, 26.0, dSavanna), 0, 1);
-  const wBamboo     = clamp(smoothstep(86.0, 20.0, dBamboo), 0, 1);
-  const wHighland   = clamp(smoothstep(88.0, 20.0, dHighland), 0, 1);
-  const wBeach      = clamp(smoothstep(80.0, 16.0, dBeach), 0, 1);
-  const wReef       = clamp(smoothstep(88.0, 20.0, dReef), 0, 1);
-  const wAbyss      = clamp(smoothstep(96.0, 22.0, dAbyss), 0, 1);
-  const wRookery    = clamp(smoothstep(84.0, 18.0, dRookery), 0, 1);
-  const wPolar      = clamp(smoothstep(98.0, 24.0, dPolar) + wRookery * 0.75 + northPolarBand * 0.96 + southPolarBand * 0.92, 0, 1);
-  const wFire       = clamp(smoothstep(82.0, 18.0, dFire), 0, 1);
-  const wVolcano    = clamp(smoothstep(85.0, 22.0, dVolcano), 0, 1);
-  const wCenote     = clamp(smoothstep(82.0, 18.0, dCenote), 0, 1);
-  const wDune       = clamp(smoothstep(92.0, 24.0, dDune), 0, 1);
+export const localMetersToLatLon = (dxMeters, dzMeters, origin = _activeOrigin, out = {}) => {
+  const dir = localMetersToDir(dxMeters, dzMeters, origin);
+  return dirToLatLon(dir[0], dir[1], dir[2], out);
+};
 
-  // Multi-frequency organic hills, mountain ranges & river valleys across the entire globe
-  const macro =
-    sin(x * 0.015 + 0.3) * cos(z * 0.014 - 0.4) * 4.6 +
-    sin((x * 0.6 + z * 0.8) * 0.022) * 2.9 +
-    cos((x * 0.8 - z * 0.6) * 0.035) * 1.75;
-  const meso =
-    sin(x * 0.075 + cos(z * 0.062) * 1.5) *
-    cos(z * 0.071 - sin(x * 0.058) * 1.5) *
-    1.35;
-  const micro =
-    sin(x * 0.26 + z * 0.19) * 0.22 +
-    cos(x * 0.43 - z * 0.37) * 0.14;
+// Convert any planetary (latDeg, lonDeg) into local tangent meters relative to `origin`
+export const latLonToLocalMeters = (latDeg, lonDeg, origin = _activeOrigin, out = {}) => {
+  const o = origin || _activeOrigin;
+  const dir = latLonToDir(latDeg * DEG2RAD, lonDeg * DEG2RAD);
+  const R = oblateRadiusAtSinLat(sin(o.latRad));
+  const dDot = clamp(dir[0] * o.enu.up[0] + dir[1] * o.enu.up[1] + dir[2] * o.enu.up[2], -1, 1);
+  const ang = Math.acos(dDot);
+  const de = dir[0] * o.enu.east[0] + dir[1] * o.enu.east[1] + dir[2] * o.enu.east[2];
+  const ds = dir[0] * o.enu.south[0] + dir[1] * o.enu.south[1] + dir[2] * o.enu.south[2];
+  const sinA = hypot(de, ds);
+  const scale = sinA > 1e-10 ? (ang * R) / sinA : R;
+  out.x = de * scale;
+  out.z = ds * scale;
+  out.distMeters = ang * R;
+  return out;
+};
 
-  // Base continental elevation with dramatic ridges in outer regions
-  const outerRidge = max(0, sin(x * 0.028 + cos(z * 0.024) * 1.6) * cos(z * 0.031 - sin(x * 0.027) * 1.4)) * 5.2 *
-    (1.0 - clamp(wRiver + wSwamp + wSavanna + wPlantation + wBeach + wReef + wAbyss, 0, 1));
-  let landH = 1.65 + macro * 0.58 + meso * 0.68 + micro + outerRidge;
+// ============================================================================
+// ONE UNIFIED PLANETARY ELEVATION, CLIMATE, CONTINENT & BIOME EVALUATOR
+// Used identically by:
+//   1. Distant 3D Globe & Orbital Cube-Sphere Tiles
+//   2. High-Altitude Atmospheric View
+//   3. Regional & Near-Surface Terrain Tiles
+//   4. Physics, Wildlife & Collision Queries (terrainAt)
+//   5. 3D Globe & 2D Topographic Navigator Map
+// ============================================================================
+export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
+  const l = hypot(nx, ny, nz) || 1;
+  const ux = nx / l, uy = clamp(ny / l, -1, 1), uz = nz / l;
+  const absLat = abs(uy); // sin(|lat|) in [0, 1]
+  const latDeg = Math.asin(uy) * RAD2DEG;
+  const lonDeg = atan2(ux, uz) * RAD2DEG;
 
-  // Carve submerged river lagoon channel, pond & outer tributary streams below water level
-  const tribZ = -95.0 + sin(x * 0.024) * 32.0;
-  const distTrib = abs(z - tribZ);
-  const tribMask = smoothstep(14.0, 2.5, distTrib) * (1.0 - clamp(wPlantation + wDune + wCenote + wAmazon + wBamboo + northPolarBand, 0, 1)) * 0.65;
-  const riverMask = clamp(smoothstep(22.0, 4.0, distRiver) * 0.85 + smoothstep(28.0, 4.0, distLagoon) * 0.95 + smoothstep(22.0, 4.0, distPond) * 0.9 + tribMask, 0, 1);
-  const riverBedH = -1.35 - smoothstep(28.0, 2.0, distLagoon) * 0.85 - smoothstep(22.0, 2.0, distPond) * 0.65 + micro * 0.35;
-  landH = lerp(landH - riverMask * 1.6, riverBedH, riverMask);
+  // 1. Domain-warped 3D spherical coordinates for organic continental outlines
+  const w1 = fbm3(ux * 2.1 + 4.3, uy * 2.1 - 1.7, uz * 2.1 + 2.9, 3) - 0.5;
+  const w2 = fbm3(ux * 2.1 - 3.1, uy * 2.1 + 5.2, uz * 2.1 - 4.4, 3) - 0.5;
+  const w3 = fbm3(ux * 2.1 + 1.8, uy * 2.1 + 2.4, uz * 2.1 + 6.1, 3) - 0.5;
+  const wx = ux + w1 * 0.24;
+  const wy = uy + w2 * 0.24;
+  const wz = uz + w3 * 0.24;
 
-  // Low flooded Cypress Swamp & Mangrove Estuary
-  const hummock = sin(x * 0.18) * cos(z * 0.19) * 0.65;
-  landH = lerp(landH, -0.18 + hummock, wSwamp * 0.78);
-  landH = lerp(landH, -0.12 + hummock * 0.8, wMangrove * 0.72);
+  // 2. Tectonic Continent Field (evaluates all 7 major continents & major islands)
+  let contMask = 0.0;
+  let ridgeMask = 0.0;
+  let continentId = -1;
+  let bestPlate = 0.0;
 
-  // Elevated Amazon Canopy, Bamboo Mountains & Virunga Ape Highlands
-  landH += wAmazon * (3.2 + sin(x * 0.05) * 1.4);
-  landH += wBamboo * (4.8 + cos(z * 0.05) * 1.8);
-  landH += wHighland * (6.8 + sin(x * 0.06 + z * 0.04) * 2.2);
-
-  // Stepped Heritage Plantation Terraces & Sunlit Clearing
-  const terraceStep = floor((z + 200) * 0.14) * 0.65;
-  landH = lerp(landH, 3.2 + terraceStep * 0.35, wPlantation * 0.55);
-  landH = lerp(landH, 2.2 + micro, wClearing * 0.48);
-
-  // Serengeti Savanna & Kopje granite outcrops
-  const kopje = max(0, sin(x * 0.09) * cos(z * 0.09) - 0.55) * 8.5;
-  landH = lerp(landH, 2.1 + kopje + micro, wSavanna * 0.65);
-
-  // Obsidian Volcanic Caldera cone & lava channels at VOLCANO_POS (245, 38)
-  const calderaCone = smoothstep(85.0, 22.0, dVolcano) * 14.5 - smoothstep(22.0, 6.0, dVolcano) * 10.5;
-  const lavaAngle = atan2(wrapDelta(z, VOLCANO_POS[1]), wrapDelta(x, VOLCANO_POS[0]));
-  const lavaChannel = smoothstep(85.0, 10.0, dVolcano) * max(0, sin(lavaAngle * 5.0 + dVolcano * 0.08));
-  landH += calderaCone;
-
-  // Bioluminescent Cenote karst sinkhole at FORGOTTEN_POS (-148, -125)
-  const cenoteShape = smoothstep(68.0, 26.0, dCenote) * 5.2 - smoothstep(28.0, 8.0, dCenote) * 8.4;
-  landH += cenoteShape;
-
-  // Skeleton Coast Red Dunes at DUNE_POS (-235, -185)
-  const duneWaves = wDune * (3.2 + abs(sin(x * 0.085 + sin(z * 0.04) * 2.0)) * 5.8);
-  landH += duneWaves;
-
-  // North Antarctica / Arctic Glacial Shelf & Ice Fjords (z < -220)
-  if (northPolarBand > 0.01) {
-    const fjordCarve = smoothstep(0.72, 0.95, sin(x * 0.045 + z * 0.02)) * 5.5;
-    const iceShelfH = 4.8 + floor((sin(x * 0.05) * cos(z * 0.05) + 1.0) * 2.2) * 2.4 + abs(sin(x * 0.09)) * 3.5 - fjordCarve;
-    landH = lerp(landH, iceShelfH, northPolarBand * 0.92);
+  for (let i = 0; i < PLATES.length; i++) {
+    const p = PLATES[i];
+    const dot = wx * p.nx + wy * p.ny + wz * p.nz;
+    if (dot <= 0.15) continue;
+    // Anisotropic elliptical angular distance on sphere
+    const ang = Math.acos(clamp(dot, -1, 1));
+    const dLat = (wy - p.ny);
+    const dLonScale = max(0.25, 1.0 - abs(p.ny) * 0.65);
+    const ellip = hypot((ang / max(0.08, p.rx)), (dLat / max(0.08, p.ry)) * 0.45 * dLonScale);
+    const contrib = smoothstep(1.18, 0.18, ellip) * p.peak;
+    if (contrib > bestPlate) {
+      bestPlate = contrib;
+      continentId = p.id;
+    }
+    contMask = max(contMask, contrib);
+    if (contrib > 0.22 && p.ridge > 0.1) {
+      // Mountain belt along tectonic spine
+      const lonDiff = abs(normAngle((lonDeg - p.ridgeLon) * DEG2RAD));
+      const spine = smoothstep(0.32, 0.02, lonDiff) * smoothstep(0.25, 0.72, contrib) * p.ridge;
+      ridgeMask = max(ridgeMask, spine);
+    }
   }
 
-  // Southern Ocean Bathymetry (z > 158 opens into Beach -> Coral Reef Shelf -> Abyssal Garden Trench)
-  const coastLineZ = 166.0 + sin(x * 0.025) * 10.0 + cos(x * 0.055) * 5.0;
-  const seaSigned = z - coastLineZ; // < 0 on land, > 0 in ocean
-  const oceanTransition = smoothstep(-18.0, 24.0, seaSigned);
+  // Macro continental roughness, mountain chains, river valleys & deep ocean trenches
+  const contNoise = fbm3(ux * 4.2 + 11.1, uy * 4.2 - 7.3, uz * 4.2 + 3.7, 4);
+  const coastShape = contMask + (contNoise - 0.50) * 0.52;
 
-  const reefShelfDepth = -3.8 - wReef * 1.6 + sin(x * 0.12) * cos(z * 0.12) * 0.85;
-  const abyssTrenchDepth = -wAbyss * 9.5 + smoothstep(26.0, 4.0, dAbyss) * (abs(sin(x * 0.24) * cos(z * 0.24)) * 2.4);
-  const archMask = smoothstep(42.0, 10.0, dAbyss) * smoothstep(0.35, 0.85, sin(x * 0.11) * cos(z * 0.11));
-  const seaFloorH = -0.45 - oceanTransition * 2.4 + reefShelfDepth * oceanTransition + abyssTrenchDepth + micro * 1.2;
+  // Calibrated sea-level threshold (~29% land, ~71% ocean)
+  const landSigned = coastShape - 0.485; // > 0 land, < 0 ocean
+  const isLand = smoothstep(-0.04, 0.04, landSigned);
 
-  let h = lerp(landH, seaFloorH, oceanTransition);
+  // Ridged alpine mountain chains (Himalayas, Andes, Rockies, East African Rift)
+  const mtRidges = ridged3(ux * 10.5 + 2.3, uy * 10.5 - 5.1, uz * 10.5 + 8.9, 4);
+  const macroHills = fbm3(ux * 18.0 - 4.2, uy * 18.0 + 9.1, uz * 18.0 - 2.6, 4);
 
-  // Sub-Antarctic Penguin Rookery Island (-215, 245), Polar Glacial Ice Shelf (215, 255) & Southern Antarctica Continent rise above the ocean
-  const rookeryRise = smoothstep(72.0, 16.0, dRookery) * (6.4 + sin(x * 0.08) * 1.8);
-  const polarIceRise = (smoothstep(86.0, 20.0, dPolar) + southPolarBand * 0.85) * (7.2 + floor((sin(x * 0.055) * cos(z * 0.055) + 1.0) * 1.8) * 2.6);
-  h += rookeryRise + polarIceRise;
+  // Continental elevation (meters)
+  let landElev = max(0, landSigned) * 860.0 + (macroHills - 0.38) * 320.0;
+  landElev += ridgeMask * mtRidges * 4400.0 + smoothstep(0.55, 0.92, mtRidges) * smoothstep(0.12, 0.45, landSigned) * 1450.0;
 
-  const wetness = clamp(smoothstep(1.35, -0.45, h - WATER_LEVEL) + wSwamp * 0.45 + wRiver * 0.4, 0, 1);
-  const moisture = clamp(wetness * 0.7 + wAmazon * 0.5 + wBamboo * 0.5, 0, 1);
+  // Large continental river channels & inland lakes
+  const riverField = abs(fbm3(ux * 9.0 + 19.4, uy * 9.0 - 12.1, uz * 9.0 + 7.8, 3) - 0.5);
+  const majorRiver = smoothstep(0.026, 0.004, riverField) * smoothstep(0.04, 0.25, landSigned) * (1.0 - smoothstep(0.35, 0.75, ridgeMask));
+  landElev = lerp(landElev, max(2.0, landElev * 0.22 - 4.0), majorRiver * 0.75);
+
+  // Oceanic bathymetry (continental shelves -> abyssal plains -> trenches & volcanic arcs)
+  const shelf = smoothstep(-0.22, -0.01, landSigned);
+  const trenchField = abs(fbm3(ux * 6.5 - 8.4, uy * 6.5 + 14.2, uz * 6.5 - 11.7, 3) - 0.5);
+  const deepTrench = smoothstep(0.04, 0.006, trenchField) * (1.0 - shelf);
+  const seaFloor = lerp(-4200.0 + (macroHills - 0.5) * 1100.0 - deepTrench * 5200.0, -45.0 + landSigned * 950.0, shelf);
+
+  let h = lerp(seaFloor, max(0.8, landElev), isLand);
+
+  // Fine regional & meter-scale micro-relief (evaluated continuously on the unit sphere!)
+  let microRelief = 0;
+  if (detailLevel >= 1) {
+    // Kilometer-scale valleys & foothills (wavelength ~6 km)
+    const kmNoise = fbm3(ux * 1050.0, uy * 1050.0, uz * 1050.0, 3) - 0.5;
+    microRelief += kmNoise * (isLand > 0.5 ? 28.0 : 12.0);
+  }
+  if (detailLevel >= 2) {
+    // 100-meter & 10-meter terrain undulation (wavelength ~220 m & ~35 m)
+    const hectoNoise = fbm3(ux * 28000.0, uy * 28000.0, uz * 28000.0, 3) - 0.5;
+    const decaNoise = fbm3(ux * 180000.0, uy * 180000.0, uz * 180000.0, 2) - 0.5;
+    microRelief += hectoNoise * 3.8 + decaNoise * 0.65;
+  }
+  h += microRelief;
+
+  // 3. Global Climate Model (Latitude, Elevation, Moisture, Ocean Proximity)
+  const moistureNoise = fbm3(ux * 3.6 - 7.1, uy * 3.6 + 13.4, uz * 3.6 + 5.2, 4);
+  const equatWet = smoothstep(0.58, 0.05, absLat);
+  const subTropDry = smoothstep(0.18, 0.36, absLat) * smoothstep(0.62, 0.36, absLat);
+  const tempBaseC = lerp(29.5, -26.0, powAbs(absLat, 1.32)) - max(0, h) * 0.0065;
+  const rainfall = clamp(0.45 + equatWet * 0.42 - subTropDry * 0.38 + (moistureNoise - 0.5) * 0.55 + majorRiver * 0.25, 0, 1);
+
+  // 4. Blend the 18 Curated Planetary Destinations seamlessly into their continents/oceans
+  let wRiver = 0, wSwamp = 0, wAmazon = 0, wMangrove = 0, wClearing = 0, wPlantation = 0;
+  let wSavanna = 0, wBamboo = 0, wHighland = 0, wBeach = 0, wReef = 0, wAbyss = 0;
+  let wRookery = 0, wPolar = 0, wFire = 0, wVolcano = 0, wCenote = 0, wDune = 0;
+  let lava = 0, archMask = 0;
+  let nearestId = -1;
+  let nearestAng = Infinity;
+
+  // Polar climate baseline everywhere at high latitudes (both North & South Poles!)
+  const polarClimate = smoothstep(0.84, 0.94, absLat); // ~57°..70°+
+  if (polarClimate > 0.01) {
+    wPolar = max(wPolar, polarClimate * (isLand > 0.3 ? 1.0 : 0.65));
+  }
+
+  for (let i = 0; i < BIOME_CATALOG.length; i++) {
+    const b = BIOME_CATALOG[i];
+    const dot = clamp(ux * b.dir[0] + uy * b.dir[1] + uz * b.dir[2], -1, 1);
+    const ang = Math.acos(dot);
+    if (ang < nearestAng) {
+      nearestAng = ang;
+      nearestId = b.id;
+    }
+    const maxInflu = b.basinRad * 2.2;
+    if (ang > maxInflu) continue;
+
+    // Smooth regional weight (broad 40–100 km ecological basin) and local landmark weight (1.0 within 140m, smooth out to 560m)
+    const wReg = smoothstep(maxInflu, b.basinRad * 0.25, ang);
+    const distM = ang * PLANET_RADIUS;
+    const wLocal = smoothstep(560.0, 140.0, distM);
+
+    // Local tangent coordinates (lx East, lz South in meters) relative to biome center
+    let lx = 0, lz = 0;
+    if (distM < 2500.0) {
+      const de = ux * b.enu.east[0] + uy * b.enu.east[1] + uz * b.enu.east[2];
+      const ds = ux * b.enu.south[0] + uy * b.enu.south[1] + uz * b.enu.south[2];
+      lx = de * PLANET_RADIUS;
+      lz = ds * PLANET_RADIUS;
+    }
+
+    switch (b.id) {
+      case 0: { // The River Sanctuary (Amazonia floodplain & meandering river lagoon)
+        wRiver = max(wRiver, wReg);
+        h = lerp(h, clamp(h, -1.8, 36.0), wReg * 0.65);
+        if (wLocal > 0.001) {
+          const riverCenterZ = sin(lx * 0.022) * 18.0;
+          const distRiver = abs(lz - riverCenterZ);
+          const distLagoon = hypot(lx, lz);
+          const distPond = hypot(lx + 35, lz + 30);
+          const rMask = clamp(smoothstep(22, 4, distRiver) * 0.85 + smoothstep(28, 4, distLagoon) * 0.95 + smoothstep(20, 4, distPond) * 0.88, 0, 1);
+          const bankH = 1.9 + sin(lx * 0.04) * cos(lz * 0.04) * 1.1 + microRelief * 0.15;
+          const bedH = -1.45 - smoothstep(26, 2, distLagoon) * 0.95;
+          h = lerp(h, lerp(bankH, bedH, rMask), wLocal);
+        }
+        break;
+      }
+      case 1: { // The Cypress Swamp
+        wSwamp = max(wSwamp, wReg);
+        h = lerp(h, clamp(h, -1.2, 8.0), wReg * 0.72);
+        if (wLocal > 0.001) {
+          const hummock = sin(lx * 0.14) * cos(lz * 0.15) * 0.72 + microRelief * 0.15;
+          h = lerp(h, -0.15 + hummock, wLocal);
+        }
+        break;
+      }
+      case 2: { // Amazon Emerald Canopy
+        wAmazon = max(wAmazon, wReg);
+        if (wLocal > 0.001) {
+          const canopyH = 5.2 + sin(lx * 0.045) * 2.2 + cos(lz * 0.04) * 1.8 + microRelief * 0.25;
+          h = lerp(h, canopyH, wLocal);
+        }
+        break;
+      }
+      case 3: { // Mangrove Passage
+        wMangrove = max(wMangrove, wReg);
+        h = lerp(h, clamp(h, -1.8, 6.0), wReg * 0.72);
+        if (wLocal > 0.001) {
+          const channel = sin(lx * 0.055 + cos(lz * 0.04) * 1.4);
+          const mH = -0.22 + channel * 0.95 + microRelief * 0.12;
+          h = lerp(h, mH, wLocal);
+        }
+        break;
+      }
+      case 4: { // Sunlit Wildlife Clearing
+        wClearing = max(wClearing, wReg);
+        if (wLocal > 0.001) {
+          const meadowH = 2.8 + sin(lx * 0.03) * cos(lz * 0.03) * 1.4 + microRelief * 0.18;
+          h = lerp(h, meadowH, wLocal);
+        }
+        break;
+      }
+      case 5: { // Overgrown Heritage Plantations
+        wPlantation = max(wPlantation, wReg);
+        if (wLocal > 0.001) {
+          const terrace = floor((lz + 180) * 0.12) * 0.65;
+          h = lerp(h, 3.6 + terrace * 0.45 + microRelief * 0.12, wLocal);
+        }
+        break;
+      }
+      case 6: { // Serengeti Savanna & Kopjes
+        wSavanna = max(wSavanna, wReg);
+        if (wLocal > 0.001) {
+          const kopje = max(0, sin(lx * 0.065) * cos(lz * 0.065) - 0.52) * 11.5;
+          h = lerp(h, 2.4 + kopje + microRelief * 0.16, wLocal);
+        }
+        break;
+      }
+      case 7: { // Misty Bamboo & Monsoon Jungle
+        wBamboo = max(wBamboo, wReg);
+        if (wLocal > 0.001) {
+          h = lerp(h, 6.2 + sin(lx * 0.045) * 2.8 + cos(lz * 0.05) * 2.4 + microRelief * 0.2, wLocal);
+        }
+        break;
+      }
+      case 8: { // Virunga Ape Highlands
+        wHighland = max(wHighland, wReg);
+        if (wLocal > 0.001) {
+          h = lerp(h, 9.5 + sin(lx * 0.05 + lz * 0.04) * 4.2 + microRelief * 0.25, wLocal);
+        }
+        break;
+      }
+      case 9: { // Golden Tropical Beach & Atoll
+        wBeach = max(wBeach, wReg);
+        h = lerp(h, clamp(h, -8.0, 12.0), wReg * 0.72);
+        if (wLocal > 0.001) {
+          const coast = sin(lx * 0.028) * 9.0;
+          const seaSig = lz - coast;
+          const beachH = lerp(2.6 + sin(lx * 0.06) * 0.6, -2.8, smoothstep(-24, 28, seaSig));
+          h = lerp(h, beachH + microRelief * 0.1, wLocal);
+        }
+        break;
+      }
+      case 10: { // Sunlit Coral Reef & Kelp Basin
+        wReef = max(wReef, wReg);
+        h = lerp(h, min(h, -8.5), wReg * 0.85);
+        if (wLocal > 0.001) {
+          const reefH = -5.4 + sin(lx * 0.09) * cos(lz * 0.09) * 1.15 + microRelief * 0.18;
+          h = lerp(h, reefH, wLocal);
+        }
+        break;
+      }
+      case 11: { // Abyssal Garden & Hydrothermal Trench
+        wAbyss = max(wAbyss, wReg);
+        h = lerp(h, min(h, -120.0), wReg * 0.88);
+        if (wLocal > 0.001) {
+          const dA = hypot(lx, lz);
+          const ventMound = smoothstep(32, 4, dA) * abs(sin(lx * 0.18) * cos(lz * 0.18)) * 2.4;
+          archMask = max(archMask, smoothstep(48, 10, dA) * smoothstep(0.35, 0.85, sin(lx * 0.09) * cos(lz * 0.09)));
+          h = lerp(h, -15.2 + ventMound + microRelief * 0.25, wLocal);
+        }
+        break;
+      }
+      case 12: { // Sub-Antarctic Penguin Rookery
+        wRookery = max(wRookery, wReg);
+        wPolar = max(wPolar, wReg * 0.75);
+        h = lerp(h, clamp(h, -18.0, 48.0), wReg * 0.72);
+        if (wLocal > 0.001) {
+          const headland = smoothstep(95, 18, hypot(lx, lz)) * (5.8 + sin(lx * 0.07) * 1.8) - 2.2;
+          h = lerp(h, headland + microRelief * 0.18, wLocal);
+        }
+        break;
+      }
+      case 13: { // Polar Ice Planet & Glacial Shelf
+        wPolar = max(wPolar, wReg);
+        h = lerp(h, clamp(h, -20.0, 90.0), wReg * 0.65);
+        if (wLocal > 0.001) {
+          const tabular = floor((sin(lx * 0.045) * cos(lz * 0.045) + 1.0) * 1.8) * 2.4;
+          const lead = smoothstep(14, 3, abs(lz - sin(lx * 0.03) * 14.0)) * 5.2;
+          h = lerp(h, 4.2 + tabular - lead + microRelief * 0.15, wLocal);
+        }
+        break;
+      }
+      case 14: { // Burning Forest
+        wFire = max(wFire, wReg);
+        if (wLocal > 0.001) {
+          h = lerp(h, 4.4 + sin(lx * 0.04) * cos(lz * 0.05) * 2.4 + microRelief * 0.2, wLocal);
+        }
+        break;
+      }
+      case 15: { // Obsidian Volcanic Caldera
+        wVolcano = max(wVolcano, wReg);
+        if (wLocal > 0.001) {
+          const dV = hypot(lx, lz);
+          const cone = smoothstep(115, 28, dV) * 16.5 - smoothstep(28, 6, dV) * 12.0;
+          const angV = atan2(lz, lx);
+          const chan = smoothstep(110, 12, dV) * max(0, sin(angV * 5.0 + dV * 0.07));
+          lava = max(lava, chan * wLocal);
+          h = lerp(h, 4.5 + cone + microRelief * 0.2, wLocal);
+        }
+        break;
+      }
+      case 16: { // Bioluminescent Cenote
+        wCenote = max(wCenote, wReg);
+        h = lerp(h, clamp(h, -8.0, 28.0), wReg * 0.72);
+        if (wLocal > 0.001) {
+          const dC = hypot(lx, lz);
+          const rim = smoothstep(72, 26, dC) * 5.6 - smoothstep(28, 7, dC) * 10.5;
+          h = lerp(h, 2.2 + rim + microRelief * 0.15, wLocal);
+        }
+        break;
+      }
+      case 17: { // Skeleton Coast & Red Dunes
+        wDune = max(wDune, wReg);
+        if (wLocal > 0.001) {
+          const duneH = 3.8 + abs(sin(lx * 0.072 + sin(lz * 0.035) * 2.1)) * 6.5;
+          h = lerp(h, duneH + microRelief * 0.15, wLocal);
+        }
+        break;
+      }
+    }
+  }
+
+  // Natural global climate biome weights outside curated basins so ALL 510M km^2 feel rich & distinct
+  if (h > 0.2) {
+    const aridity = clamp((1.0 - rainfall) * smoothstep(8.0, 26.0, tempBaseC), 0, 1);
+    const rainforest = clamp(smoothstep(0.62, 0.88, rainfall) * smoothstep(16.0, 25.0, tempBaseC), 0, 1);
+    const savannaClim = clamp(smoothstep(0.32, 0.58, rainfall) * smoothstep(18.0, 28.0, tempBaseC) * (1.0 - rainforest), 0, 1);
+    const alpine = smoothstep(1400.0, 3200.0, h);
+    wDune = max(wDune, aridity * 0.82);
+    wAmazon = max(wAmazon, rainforest * 0.78);
+    wSavanna = max(wSavanna, savannaClim * 0.72);
+    wPolar = max(wPolar, max(smoothstep(-2.0, -12.0, tempBaseC), alpine * 0.92));
+    wClearing = max(wClearing, (1.0 - aridity) * (1.0 - rainforest) * (1.0 - wPolar) * 0.45);
+  } else {
+    const shallow = smoothstep(-28.0, -0.5, h);
+    wReef = max(wReef, shallow * smoothstep(16.0, 24.0, tempBaseC) * 0.55);
+    wAbyss = max(wAbyss, smoothstep(-1200.0, -3600.0, h) * 0.7);
+  }
+
+  // Unified Surface Albedo RGB (used by Cube-Sphere Terrain Tiles AND 3D/2D Planetary Navigator!)
+  let cr = 0.20, cg = 0.36, cb = 0.16;
+  if (h < -0.05) {
+    // Bathymetry ocean floor color (bright turquoise reef sand -> deep abyssal indigo basalt)
+    const dFac = saturate(-h / 3500.0);
+    const reefCol = [0.68, 0.62, 0.46];
+    const shelfCol = [0.10, 0.30, 0.34];
+    const abyssCol = [0.03, 0.08, 0.16];
+    const mid = [lerp(shelfCol[0], abyssCol[0], dFac), lerp(shelfCol[1], abyssCol[1], dFac), lerp(shelfCol[2], abyssCol[2], dFac)];
+    const sh = smoothstep(-18.0, -0.3, h);
+    cr = lerp(mid[0], reefCol[0], sh * (0.45 + wReef * 0.45));
+    cg = lerp(mid[1], reefCol[1], sh * (0.45 + wReef * 0.45));
+    cb = lerp(mid[2], reefCol[2], sh * (0.45 + wReef * 0.45));
+    if (wPolar > 0.55 && h > -25.0) {
+      cr = lerp(cr, 0.76, (wPolar - 0.55) * 1.4);
+      cg = lerp(cg, 0.85, (wPolar - 0.55) * 1.4);
+      cb = lerp(cb, 0.92, (wPolar - 0.55) * 1.4);
+    }
+  } else {
+    // Terrestrial climate & biome palette
+    const lush = [0.11, 0.30, 0.10];
+    const tempForest = [0.18, 0.34, 0.14];
+    const sav = [0.54, 0.47, 0.24];
+    const des = [0.76, 0.54, 0.32];
+    const redDune = [0.74, 0.36, 0.21];
+    const rock = [0.36, 0.34, 0.32];
+    const snow = [0.89, 0.93, 0.97];
+    const basalt = [0.13, 0.12, 0.13];
+    const sand = [0.76, 0.68, 0.48];
+
+    cr = lerp(tempForest[0], lush[0], clamp(wAmazon + wBamboo * 0.8, 0, 1));
+    cg = lerp(tempForest[1], lush[1], clamp(wAmazon + wBamboo * 0.8, 0, 1));
+    cb = lerp(tempForest[2], lush[2], clamp(wAmazon + wBamboo * 0.8, 0, 1));
+
+    // Savanna grasslands
+    cr = lerp(cr, sav[0], wSavanna * 0.82);
+    cg = lerp(cg, sav[1], wSavanna * 0.82);
+    cb = lerp(cb, sav[2], wSavanna * 0.82);
+
+    // Deserts & Red Dunes
+    const duneBlend = clamp(wDune * 0.92, 0, 1);
+    const useRed = smoothstep(0.6, 0.95, wDune) * (nearestId === 17 ? 1.0 : 0.3);
+    cr = lerp(cr, lerp(des[0], redDune[0], useRed), duneBlend);
+    cg = lerp(cg, lerp(des[1], redDune[1], useRed), duneBlend);
+    cb = lerp(cb, lerp(des[2], redDune[2], useRed), duneBlend);
+
+    // Beaches & riverbanks
+    const coastSand = smoothstep(8.0, 0.0, h) * (0.35 + wBeach * 0.65);
+    cr = lerp(cr, sand[0], coastSand * 0.72);
+    cg = lerp(cg, sand[1], coastSand * 0.72);
+    cb = lerp(cb, sand[2], coastSand * 0.72);
+
+    // Swamp / Mangrove dark peat
+    const peat = clamp(wSwamp * 0.55 + wMangrove * 0.5, 0, 0.75);
+    cr = lerp(cr, 0.16, peat); cg = lerp(cg, 0.22, peat); cb = lerp(cb, 0.12, peat);
+
+    // Highland rock & volcanic basalt
+    const rockW = smoothstep(650.0, 2100.0, h);
+    cr = lerp(cr, rock[0], rockW * 0.85);
+    cg = lerp(cg, rock[1], rockW * 0.85);
+    cb = lerp(cb, rock[2], rockW * 0.85);
+
+    if (wVolcano > 0.1 || wFire > 0.1) {
+      const charW = clamp(wVolcano * 0.88 + wFire * 0.65, 0, 0.95);
+      cr = lerp(cr, basalt[0], charW);
+      cg = lerp(cg, basalt[1], charW);
+      cb = lerp(cb, basalt[2], charW);
+      if (lava > 0.05) {
+        cr = lerp(cr, 1.0, lava); cg = lerp(cg, 0.32, lava); cb = lerp(cb, 0.04, lava);
+      }
+    }
+
+    // Polar snow & alpine glaciers
+    const snowW = clamp(wPolar * 0.95 + smoothstep(2300.0, 3800.0, h) * 0.92, 0, 1);
+    cr = lerp(cr, snow[0], snowW);
+    cg = lerp(cg, snow[1], snowW);
+    cb = lerp(cb, snow[2], snowW);
+  }
+
+  const wetness = clamp(smoothstep(1.8, -0.4, h - WATER_LEVEL) + wSwamp * 0.45 + wRiver * 0.4 + majorRiver * 0.4, 0, 1);
+  const moisture = clamp(wetness * 0.55 + rainfall * 0.55, 0, 1);
 
   out.h = h;
   out.height = h;
+  out.latDeg = latDeg;
+  out.lonDeg = lonDeg;
+  out.continentId = continentId;
+  out.temperatureC = tempBaseC;
+  out.rainfall = rainfall;
   out.waterDepth = max(0, WATER_LEVEL - h);
   out.wetness = wetness;
   out.moisture = moisture;
@@ -665,19 +821,608 @@ export const terrainAt = (rawX, rawZ, out = {}) => {
   out.cenote = wCenote;
   out.dune = wDune;
   out.dunes = wDune;
-  out.lava = clamp(lavaChannel * wVolcano, 0, 1);
+  out.lava = clamp(lava, 0, 1);
   out.archMask = archMask;
+  out.biomeId = nearestAng < 0.08 ? nearestId : (wPolar > 0.65 ? 13 : h < -10 ? 11 : wDune > 0.55 ? 17 : wAmazon > 0.5 ? 2 : wSavanna > 0.45 ? 6 : 4);
+  out.colR = cr;
+  out.colG = cg;
+  out.colB = cb;
   return out;
 };
 
-// Evaluate environmental hazard vector & severity at (x, z) for intelligent animal avoidance
-// domain: 0 / 'land' = land/wading, 1 / 'water' = aquatic/marine, 2 / 'air' = aerial
-export const evaluateHazardAt = (x, z, domain = 0, out = {}) => {
+function powAbs(v, p) {
+  return Math.pow(max(0, v), p);
+}
+
+const _tmpDir = [0, 0, 1];
+export const samplePlanetAtLatLon = (latDeg, lonDeg, out = {}, detailLevel = 2) => {
+  latLonToDir(latDeg * DEG2RAD, lonDeg * DEG2RAD, _tmpDir);
+  return samplePlanetAtDir(_tmpDir[0], _tmpDir[1], _tmpDir[2], out, detailLevel);
+};
+
+// Local tangent meter query around the active floating-origin anchor (NO 720-unit wrap!)
+export const terrainAt = (dxMeters, dzMeters, out = {}, origin = _activeOrigin) => {
+  const dir = localMetersToDir(dxMeters, dzMeters, origin, _tmpDir);
+  return samplePlanetAtDir(dir[0], dir[1], dir[2], out, 2);
+};
+
+// Backward-safe finite delta helper (no artificial 720-unit wrap!)
+export const wrapCoord = (v) => (Number.isFinite(v) ? v : 0);
+export const wrapDelta = (a, b = 0) => {
+  const d = (Number.isFinite(a) ? a : 0) - (Number.isFinite(b) ? b : 0);
+  return Number.isFinite(d) ? d : 0;
+};
+
+// Geodesic coordinate helpers using real Earth dimensions
+export const worldToLatLonAlt = (dxMeters, altMeters, dzMeters, origin = _activeOrigin) => {
+  const ll = localMetersToLatLon(dxMeters, dzMeters, origin);
+  const layer = atmosphericLayerAt(altMeters);
+  return {
+    lat: ll.latDeg,
+    lon: ll.lonDeg,
+    latDeg: ll.latDeg,
+    lonDeg: ll.lonDeg,
+    latRad: ll.latRad,
+    lonRad: ll.lonRad,
+    altMeters,
+    altKm: altMeters / 1000.0,
+    nx: ll.nx, ny: ll.ny, nz: ll.nz,
+    layer
+  };
+};
+
+export const latLonToWorld = (latDeg, lonDeg, origin = _activeOrigin) => {
+  return latLonToLocalMeters(latDeg, lonDeg, origin);
+};
+
+export const worldToCubeSphere = (dxMeters, altMeters, dzMeters, origin = _activeOrigin) => {
+  const ll = localMetersToLatLon(dxMeters, dzMeters, origin);
+  const cs = dirToCubeFaceUV(ll.nx, ll.ny, ll.nz);
+  return {
+    face: cs.face,
+    u: cs.u,
+    v: cs.v,
+    nx: ll.nx, ny: ll.ny, nz: ll.nz,
+    radiusAtLat: oblateRadiusAtSinLat(ll.ny),
+    latDeg: ll.latDeg,
+    lonDeg: ll.lonDeg
+  };
+};
+
+// Nearest curated biome destination using genuine great-circle geodesic distance
+export const nearestBiomeAtGeo = (latDeg, lonDeg) => {
+  let best = BIOME_CATALOG[0];
+  let bestDist = Infinity;
+  for (let i = 0; i < BIOME_CATALOG.length; i++) {
+    const b = BIOME_CATALOG[i];
+    const d = greatCircleDistanceMeters(latDeg, lonDeg, b.latDeg, b.lonDeg);
+    if (d < bestDist) {
+      bestDist = d;
+      best = b;
+    }
+  }
+  return { biome: best, distanceMeters: bestDist, distanceKm: bestDist / 1000.0 };
+};
+
+export const nearestBiomeAt = (dxMeters, dzMeters, origin = _activeOrigin) => {
+  const ll = localMetersToLatLon(dxMeters, dzMeters, origin);
+  return nearestBiomeAtGeo(ll.latDeg, ll.lonDeg).biome;
+};
+
+export const spaceSectorAt = (latDeg, lonDeg, altMeters) => {
+  const sx = floor((lonDeg + 180) / 60);
+  const sy = floor(max(0, altMeters - 100000) / 500000);
+  const sz = floor((latDeg + 90) / 30);
+  const h = abs(sin(sx * 127.1 + sy * 311.7 + sz * 74.7) * 43758.5453);
+  const idx = floor((h % 1) * 6);
+  const names = [
+    'Orion-Cygnus Spiral Arm',
+    'Carina Nebula Filament',
+    'Magellanic Tidal Stream',
+    'Perseus Molecular Cloud',
+    'Vela Supernova Remnant',
+    'Local Bubble Interstellar Void'
+  ];
+  return { sectorX: sx, sectorY: sy, sectorZ: sz, name: names[idx] || names[0] };
+};
+
+export const biomeLabelAtGeo = (latDeg, lonDeg, altMeters) => {
+  const layer = atmosphericLayerAt(altMeters);
+  if (altMeters >= 10000000) {
+    const sec = spaceSectorAt(latDeg, lonDeg, altMeters);
+    return `${layer.name} · ${sec.name}`;
+  }
+  const near = nearestBiomeAtGeo(latDeg, lonDeg);
+  const s = samplePlanetAtLatLon(latDeg, lonDeg, {}, 0);
+  let regionLabel = near.distanceKm < 120
+    ? near.biome.name
+    : s.h < -5
+      ? (abs(latDeg) > 62 ? 'Polar Ocean Basin' : 'Open Pelagic Ocean')
+      : s.continentId >= 0
+        ? `${PLATES.find((p) => p.id === s.continentId)?.name || 'Continental'} ${s.polar > 0.65 ? 'Glacial Interior' : s.dune > 0.55 ? 'Arid Basin' : s.amazon > 0.5 ? 'Rainforest' : s.h > 1400 ? 'Alpine Range' : 'Highlands'}`
+        : 'Oceanic Archipelago';
+  if (altMeters >= 12000) {
+    return `${layer.name} (${(altMeters / 1000).toFixed(0)} km) · Over ${regionLabel}`;
+  }
+  if (near.distanceKm >= 120) {
+    return `${regionLabel} (${near.distanceKm.toFixed(0)} km to ${near.biome.name})`;
+  }
+  return regionLabel;
+};
+
+export const biomeLabelAt = (dxMeters, altMeters, dzMeters, origin = _activeOrigin) => {
+  const ll = localMetersToLatLon(dxMeters, dzMeters, origin);
+  return biomeLabelAtGeo(ll.latDeg, ll.lonDeg, altMeters);
+};
+
+// Local cinematic camera poses (offset in meters around each biome's true planetary center)
+export const POSES = BIOME_CATALOG.map((b) => {
+  if (b.id === 10) return [-10, -1.8, -14, 4, -3.8, 10];   // Coral Reef underwater
+  if (b.id === 11) return [-12, -6.5, -15, -2, -10.5, 4];  // Abyssal Garden underwater
+  if (b.id === 9)  return [-15, 2.8, -16, 4, 0.8, 18];     // Tropical Beach
+  if (b.id === 15) return [-20, 12.5, 22, 4, 7.5, -4];     // Volcanic Caldera
+  if (b.id === 8)  return [-16, 13.5, 18, 6, 9.5, -6];     // Virunga Highlands
+  return [-14, 4.8, 18, 5, 2.2, -6];
+});
+
+// ============================================================================
+// GENUINE 6-FACE CUBE-SPHERE QUADTREE TERRAIN STREAMER
+// - Hierarchical subdivision across all 6 cube faces (0..5)
+// - Screen-space error (SSE) LOD selection
+// - Deterministic LRU tile cache with bounded memory & unloading
+// - Edge-consistent boundary elevations & spherical normals (zero cube-face seams)
+// - Downward skirts to conceal LOD T-junctions
+// ============================================================================
+export const TILE_GRID = 16;                                // 16x16 quads -> 17x17 surface verts
+export const TILE_SURF_VERTS = (TILE_GRID + 1) * (TILE_GRID + 1); // 289
+export const TILE_SKIRT_VERTS = (TILE_GRID + 1) * 4;        // 68
+export const TILE_TOTAL_VERTS = TILE_SURF_VERTS + TILE_SKIRT_VERTS; // 357
+export const TILE_FLOATS_PER_VERT = 12; // posOffEcef(3), elev(1), normEcef(3), wetness(1), col(3), biomeId(1)
+
+export const buildTileIndexBuffer = () => {
+  const N = TILE_GRID;
+  const stride = N + 1;
+  const idx = [];
+  // Main 16x16 surface grid
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const i0 = y * stride + x;
+      const i1 = i0 + 1;
+      const i2 = i0 + stride;
+      const i3 = i2 + 1;
+      idx.push(i0, i2, i1, i1, i2, i3);
+    }
+  }
+  // 4 downward edge skirts (top, bottom, left, right)
+  let skBase = TILE_SURF_VERTS;
+  // Top edge (y = 0)
+  for (let x = 0; x < N; x++) {
+    const t0 = x, t1 = x + 1;
+    const s0 = skBase + x, s1 = skBase + x + 1;
+    idx.push(t0, t1, s0, t1, s1, s0);
+  }
+  skBase += stride;
+  // Bottom edge (y = N)
+  for (let x = 0; x < N; x++) {
+    const t0 = N * stride + x, t1 = t0 + 1;
+    const s0 = skBase + x, s1 = skBase + x + 1;
+    idx.push(t0, s0, t1, t1, s0, s1);
+  }
+  skBase += stride;
+  // Left edge (x = 0)
+  for (let y = 0; y < N; y++) {
+    const t0 = y * stride, t1 = (y + 1) * stride;
+    const s0 = skBase + y, s1 = skBase + y + 1;
+    idx.push(t0, s0, t1, t1, s0, s1);
+  }
+  skBase += stride;
+  // Right edge (x = N)
+  for (let y = 0; y < N; y++) {
+    const t0 = y * stride + N, t1 = (y + 1) * stride + N;
+    const s0 = skBase + y, s1 = skBase + y + 1;
+    idx.push(t0, t1, s0, t1, s1, s0);
+  }
+  return new Uint32Array(idx);
+};
+
+// Deterministic hash seed per (face, lod, tx, ty)
+export const tileSeed = (face, lod, tx, ty) => {
+  let h = (face + 1) * 73856093 ^ (lod + 1) * 19349663 ^ (tx + 17) * 83492791 ^ (ty + 31) * 2971215073;
+  return (h >>> 0);
+};
+
+export class CubeSphereQuadtree {
+  constructor(opts = {}) {
+    this.maxLod = opts.maxLod ?? 16;          // LOD 16 => ~150m tile width (~9.5m vertex spacing); LOD 17 => ~4.7m
+    this.maxCachedTiles = opts.maxCachedTiles ?? 320;
+    this.maxTilesPerFrame = opts.maxTilesPerFrame ?? 18;
+    this.maxActiveTiles = opts.maxActiveTiles ?? 220;
+    this.cache = new Map();                   // key -> tile record (insertion order = LRU)
+    this.freeSlots = [];
+    for (let i = this.maxCachedTiles - 1; i >= 0; i--) this.freeSlots.push(i);
+    this.indices = buildTileIndexBuffer();
+    this.frameCounter = 0;
+    this.stats = { activeCount: 0, cachedCount: 0, generatedThisFrame: 0, evictedTotal: 0, maxLodActive: 0 };
+  }
+
+  tileKey(face, lod, tx, ty) {
+    return `${face}_${lod}_${tx}_${ty}`;
+  }
+
+  // Generate deterministic vertex data for a cube-sphere tile (identical across runs & shared edges!)
+  generateTile(face, lod, tx, ty, gpuSlot) {
+    const invN = 1.0 / (1 << lod);
+    const u0 = -1.0 + 2.0 * tx * invN;
+    const u1 = -1.0 + 2.0 * (tx + 1) * invN;
+    const v0 = -1.0 + 2.0 * ty * invN;
+    const v1 = -1.0 + 2.0 * (ty + 1) * invN;
+    const uc = 0.5 * (u0 + u1);
+    const vc = 0.5 * (v0 + v1);
+
+    const cDir = cubeFaceUVToDir(face, uc, vc);
+    const cSample = samplePlanetAtDir(cDir[0], cDir[1], cDir[2], {}, lod >= 10 ? 2 : lod >= 5 ? 1 : 0);
+    const cRad = oblateRadiusAtSinLat(cDir[1]) + cSample.h;
+    const ecefCenter = [cDir[0] * cRad, cDir[1] * cRad, cDir[2] * cRad];
+
+    const tileArcMeters = (PI * 0.5 * PLANET_RADIUS) * invN;
+    const skirtDepth = clamp(tileArcMeters * 0.045, 3.5, 45000.0);
+    const detailLevel = lod >= 11 ? 2 : lod >= 5 ? 1 : 0;
+
+    // Finite-difference angular step for seamless analytical spherical normals across ALL tile & face boundaries
+    const normEpsMeters = max(1.8, tileArcMeters / (TILE_GRID * 2.5));
+    const normEpsAng = normEpsMeters / PLANET_RADIUS;
+
+    const verts = new Float32Array(TILE_TOTAL_VERTS * TILE_FLOATS_PER_VERT);
+    const stride = TILE_GRID + 1;
+    const dir = [0, 0, 1];
+    const samp = {};
+    const sE = {}, sW = {}, sN = {}, sS = {};
+    let minElev = Infinity, maxElev = -Infinity;
+    let maxRadFromCenter = 0;
+
+    for (let gy = 0; gy <= TILE_GRID; gy++) {
+      const fy = gy / TILE_GRID;
+      const v = lerp(v0, v1, fy);
+      for (let gx = 0; gx <= TILE_GRID; gx++) {
+        const fx = gx / TILE_GRID;
+        const u = lerp(u0, u1, fx);
+        cubeFaceUVToDir(face, u, v, dir);
+        samplePlanetAtDir(dir[0], dir[1], dir[2], samp, detailLevel);
+
+        const h = samp.h;
+        if (h < minElev) minElev = h;
+        if (h > maxElev) maxElev = h;
+
+        const rBase = oblateRadiusAtSinLat(dir[1]);
+        const r = rBase + h;
+        const px = dir[0] * r;
+        const py = dir[1] * r;
+        const pz = dir[2] * r;
+
+        const ox = px - ecefCenter[0];
+        const oy = py - ecefCenter[1];
+        const oz = pz - ecefCenter[2];
+        const dCenter = hypot(ox, oy, oz);
+        if (dCenter > maxRadFromCenter) maxRadFromCenter = dCenter;
+
+        // Orthonormal spherical tangent axes at `dir` (independent of cube face!) for seamless normals
+        let txA = dir[2], tyA = 0, tzA = -dir[0];
+        let tLen = hypot(txA, tyA, tzA);
+        if (tLen < 1e-5) { txA = 1; tyA = 0; tzA = 0; tLen = 1; }
+        txA /= tLen; tyA /= tLen; tzA /= tLen;
+        const bxA = dir[1] * tzA - dir[2] * tyA;
+        const byA = dir[2] * txA - dir[0] * tzA;
+        const bzA = dir[0] * tyA - dir[1] * txA;
+
+        samplePlanetAtDir(dir[0] + txA * normEpsAng, dir[1] + tyA * normEpsAng, dir[2] + tzA * normEpsAng, sE, detailLevel);
+        samplePlanetAtDir(dir[0] - txA * normEpsAng, dir[1] - tyA * normEpsAng, dir[2] - tzA * normEpsAng, sW, detailLevel);
+        samplePlanetAtDir(dir[0] + bxA * normEpsAng, dir[1] + byA * normEpsAng, dir[2] + bzA * normEpsAng, sN, detailLevel);
+        samplePlanetAtDir(dir[0] - bxA * normEpsAng, dir[1] - byA * normEpsAng, dir[2] - bzA * normEpsAng, sS, detailLevel);
+
+        const dhdT = (sE.h - sW.h) / (2.0 * normEpsMeters);
+        const dhdB = (sN.h - sS.h) / (2.0 * normEpsMeters);
+        let enx = dir[0] - txA * dhdT - bxA * dhdB;
+        let eny = dir[1] - tyA * dhdT - byA * dhdB;
+        let enz = dir[2] - tzA * dhdT - bzA * dhdB;
+        const nl = hypot(enx, eny, enz) || 1;
+        enx /= nl; eny /= nl; enz /= nl;
+
+        const base = (gy * stride + gx) * TILE_FLOATS_PER_VERT;
+        verts[base]      = ox;
+        verts[base + 1]  = oy;
+        verts[base + 2]  = oz;
+        verts[base + 3]  = h;
+        verts[base + 4]  = enx;
+        verts[base + 5]  = eny;
+        verts[base + 6]  = enz;
+        verts[base + 7]  = samp.wetness;
+        verts[base + 8]  = samp.colR;
+        verts[base + 9]  = samp.colG;
+        verts[base + 10] = samp.colB;
+        verts[base + 11] = samp.biomeId + (samp.lava > 0.05 ? round(clamp(samp.lava, 0, 0.99) * 99) * 100.0 : 0.0);
+      }
+    }
+
+    // Build 4 downward skirt rings by copying boundary vertices dropped radially inward by skirtDepth
+    const copySkirtVert = (srcIdx, dstIdx) => {
+      const sb = srcIdx * TILE_FLOATS_PER_VERT;
+      const db = dstIdx * TILE_FLOATS_PER_VERT;
+      const ox = verts[sb], oy = verts[sb + 1], oz = verts[sb + 2];
+      const vx = ecefCenter[0] + ox, vy = ecefCenter[1] + oy, vz = ecefCenter[2] + oz;
+      const vl = hypot(vx, vy, vz) || 1;
+      verts[db]      = ox - (vx / vl) * skirtDepth;
+      verts[db + 1]  = oy - (vy / vl) * skirtDepth;
+      verts[db + 2]  = oz - (vz / vl) * skirtDepth;
+      verts[db + 3]  = verts[sb + 3] - skirtDepth;
+      for (let k = 4; k < TILE_FLOATS_PER_VERT; k++) verts[db + k] = verts[sb + k];
+    };
+
+    let skCursor = TILE_SURF_VERTS;
+    for (let x = 0; x <= TILE_GRID; x++) copySkirtVert(x, skCursor++);                          // top
+    for (let x = 0; x <= TILE_GRID; x++) copySkirtVert(TILE_GRID * stride + x, skCursor++);     // bottom
+    for (let y = 0; y <= TILE_GRID; y++) copySkirtVert(y * stride, skCursor++);                 // left
+    for (let y = 0; y <= TILE_GRID; y++) copySkirtVert(y * stride + TILE_GRID, skCursor++);     // right
+
+    return {
+      key: this.tileKey(face, lod, tx, ty),
+      face, lod, tx, ty,
+      seed: tileSeed(face, lod, tx, ty),
+      u0, u1, v0, v1,
+      cDir,
+      ecefCenter,
+      tileArcMeters,
+      boundRadius: maxRadFromCenter + skirtDepth,
+      minElev,
+      maxElev,
+      hasOcean: minElev < 3.5,
+      verts,
+      gpuSlot,
+      needsUpload: true,
+      lastUsedFrame: this.frameCounter
+    };
+  }
+
+  getOrGenerate(face, lod, tx, ty, allowGenerate = true) {
+    const key = this.tileKey(face, lod, tx, ty);
+    const existing = this.cache.get(key);
+    if (existing) {
+      // Refresh LRU position
+      this.cache.delete(key);
+      this.cache.set(key, existing);
+      existing.lastUsedFrame = this.frameCounter;
+      return existing;
+    }
+    if (!allowGenerate) return null;
+
+    let slot;
+    if (this.freeSlots.length > 0) {
+      slot = this.freeSlots.pop();
+    } else {
+      // Evict oldest LRU tile not used in current frame
+      let evictKey = null;
+      for (const [k, tile] of this.cache) {
+        if (tile.lastUsedFrame < this.frameCounter) {
+          evictKey = k;
+          break;
+        }
+      }
+      if (!evictKey) return null;
+      const old = this.cache.get(evictKey);
+      this.cache.delete(evictKey);
+      slot = old.gpuSlot;
+      this.stats.evictedTotal++;
+    }
+
+    const tile = this.generateTile(face, lod, tx, ty, slot);
+    this.cache.set(key, tile);
+    this.stats.generatedThisFrame++;
+    return tile;
+  }
+
+  // Select visible cube-sphere tiles via Best-First Highest-SSE Priority Refinement & Horizon Culling
+  selectTiles(camEcef, camAltMeters, fovRad = 1.0, viewportH = 900, sseThreshold = 14.0, forceSync = false) {
+    this.frameCounter++;
+    this.stats.generatedThisFrame = 0;
+    this.stats.maxLodActive = 0;
+
+    const camR = hypot(camEcef[0], camEcef[1], camEcef[2]) || PLANET_RADIUS;
+    const camDir = [camEcef[0] / camR, camEcef[1] / camR, camEcef[2] / camR];
+    const horizonAng = Math.acos(clamp(PLANET_POLAR_RADIUS / max(PLANET_POLAR_RADIUS, camR), 0, 1));
+    const projScale = viewportH / (2.0 * tan(max(0.2, fovRad) * 0.5));
+    const maxBudget = forceSync ? 9999 : this.maxTilesPerFrame;
+
+    const evalNode = (face, lod, tx, ty) => {
+      const invN = 1.0 / (1 << lod);
+      const uc = -1.0 + 2.0 * (tx + 0.5) * invN;
+      const vc = -1.0 + 2.0 * (ty + 0.5) * invN;
+      const cDir = cubeFaceUVToDir(face, uc, vc);
+      const tileArc = (PI * 0.5 * PLANET_RADIUS) * invN;
+      const tileAngRadius = (tileArc * 0.88) / PLANET_RADIUS;
+
+      const dotCam = cDir[0] * camDir[0] + cDir[1] * camDir[1] + cDir[2] * camDir[2];
+      const minVisCos = cos(min(PI, horizonAng + tileAngRadius + 0.16));
+      if (lod >= 1 && dotCam < minVisCos) return null;
+
+      const approxR = oblateRadiusAtSinLat(cDir[1]);
+      const dist = hypot(
+        cDir[0] * approxR - camEcef[0],
+        cDir[1] * approxR - camEcef[1],
+        cDir[2] * approxR - camEcef[2]
+      );
+      const effDist = max(8.0, dist - tileArc * 0.72);
+      const geoError = tileArc * 0.085;
+      const sse = (geoError * projScale) / effDist;
+      return { face, lod, tx, ty, sse };
+    };
+
+    // Start with all 6 root cube faces so the entire visible globe is guaranteed covered
+    const nodes = [];
+    for (let face = 0; face < 6; face++) {
+      const n = evalNode(face, 0, 0, 0);
+      if (n) nodes.push(n);
+    }
+
+    // Best-first highest-SSE priority splitting: always refines closest/highest-error tiles first
+    // down to LOD 14-16 (~150 m) near surface while distant horizon tiles remain coarse (LOD 1-4)
+    while (nodes.length + 3 <= this.maxActiveTiles) {
+      let bestIdx = -1;
+      let bestScore = -1;
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        if (n.lod >= this.maxLod) continue;
+        if (n.lod > 0 && n.sse <= sseThreshold) continue;
+        // Slightly prioritize root faces so visible faces open immediately, then pure SSE
+        const score = n.lod === 0 ? n.sse + 1e6 : n.sse;
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx < 0) break;
+
+      const parent = nodes[bestIdx];
+      nodes[bestIdx] = nodes[nodes.length - 1];
+      nodes.pop();
+
+      const cLod = parent.lod + 1;
+      const cx = parent.tx * 2;
+      const cy = parent.ty * 2;
+      const c0 = evalNode(parent.face, cLod, cx,     cy);
+      const c1 = evalNode(parent.face, cLod, cx + 1, cy);
+      const c2 = evalNode(parent.face, cLod, cx,     cy + 1);
+      const c3 = evalNode(parent.face, cLod, cx + 1, cy + 1);
+      if (c0) nodes.push(c0);
+      if (c1) nodes.push(c1);
+      if (c2) nodes.push(c2);
+      if (c3) nodes.push(c3);
+    }
+
+    // Materialize GPU tiles (with parent fallback if streaming frame budget is reached)
+    const selected = [];
+    const seenKeys = new Set();
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const canGen = this.stats.generatedThisFrame < maxBudget;
+      let tile = this.getOrGenerate(n.face, n.lod, n.tx, n.ty, canGen);
+      if (!tile && n.lod > 0) {
+        let pLod = n.lod - 1;
+        let px = n.tx >> 1;
+        let py = n.ty >> 1;
+        while (!tile && pLod >= 0) {
+          tile = this.getOrGenerate(n.face, pLod, px, py, pLod === 0);
+          pLod--;
+          px >>= 1;
+          py >>= 1;
+        }
+      }
+      if (tile && !seenKeys.has(tile.key)) {
+        seenKeys.add(tile.key);
+        selected.push(tile);
+        if (tile.lod > this.stats.maxLodActive) this.stats.maxLodActive = tile.lod;
+      }
+    }
+
+    this.stats.activeCount = selected.length;
+    this.stats.cachedCount = this.cache.size;
+    return selected;
+  }
+}
+
+// ============================================================================
+// EXPLICIT CONTINUOUS ATMOSPHERIC RE-ENTRY & DESCENT STATE MACHINE
+// Handles orbital space -> exosphere -> thermosphere -> mesosphere -> stratosphere
+// -> troposphere -> clouds -> regional flight -> near-surface -> ground arrival
+// with continuous double-precision (lat, lon, alt) integration, gravity, drag,
+// thermal heating & swept collision (ZERO teleportation or hard snap).
+// ============================================================================
+export const stepAtmosphericReentry = (state, input, dt) => {
+  const stepDt = clamp(dt, 0.0001, 0.05);
+  const subSteps = abs(state.velU) > 800 ? 8 : abs(state.velU) > 120 ? 4 : 2;
+  const hDt = stepDt / subSteps;
+
+  let groundH = 0;
+  let reentryHeat = state.reentryHeat || 0;
+
+  for (let s = 0; s < subSteps; s++) {
+    const alt = state.altMeters;
+    const rho = atmosphericDensityAt(alt);
+    const g = gravityAt(alt);
+
+    // Thruster / flight control acceleration (in m/s^2)
+    const thrustE = input.thrustE || 0;
+    const thrustN = input.thrustN || 0;
+    const thrustU = input.thrustU || 0;
+    const gravityScale = input.gravityScale ?? 0.0; // 0 in free-hover, >0 during ballistic re-entry
+
+    // Progressive aerodynamic drag increases smoothly as atmosphere thickens
+    const speed = hypot(state.velE, state.velN, state.velU);
+    const dragCoeff = (0.045 + rho * 0.95) * (1.0 + clamp(speed / 6000, 0, 2.5));
+    const dragFactor = exp(-dragCoeff * hDt);
+
+    state.velE = (state.velE + thrustE * hDt) * dragFactor;
+    state.velN = (state.velN + thrustN * hDt) * dragFactor;
+    state.velU = (state.velU + (thrustU - g * gravityScale) * hDt) * dragFactor;
+
+    // Aerodynamic re-entry heating peaks at high downward speed through Mesosphere/Thermosphere
+    const descentSpeed = max(0, -state.velU);
+    const heatBand = smoothstep(18000, 52000, alt) * (1.0 - smoothstep(82000, 145000, alt));
+    const targetHeat = clamp((descentSpeed / 2200.0) * heatBand * (0.25 + rho * 22.0), 0, 1);
+    reentryHeat = lerp(reentryHeat, targetHeat, clamp(hDt * 4.5, 0, 1));
+
+    // Integrate horizontal displacement along true Earth geodesic (preserves lat/lon & crosses poles/±180°)
+    const dE = state.velE * hDt;
+    const dN = state.velN * hDt;
+    if (hypot(dE, dN) > 1e-8) {
+      const geoNext = moveAlongGeodesic(state.latRad, state.lonRad, dE, dN);
+      state.latRad = geoNext.latRad;
+      state.lonRad = geoNext.lonRad;
+      state.latDeg = geoNext.latDeg;
+      state.lonDeg = geoNext.lonDeg;
+      if (Number.isFinite(state.yaw)) {
+        state.yaw = normAngle(state.yaw + geoNext.headingShift);
+      }
+    }
+
+    // Swept vertical integration & progressive surface approach braking
+    const surf = samplePlanetAtLatLon(state.latDeg, state.lonDeg, {}, alt < 12000 ? 2 : 1);
+    groundH = surf.h;
+    const minSurfaceAlt = max(groundH + (input.clearance ?? 1.75), input.allowUnderwater ? groundH + 0.55 : WATER_LEVEL + 0.35);
+
+    const nextAlt = state.altMeters + state.velU * hDt;
+    const agl = nextAlt - minSurfaceAlt;
+
+    // Smooth ground approach Cushion/Deceleration when nearing surface at high descent speed
+    if (agl < 650 && agl > 0 && state.velU < -25) {
+      const brake = smoothstep(650, 8, agl);
+      state.velU = lerp(state.velU, max(state.velU, -max(6.0, agl * 0.45)), brake * clamp(hDt * 6.0, 0, 1));
+    }
+
+    if (nextAlt <= minSurfaceAlt) {
+      state.altMeters = minSurfaceAlt;
+      if (state.velU < 0) state.velU = 0;
+      state.grounded = true;
+    } else {
+      state.altMeters = nextAlt;
+      state.grounded = false;
+    }
+  }
+
+  state.reentryHeat = reentryHeat;
+  state.groundH = groundH;
+  state.layer = atmosphericLayerAt(state.altMeters);
+  state.stage = reentryStageAt(state.altMeters, groundH, state.velU);
+  return state;
+};
+
+// ============================================================================
+// HABITAT-AWARE ENVIRONMENTAL HAZARD EVALUATOR (Meters, Domain-Specific)
+// ============================================================================
+export const evaluateHazardAt = (x, z, domain = 0, out = {}, origin = _activeOrigin) => {
   const dom = domain === 'water' || domain === 1 ? 1 : domain === 'air' || domain === 2 ? 2 : 0;
-  const t = terrainAt(x, z);
+  const t = terrainAt(x, z, {}, origin);
   const eps = 3.5;
-  const tx = terrainAt(x + eps, z);
-  const tz = terrainAt(x, z + eps);
+  const tx = terrainAt(x + eps, z, {}, origin);
+  const tz = terrainAt(x, z + eps, {}, origin);
 
   const dhdx = (tx.h - t.h) / eps;
   const dhdz = (tz.h - t.h) / eps;
@@ -688,33 +1433,28 @@ export const evaluateHazardAt = (x, z, domain = 0, out = {}) => {
   let pushZ = 0;
   let reason = 'safe';
 
-  // 1. Wildfire hazard (Forbidden Zone I: Burning Forest)
-  if (t.fire > 0.12) {
-    const dfx = wrapDelta(x, FIRE_POS[0]);
-    const dfz = wrapDelta(z, FIRE_POS[1]);
-    const d = Math.max(1, hypot(dfx, dfz));
+  // 1. Wildfire hazard (ONLY terrestrial & low-flying aerial fauna flee wildfire — NOT whales/marine!)
+  if (dom !== 1 && t.fire > 0.14) {
     const sev = t.fire * 2.4;
     hazardScore += sev;
-    pushX += (dfx / d) * sev;
-    pushZ += (dfz / d) * sev;
+    const d = max(1, hypot(x, z));
+    pushX += (x / d) * sev;
+    pushZ += (z / d) * sev;
     reason = 'wildfire';
   }
 
-  // 2. Molten lava & volcanic caldera hazard (Forbidden Zone II)
-  if (t.volcano > 0.12 || t.lava > 0.05) {
-    const dvx = wrapDelta(x, VOLCANO_POS[0]);
-    const dvz = wrapDelta(z, VOLCANO_POS[1]);
-    const d = Math.max(1, hypot(dvx, dvz));
-    const sev = (t.volcano + (t.lava || 0) * 2.0) * 2.6;
+  // 2. Molten lava & volcanic caldera hazard (terrestrial & low aerial)
+  if (dom !== 1 && (t.volcano > 0.25 || t.lava > 0.05)) {
+    const sev = (t.volcano * 0.8 + (t.lava || 0) * 2.5) * 2.2;
     hazardScore += sev;
-    pushX += (dvx / d) * sev;
-    pushZ += (dvz / d) * sev;
+    const d = max(1, hypot(x, z));
+    pushX += (x / d) * sev;
+    pushZ += (z / d) * sev;
     reason = 'lava';
   }
 
-  // 3. Domain-specific water depth / stranding hazards
+  // 3. Domain-specific water depth / cliff / stranding hazards
   if (dom === 0) {
-    // Land animals avoid drowning in deep water
     if (t.h < WATER_LEVEL - 0.55) {
       const sev = clamp((WATER_LEVEL - 0.55 - t.h) * 1.8, 0, 3.5);
       hazardScore += sev;
@@ -730,9 +1470,9 @@ export const evaluateHazardAt = (x, z, domain = 0, out = {}) => {
       if (reason === 'safe') reason = 'cliff';
     }
   } else if (dom === 1) {
-    // Strictly aquatic fauna avoid beaching on shallow land
-    if (t.h > WATER_LEVEL - 0.45) {
-      const sev = clamp((t.h - (WATER_LEVEL - 0.45)) * 2.5, 0, 4.0);
+    // Strictly aquatic/marine fauna avoid shallow water stranding
+    if (t.h > WATER_LEVEL - 0.85) {
+      const sev = clamp((t.h - (WATER_LEVEL - 0.85)) * 2.5, 0, 4.0);
       hazardScore += sev;
       pushX -= dhdx * 3.5;
       pushZ -= dhdz * 3.5;
@@ -753,43 +1493,4 @@ export const evaluateHazardAt = (x, z, domain = 0, out = {}) => {
   out.terrain = t;
   out.slope = slope;
   return out;
-};
-
-export const nearestBiomeAt = (x, z) => {
-  const wx = wrapCoord(x);
-  const wz = wrapCoord(z);
-  let best = BIOME_CATALOG[0];
-  let bestScore = Infinity;
-  for (let i = 0; i < BIOME_CATALOG.length; i++) {
-    const b = BIOME_CATALOG[i];
-    const d = hypot(wrapDelta(wx, b.center[0]), wrapDelta(wz, b.center[1])) / (b.radius || 75);
-    if (d < bestScore) {
-      bestScore = d;
-      best = b;
-    }
-  }
-  return best;
-};
-
-export const biomeLabelAt = (x, y, z) => {
-  const layer = atmosphericLayerAt(y);
-  if (y >= 2300) {
-    const sec = spaceSectorAt(x, y, z);
-    return `${layer.name} · ${sec.name}`;
-  }
-  const wx = wrapCoord(x);
-  const wz = wrapCoord(z);
-  let regionName = '';
-  if (wz < -225) {
-    regionName = 'Antarctica & Arctic North Ice Shelf';
-  } else if (wz > 295 && abs(wx - ABYSS_POS[0]) > 65) {
-    regionName = 'Antarctica Southern Glacial Continent';
-  } else {
-    const near = nearestBiomeAt(x, z);
-    regionName = near ? near.name : 'The River Sanctuary';
-  }
-  if (y >= 160) {
-    return `${layer.name} (${layer.equivKm.toFixed(0)} km) · Over ${regionName}`;
-  }
-  return regionName;
 };

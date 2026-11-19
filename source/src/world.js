@@ -9,14 +9,16 @@ import {
   WORLD_SEED, seedRng, rnd, rr, noise2, fbm2, MeshBuilder
 } from './math.js';
 import {
-  WORLD_HALF,
+  WATER_LEVEL, BIOME_CATALOG,
   LAGOON_POS, POND_POS, CYPRESS_POS, AMAZON_POS, MANGROVE_POS,
   CLEARING_POS, PLANTATION_POS, SAVANNA_POS, BAMBOO_POS, HIGHLAND_POS,
   BEACH_POS, REEF_POS, ABYSS_POS, ROOKERY_POS, POLAR_POS,
   FIRE_POS, VOLCANO_POS, FORGOTTEN_POS, DUNE_POS,
-  wrapCoord, wrapDelta, terrainAt, evaluateHazardAt
+  wrapDelta, terrainAt, evaluateHazardAt, getActiveOrigin
 } from './biomes.js';
 import { THIN, MAX_PARTICLES_BUDGET } from './quality.js';
+
+const REGION_HALF = 320;
 
 const VEG_DENSITY_SCALE = 1 / THIN;
 const SIZE_VAR_MIN = 0.82;
@@ -375,20 +377,27 @@ function buildBigCatMesh(coat, belly, hasMane = false) {
   }
   addExpressiveFace(m, 0.80, 0.88, 0.14, 0.15, 0.18, belly, dark, [0.85, 0.62, 0.12], true);
   for (const s of [-1, 1]) {
-    // Continuous front & hind limbs with shoulder/thigh muscle bellies and paws
+    // Upper front leg (uv.x = 0.36) & lower front leg/paw (uv.x = 0.42)
     m.smoothLimb(
-      [[s * 0.14, 0.66, 0.36], [s * 0.16, 0.36, 0.38], [s * 0.15, 0.14, 0.35], [s * 0.15, 0.02, 0.41]],
-      [[0.095, 0.115], [0.068, 0.078], [0.050, 0.055], [0.065, 0.078]],
-      [coat, coat, belly, belly],
-      [[0.4, 0.7], [0.4, 0.8], [0.4, 0.9], [0.4, 1.0]],
-      6, 0.12
+      [[s * 0.14, 0.66, 0.36], [s * 0.16, 0.38, 0.38]],
+      [[0.092, 0.11], [0.068, 0.078]],
+      [coat, coat], [[0.36, 0.05], [0.36, 0.48]], 6, 0.10
     );
     m.smoothLimb(
-      [[s * 0.15, 0.66, -0.40], [s * 0.16, 0.38, -0.46], [s * 0.15, 0.15, -0.42], [s * 0.15, 0.02, -0.36]],
-      [[0.11, 0.13], [0.072, 0.085], [0.050, 0.055], [0.065, 0.078]],
-      [coat, coat, belly, belly],
-      [[0.4, 0.3], [0.4, 0.2], [0.4, 0.1], [0.4, 0.0]],
-      6, 0.14
+      [[s * 0.16, 0.38, 0.38], [s * 0.15, 0.14, 0.35], [s * 0.15, 0.01, 0.41]],
+      [[0.064, 0.072], [0.048, 0.052], [0.062, 0.075]],
+      [coat, belly, belly], [[0.42, 0.50], [0.42, 0.80], [0.42, 1.0]], 6, 0.06
+    );
+    // Upper hind leg (uv.x = 0.38) & lower hind leg/paw (uv.x = 0.44)
+    m.smoothLimb(
+      [[s * 0.15, 0.66, -0.40], [s * 0.16, 0.38, -0.46]],
+      [[0.105, 0.125], [0.070, 0.082]],
+      [coat, coat], [[0.38, 0.05], [0.38, 0.48]], 6, 0.11
+    );
+    m.smoothLimb(
+      [[s * 0.16, 0.38, -0.46], [s * 0.15, 0.15, -0.42], [s * 0.15, 0.01, -0.36]],
+      [[0.066, 0.076], [0.048, 0.052], [0.062, 0.075]],
+      [coat, belly, belly], [[0.44, 0.50], [0.44, 0.80], [0.44, 1.0]], 6, 0.06
     );
   }
   return m.build();
@@ -496,122 +505,420 @@ function buildZebraMesh() {
   const m = new MeshBuilder();
   const base = [0.88, 0.88, 0.86], dark = [0.08, 0.08, 0.10];
   m.smoothLimb(
-    [[0, 0.62, -0.82], [0, 0.88, -0.48], [0, 0.86, 0.05], [0, 0.92, 0.42], [0, 1.24, 0.68], [0, 1.18, 0.94]],
-    [[0.035, 0.035], [0.22, 0.25], [0.24, 0.27], [0.22, 0.25], [0.13, 0.16], [0.075, 0.09]],
+    [[0, 0.68, -0.82], [0, 0.88, -0.46], [0, 0.86, 0.05], [0, 0.92, 0.42], [0, 1.24, 0.68], [0, 1.18, 0.94]],
+    [[0.035, 0.035], [0.19, 0.22], [0.22, 0.25], [0.21, 0.24], [0.12, 0.15], [0.072, 0.085]],
     [dark, base, base, base, base, dark],
     [[0.8, 0], [0.5, 0.25], [0.5, 0.5], [0.5, 0.72], [0.5, 0.90], [0.5, 1.0]],
-    7, 0.08
+    7, 0.06
   );
   addExpressiveFace(m, 1.22, 0.78, 0.11, 0.13, 0.16, dark, dark, [0.06, 0.05, 0.04], true);
   for (const s of [-1, 1]) {
-    m.smoothLimb([[s * 0.14, 0.80, 0.36], [s * 0.14, 0.42, 0.37], [s * 0.14, 0.02, 0.39]], [0.09, 0.055, 0.06], [base, base, dark], [[0.4, 0.7], [0.4, 0.85], [0.4, 1.0]], 5, 0.08);
-    m.smoothLimb([[s * 0.15, 0.82, -0.44], [s * 0.15, 0.42, -0.46], [s * 0.15, 0.02, -0.42]], [0.10, 0.055, 0.06], [base, base, dark], [[0.4, 0.3], [0.4, 0.15], [0.4, 0.0]], 5, 0.09);
+    m.smoothLimb([[s * 0.14, 0.82, 0.36], [s * 0.14, 0.44, 0.37]], [0.082, 0.056], [base, base], [[0.36, 0.05], [0.36, 0.48]], 5, 0.06);
+    m.smoothLimb([[s * 0.14, 0.44, 0.37], [s * 0.14, 0.01, 0.39]], [0.052, 0.052], [base, dark], [[0.42, 0.50], [0.42, 1.0]], 5, 0.04);
+    m.smoothLimb([[s * 0.14, 0.84, -0.44], [s * 0.14, 0.44, -0.48]], [0.092, 0.056], [base, base], [[0.38, 0.05], [0.38, 0.48]], 5, 0.06);
+    m.smoothLimb([[s * 0.14, 0.44, -0.48], [s * 0.14, 0.01, -0.42]], [0.052, 0.052], [base, dark], [[0.44, 0.50], [0.44, 1.0]], 5, 0.04);
   }
   return m.build();
 }
 
-// Marine Megafauna: Humpback/Blue Whale, Orca, Great White Shark & Noniv/abyssal-garden Manta Ray
-function buildWhaleOrcaMesh(colDorsal, colVentral, isOrca = false) {
+// ============================================================================
+// Distinct Species-Specific Marine Megafauna Anatomy (Universal +Y Up, +Z Fwd)
+// ============================================================================
+
+// 1. Humpback Whale (Megaptera novaeangliae): ~14m adult length
+// Broad rostrum with tubercles, ventral throat pleats, blowhole, huge scalloped
+// pectoral flippers, dorsal hump, tapered peduncle & broad notched tail flukes.
+function buildHumpbackWhaleMesh() {
   const m = new MeshBuilder();
-  const len = isOrca ? 1.85 : 3.2;
-  const rad = isOrca ? 0.38 : 0.58;
-  // Continuous hydrofoil spline body from rostrum to tail peduncle
+  const dorsal = [0.11, 0.16, 0.23];
+  const flank  = [0.18, 0.24, 0.31];
+  const pleat  = [0.68, 0.74, 0.80];
+  const white  = [0.88, 0.91, 0.94];
+
+  // Primary 14m body profile from peduncle (-6.6) to broad flattened rostrum (+6.8)
   m.smoothLimb(
-    [[0, 0.02, -len * 0.95], [0, 0.0, -len * 0.55], [0, 0.02, -len * 0.15], [0, 0.04, len * 0.32], [0, 0.0, len * 0.75], [0, -0.02, len * 0.98]],
-    [[0.06, 0.05], [rad * 0.45, rad * 0.52], [rad * 0.88, rad * 0.95], [rad, rad * 0.96], [rad * 0.68, rad * 0.52], [rad * 0.22, rad * 0.15]],
-    [colDorsal, colDorsal, colDorsal, colDorsal, colDorsal, colVentral],
-    [[0.9, 0], [0.7, 0.2], [0.5, 0.45], [0.5, 0.7], [0.5, 0.9], [0.5, 1.0]],
-    8, 0.06
+    [
+      [0,  0.04, -6.55],
+      [0,  0.06, -5.10],
+      [0,  0.10, -3.20],
+      [0,  0.14, -1.10],
+      [0,  0.16,  1.40],
+      [0,  0.10,  3.60],
+      [0,  0.02,  5.50],
+      [0, -0.02,  6.85]
+    ],
+    [
+      [0.16, 0.22],
+      [0.42, 0.54],
+      [0.92, 1.02],
+      [1.46, 1.38],
+      [1.72, 1.54],
+      [1.56, 1.24],
+      [1.22, 0.68],
+      [0.52, 0.24]
+    ],
+    [dorsal, dorsal, dorsal, flank, flank, dorsal, dorsal, flank],
+    [[0.92, 0.0], [0.80, 0.14], [0.65, 0.30], [0.55, 0.48], [0.50, 0.66], [0.50, 0.82], [0.50, 0.94], [0.50, 1.0]],
+    10, 0.05
   );
-  addExpressiveFace(m, 0.02, len * 0.72, rad * 0.65, rad * 0.42, len * 0.20, colVentral, colDorsal, [0.05, 0.06, 0.08], false);
-  // Broad horizontal cetacean tail flukes
-  for (const s of [-1, 1]) {
-    m.ribbon([0, 0.02, -len * 0.82], [s * rad * 1.65, 0.04, -len * 1.08], rad * 0.36, 0.05, 0.04, colDorsal, colVentral, 0.9, 0.0, 0.2, 4);
-    // Pectoral flippers (elongated scalloped flippers on Humpback, rounded paddles on Orca)
-    const flipLen = isOrca ? rad * 1.45 : rad * 2.55;
-    m.ribbon([s * rad * 0.75, -rad * 0.28, len * 0.22], [s * (rad * 0.75 + flipLen), -rad * 0.52, len * 0.02], rad * 0.38, 0.08, -0.05, colDorsal, colVentral, 0.5, 0.6, 0.8, 5);
+
+  // Ventral throat pleats (expanded lower jaw & longitudinal pleated grooves)
+  for (let p = -3; p <= 3; p++) {
+    const px = p * 0.22;
+    const drop = -1.28 + abs(p) * 0.14;
+    m.smoothLimb(
+      [[px * 0.7, drop * 0.72, 0.4], [px, drop, 2.8], [px * 0.85, drop * 0.68, 5.1], [px * 0.42, -0.18, 6.65]],
+      [0.10, 0.13, 0.11, 0.07],
+      [pleat, white, pleat, white],
+      [[0.18, 0.70], [0.18, 0.82], [0.18, 0.92], [0.18, 0.99]],
+      5, 0.02
+    );
   }
-  // Dorsal fin (tall 1.8m sword fin on Orca, low step hump on Humpback)
-  const dH = isOrca ? rad * 1.65 : rad * 0.42;
-  m.ribbon([0, rad * 0.72, -len * 0.12], [0, rad * 0.72 + dH, -len * 0.26], rad * 0.32, 0.04, 0.04, colDorsal, colDorsal, 0.5, 0.4, 0.5, 4);
+
+  // Characteristic Humpback rostrum tubercles (sensory knobs along upper snout)
+  for (let t = 0; t < 5; t++) {
+    const tz = 4.3 + t * 0.54;
+    const tw = lerp(0.95, 0.36, t / 4);
+    m.ellipsoid(0, 0.72 - t * 0.09, tz, 0.14, 0.09, 0.14, flank, 0.5, 0.92, 3, 4);
+    for (const s of [-1, 1]) {
+      m.ellipsoid(s * tw, 0.42 - t * 0.07, tz, 0.13, 0.09, 0.13, flank, 0.5, 0.92, 3, 4);
+    }
+  }
+
+  // Paired dorsal blowholes & small laterally-placed wet eyes
+  for (const s of [-1, 1]) {
+    m.ellipsoid(s * 0.14, 1.24, 3.85, 0.08, 0.04, 0.18, [0.05, 0.07, 0.10], 0.5, 0.86, 3, 4);
+    m.ellipsoid(s * 1.48, -0.04, 3.65, 0.09, 0.08, 0.10, [0.04, 0.05, 0.07], 0.12, 0.85, 4, 5);
+  }
+
+  // Characteristic low stepped dorsal hump (distinct from Orca's tall sword fin!)
+  m.smoothLimb(
+    [[0, 1.32, -1.05], [0, 1.66, -1.65], [0, 1.50, -2.25]],
+    [[0.22, 0.34], [0.14, 0.24], [0.06, 0.14]],
+    [dorsal, dorsal, flank],
+    [[0.55, 0.45], [0.55, 0.42], [0.55, 0.38]],
+    6, 0.03
+  );
+
+  // Enormous scalloped Humpback pectoral flippers (~4.6m span each, pale undersides)
+  for (const s of [-1, 1]) {
+    m.ribbon([s * 1.35, -0.45, 2.35], [s * 3.55, -0.82, 1.30], 0.72, 0.52, -0.08, dorsal, white, 0.62, 0.70, 0.78, 5);
+    m.ribbon([s * 3.55, -0.82, 1.30], [s * 5.45, -0.96, 0.32], 0.52, 0.14, -0.06, white, white, 0.62, 0.76, 0.84, 5);
+    // Scalloped leading-edge knobs on flipper
+    for (let k = 0; k < 4; k++) {
+      const f = (k + 0.5) / 4;
+      m.ellipsoid(s * lerp(2.0, 4.9, f), lerp(-0.56, -0.92, f), lerp(2.25, 0.62, f), 0.12, 0.08, 0.14, white, 0.62, 0.75, 3, 4);
+    }
+    // Broad horizontal notched tail flukes (4.4m span, central V-notch at x=0)
+    m.ribbon([s * 0.18, 0.04, -6.25], [s * 2.25, 0.06, -7.25], 0.68, 0.12, 0.05, dorsal, white, 0.94, 0.05, 0.0, 5);
+  }
   return m.build();
 }
 
+// 2. Orca / Killer Whale (Orcinus orca): ~7.6m adult length (completely separate mesh!)
+// Robust black-and-white countershaded torpedo, rounded melon, oval white eye patch,
+// grey dorsal saddle, tall 1.5m curved dorsal sword fin, rounded paddles & flukes.
+function buildOrcaMesh() {
+  const m = new MeshBuilder();
+  const jet    = [0.04, 0.05, 0.07];
+  const saddle = [0.36, 0.40, 0.45];
+  const white  = [0.95, 0.96, 0.98];
+
+  m.smoothLimb(
+    [
+      [0,  0.02, -3.65],
+      [0,  0.04, -2.55],
+      [0,  0.08, -1.10],
+      [0,  0.12,  0.45],
+      [0,  0.08,  1.85],
+      [0,  0.02,  2.95],
+      [0, -0.04,  3.75]
+    ],
+    [
+      [0.10, 0.14],
+      [0.28, 0.38],
+      [0.58, 0.72],
+      [0.78, 0.88],
+      [0.72, 0.76],
+      [0.48, 0.50],
+      [0.18, 0.16]
+    ],
+    [jet, jet, jet, jet, jet, jet, jet],
+    [[0.92, 0.0], [0.78, 0.16], [0.62, 0.36], [0.50, 0.56], [0.50, 0.76], [0.50, 0.92], [0.50, 1.0]],
+    9, 0.05
+  );
+
+  // Crisp white chin, throat, belly & sweeping rear flank patches
+  m.smoothLimb(
+    [[0, -0.45, -1.65], [0, -0.72, -0.20], [0, -0.68, 1.45], [0, -0.34, 2.95], [0, -0.10, 3.60]],
+    [[0.22, 0.16], [0.52, 0.24], [0.56, 0.26], [0.36, 0.20], [0.14, 0.10]],
+    [white, white, white, white, white],
+    [[0.62, 0.26], [0.50, 0.50], [0.50, 0.74], [0.18, 0.90], [0.18, 0.98]],
+    7, 0.03
+  );
+  // Iconic grey saddle patch behind dorsal fin
+  m.ellipsoid(0, 0.62, -0.72, 0.58, 0.26, 0.62, saddle, 0.52, 0.42, 4, 6);
+
+  // Tall iconic Orca sword dorsal fin (1.45m high!)
+  m.smoothLimb(
+    [[0, 0.78, 0.25], [0, 1.48, -0.05], [0, 2.15, -0.45]],
+    [[0.12, 0.42], [0.075, 0.28], [0.025, 0.08]],
+    [jet, jet, jet],
+    [[0.52, 0.52], [0.52, 0.50], [0.52, 0.48]],
+    6, 0.02
+  );
+
+  for (const s of [-1, 1]) {
+    // Iconic oval white post-ocular eye patch + dark wet eye + white flank flare
+    m.ellipsoid(s * 0.56, 0.24, 2.35, 0.10, 0.14, 0.34, white, 0.5, 0.84, 4, 5);
+    m.ellipsoid(s * 0.50, 0.08, 2.82, 0.055, 0.055, 0.06, [0.02, 0.02, 0.03], 0.12, 0.90, 3, 4);
+    m.ellipsoid(s * 0.46, -0.18, -1.35, 0.18, 0.18, 0.58, white, 0.62, 0.30, 4, 5);
+    // Broad rounded paddle pectoral flippers
+    m.ribbon([s * 0.64, -0.34, 1.45], [s * 1.65, -0.56, 0.85], 0.46, 0.28, -0.04, jet, jet, 0.60, 0.70, 0.76, 4);
+    // Broad notched horizontal tail flukes
+    m.ribbon([s * 0.10, 0.02, -3.45], [s * 1.38, 0.04, -4.15], 0.42, 0.08, 0.03, jet, white, 0.94, 0.05, 0.0, 5);
+  }
+  return m.build();
+}
+
+// 3. Great White Shark (Carcharodon carcharias): ~4.8m adult length
+// Pointed conical snout, countershaded fusiform body, underslung mouth with white
+// teeth, 5 visible gill slits, 1st & 2nd dorsal fins, pectorals, pelvics, anal fin,
+// and asymmetric heterocercal crescent caudal fin.
 function buildSharkMesh() {
   const m = new MeshBuilder();
-  const slate = [0.28, 0.34, 0.40], belly = [0.88, 0.90, 0.92];
+  const slate  = [0.26, 0.31, 0.37];
+  const dark   = [0.15, 0.18, 0.22];
+  const belly  = [0.90, 0.92, 0.94];
+  const gillC  = [0.06, 0.07, 0.09];
+  const teeth  = [0.96, 0.95, 0.90];
+
+  // Streamlined fusiform shark body (-2.35 caudal peduncle to +2.45 pointed snout)
   m.smoothLimb(
-    [[0, 0.0, -1.65], [0, 0.0, -0.95], [0, 0.02, -0.20], [0, 0.03, 0.45], [0, 0.0, 1.05], [0, 0.02, 1.42]],
-    [[0.05, 0.06], [0.16, 0.20], [0.30, 0.34], [0.32, 0.35], [0.22, 0.18], [0.06, 0.05]],
-    [slate, slate, slate, slate, slate, belly],
-    [[0.9, 0], [0.7, 0.2], [0.5, 0.5], [0.5, 0.75], [0.5, 0.9], [0.5, 1.0]],
-    8, 0.06
+    [
+      [0,  0.00, -2.25],
+      [0,  0.01, -1.45],
+      [0,  0.03, -0.50],
+      [0,  0.05,  0.50],
+      [0,  0.04,  1.35],
+      [0,  0.06,  1.98],
+      [0,  0.05,  2.48]
+    ],
+    [
+      [0.065, 0.085],
+      [0.19,  0.24],
+      [0.42,  0.48],
+      [0.52,  0.55],
+      [0.42,  0.40],
+      [0.24,  0.20],
+      [0.055, 0.045]
+    ],
+    [slate, slate, slate, slate, slate, slate, dark],
+    [[0.94, 0.0], [0.80, 0.18], [0.64, 0.42], [0.52, 0.62], [0.50, 0.80], [0.50, 0.92], [0.50, 1.0]],
+    10, 0.04
   );
-  addExpressiveFace(m, 0.0, 1.05, 0.22, 0.18, 0.28, belly, slate, [0.03, 0.04, 0.05], false);
-  // First dorsal fin & lunate heterocercal caudal fin
-  m.ribbon([0, 0.28, 0.12], [0, 0.72, -0.08], 0.22, 0.03, 0.03, slate, slate, 0.5, 0.5, 0.6, 4);
-  m.ribbon([0, 0.0, -1.52], [0, 0.52, -1.88], 0.18, 0.03, 0.04, slate, slate, 0.9, 0.0, 0.1, 4);
-  m.ribbon([0, 0.0, -1.52], [0, -0.38, -1.80], 0.15, 0.03, -0.03, slate, belly, 0.9, 0.0, 0.1, 3);
-  for (const s of [-1, 1]) {
-    m.ribbon([s * 0.26, -0.14, 0.38], [s * 0.88, -0.26, 0.15], 0.22, 0.04, -0.02, slate, belly, 0.5, 0.6, 0.7, 4);
+
+  // Crisp countershaded white ventral belly
+  m.smoothLimb(
+    [[0, -0.18, -1.25], [0, -0.36, -0.25], [0, -0.40, 0.65], [0, -0.28, 1.52], [0, -0.10, 2.08]],
+    [[0.16, 0.10], [0.36, 0.18], [0.42, 0.20], [0.30, 0.14], [0.14, 0.07]],
+    [belly, belly, belly, belly, belly],
+    [[0.74, 0.22], [0.58, 0.46], [0.52, 0.66], [0.50, 0.84], [0.50, 0.95]],
+    7, 0.02
+  );
+
+  // Underslung crescent jaw (uv.x = 0.18) & serrated white teeth row
+  m.ellipsoid(0, -0.15, 1.82, 0.22, 0.09, 0.24, belly, 0.18, 0.92, 4, 5);
+  for (let t = -3; t <= 3; t++) {
+    const a = t * 0.28;
+    m.ellipsoid(sin(a) * 0.18, -0.11, 1.86 + cos(a) * 0.14, 0.022, 0.032, 0.018, teeth, 0.18, 0.93, 3, 3);
   }
+
+  for (const s of [-1, 1]) {
+    // Jet-black shark eye
+    m.ellipsoid(s * 0.25, 0.08, 1.88, 0.042, 0.042, 0.045, [0.02, 0.02, 0.03], 0.12, 0.92, 3, 4);
+    // FIVE distinct vertical gill slits behind head
+    for (let g = 0; g < 5; g++) {
+      const gz = 1.24 - g * 0.105;
+      m.ribbon([s * 0.44, 0.16, gz], [s * 0.44, -0.18, gz - 0.02], 0.018, 0.015, 0.01, gillC, gillC, 0.5, 0.74, 0.74, 2);
+    }
+    // Large swept triangular pectoral fins
+    m.ribbon([s * 0.42, -0.22, 0.82], [s * 1.48, -0.44, 0.22], 0.38, 0.06, -0.04, slate, belly, 0.56, 0.66, 0.74, 5);
+    // Paired pelvic fins
+    m.ribbon([s * 0.24, -0.34, -0.68], [s * 0.64, -0.46, -0.96], 0.18, 0.04, -0.02, slate, belly, 0.72, 0.34, 0.40, 3);
+  }
+
+  // Large iconic First Dorsal Fin + small Second Dorsal Fin + Anal Fin
+  m.smoothLimb(
+    [[0, 0.48, 0.34], [0, 0.96, 0.12], [0, 1.28, -0.12]],
+    [[0.08, 0.34], [0.048, 0.22], [0.018, 0.06]],
+    [slate, slate, dark], [[0.54, 0.56], [0.54, 0.54], [0.54, 0.52]], 5, 0.02
+  );
+  m.smoothLimb(
+    [[0, 0.22, -1.32], [0, 0.40, -1.46]],
+    [[0.04, 0.12], [0.015, 0.04]],
+    [slate, dark], [[0.82, 0.18], [0.82, 0.16]], 4, 0.01
+  );
+  m.smoothLimb(
+    [[0, -0.18, -1.38], [0, -0.34, -1.52]],
+    [[0.035, 0.10], [0.014, 0.035]],
+    [belly, slate], [[0.82, 0.16], [0.82, 0.14]], 4, 0.01
+  );
+
+  // Asymmetric Heterocercal Crescent Caudal Tail Fin (upper lobe longer than lower lobe)
+  m.smoothLimb(
+    [[0, 0.02, -2.18], [0, 0.46, -2.52], [0, 0.92, -2.86]],
+    [[0.055, 0.20], [0.04, 0.18], [0.015, 0.05]],
+    [slate, slate, dark], [[0.96, 0.04], [0.98, 0.02], [1.0, 0.0]], 5, 0.01
+  );
+  m.smoothLimb(
+    [[0, -0.02, -2.18], [0, -0.38, -2.48], [0, -0.72, -2.74]],
+    [[0.052, 0.18], [0.036, 0.16], [0.014, 0.045]],
+    [slate, belly, belly], [[0.96, 0.04], [0.98, 0.02], [1.0, 0.0]], 5, 0.01
+  );
   return m.build();
 }
 
-// Exact Noniv/abyssal-garden Manta Ray (meshManta) with diamond disc & cephalic horn fins
+// 4. Oceanic Manta Ray (Mobula birostris): ~4.6m wingspan
+// Broad flattened diamond disc, white ventral gill-slit underside, wide tapered
+// pectoral wings, cephalic horn fins & slender whip tail.
 function buildMantaMesh() {
   const m = new MeshBuilder();
-  const dark = [0.10, 0.14, 0.20], rim = [0.22, 0.30, 0.38], horn = [0.78, 0.82, 0.86];
+  const dark   = [0.07, 0.10, 0.15];
+  const shldr  = [0.22, 0.28, 0.36];
+  const white  = [0.86, 0.90, 0.93];
+  const gillC  = [0.28, 0.34, 0.40];
+
+  // Central flattened diamond disc body
   m.smoothLimb(
-    [[0, 0.0, -1.85], [0, 0.0, -0.65], [0, 0.02, 0.0], [0, 0.02, 0.65], [0, 0.0, 0.95]],
-    [[0.015, 0.015], [0.18, 0.06], [0.42, 0.11], [0.36, 0.09], [0.24, 0.05]],
-    [dark, dark, dark, dark, horn],
-    [[0.9, 0], [0.6, 0.3], [0.5, 0.5], [0.5, 0.8], [0.5, 1.0]],
-    7, 0.04
+    [[0, 0.0, -1.15], [0, 0.02, -0.40], [0, 0.04, 0.25], [0, 0.02, 0.85], [0, 0.0, 1.12]],
+    [[0.16, 0.055], [0.46, 0.11], [0.68, 0.14], [0.54, 0.10], [0.36, 0.05]],
+    [dark, dark, shldr, dark, dark],
+    [[0.70, 0.25], [0.58, 0.45], [0.50, 0.65], [0.50, 0.85], [0.50, 0.96]],
+    8, 0.02
   );
+  // Pale ventral underside plate + 5 paired gill slits
+  m.ellipsoid(0, -0.06, 0.20, 0.56, 0.06, 0.72, white, 0.50, 0.60, 4, 6);
+  // Long slender whip tail + tiny dorsal finlet at tail base
+  m.smoothLimb(
+    [[0, 0.0, -1.05], [0, -0.01, -1.85], [0, -0.02, -2.75]],
+    [0.036, 0.018, 0.008], [dark, dark, dark], [[0.92, 0.12], [0.96, 0.05], [1.0, 0.0]], 5, 0.0
+  );
+  m.smoothLimb([[0, 0.06, -0.92], [0, 0.18, -1.08]], [0.025, 0.01], [dark, shldr], [[0.80, 0.22], [0.80, 0.20]], 4, 0.0);
+
   for (const s of [-1, 1]) {
-    // Broad diamond pectoral wings (span out to x = +-1.65 so shader amp = 0.36 * pow(abs(x), 1.6) flaps authentically)
-    m.ribbon([s * 0.22, 0.0, 0.08], [s * 1.65, 0.0, -0.12], 0.58, 0.05, 0.03, dark, rim, 0.8, 0.4, 0.9, 6);
-    // Forward-projecting cephalic fins
-    m.ribbon([s * 0.18, 0.0, 0.85], [s * 0.24, -0.04, 1.28], 0.09, 0.03, 0.02, dark, horn, 0.5, 0.9, 1.0, 3);
+    // Broad sweeping diamond pectoral wings (span to x = +-2.30m)
+    m.ribbon([s * 0.36, 0.01, 0.32], [s * 1.42, 0.02, 0.08], 0.72, 0.44, 0.04, dark, shldr, 0.80, 0.55, 0.75, 5);
+    m.ribbon([s * 1.42, 0.02, 0.08], [s * 2.32, 0.00, -0.32], 0.44, 0.05, 0.03, shldr, white, 0.80, 0.75, 0.95, 5);
+    // Forward-projecting curved cephalic horn fins flanking wide mouth
+    m.ribbon([s * 0.28, -0.01, 0.96], [s * 0.34, -0.05, 1.56], 0.12, 0.04, 0.02, dark, white, 0.50, 0.94, 1.0, 4);
+    // Lateral eye on outer cephalic base
+    m.ellipsoid(s * 0.42, 0.03, 0.98, 0.035, 0.032, 0.04, [0.02, 0.03, 0.04], 0.12, 0.92, 3, 4);
+    // 5 ventral gill slits
+    for (let g = 0; g < 5; g++) {
+      m.ellipsoid(s * (0.20 + g * 0.01), -0.115, 0.48 - g * 0.09, 0.08, 0.01, 0.012, gillC, 0.5, 0.65, 2, 3);
+    }
   }
   return m.build();
 }
 
-// Emperor Penguin & Leopard Seal Meshes
+// Emperor Penguin Mesh (upright +Y, beak +Z, grounded feet y = 0)
 function buildPenguinMesh() {
   const m = new MeshBuilder();
-  const back = [0.08, 0.10, 0.14], beak = [0.92, 0.48, 0.12];
+  const back = [0.07, 0.09, 0.13], belly = [0.92, 0.93, 0.94], gold = [0.92, 0.68, 0.16], beak = [0.88, 0.44, 0.12];
   m.smoothLimb(
-    [[0, 0.04, -0.06], [0, 0.24, 0.0], [0, 0.48, 0.02], [0, 0.68, 0.04], [0, 0.78, 0.08], [0, 0.76, 0.22]],
-    [[0.12, 0.12], [0.18, 0.17], [0.17, 0.16], [0.11, 0.11], [0.085, 0.085], [0.02, 0.02]],
-    [back, back, back, back, back, beak],
+    [[0, 0.05, -0.05], [0, 0.26, 0.0], [0, 0.50, 0.02], [0, 0.70, 0.04], [0, 0.80, 0.08], [0, 0.77, 0.22]],
+    [[0.12, 0.11], [0.17, 0.16], [0.16, 0.15], [0.105, 0.105], [0.082, 0.082], [0.018, 0.018]],
+    [back, back, back, gold, back, beak],
     [[0.5, 0], [0.5, 0.3], [0.5, 0.6], [0.5, 0.85], [0.5, 0.95], [0.5, 1.0]],
-    7, 0.05
+    7, 0.04
   );
-  addExpressiveFace(m, 0.77, 0.10, 0.08, 0.08, 0.10, beak, back, [0.05, 0.05, 0.05], false);
+  m.ellipsoid(0, 0.36, 0.09, 0.12, 0.25, 0.08, belly, 0.5, 0.5, 5, 6);
+  addExpressiveFace(m, 0.79, 0.10, 0.08, 0.08, 0.10, beak, back, [0.04, 0.04, 0.05], false);
   for (const s of [-1, 1]) {
-    m.ribbon([s * 0.15, 0.52, 0.02], [s * 0.24, 0.22, -0.02], 0.07, 0.025, 0.02, back, back, 0.6, 0.5, 0.8, 3);
-    m.smoothLimb([[s * 0.07, 0.12, 0.02], [s * 0.08, 0.01, 0.10]], [0.045, 0.055], [back, back], [[0.4, 0.1], [0.4, 0.0]], 4, 0.02);
+    m.ribbon([s * 0.15, 0.54, 0.02], [s * 0.23, 0.22, -0.02], 0.068, 0.022, 0.02, back, back, 0.6, 0.5, 0.8, 3);
+    m.smoothLimb([[s * 0.07, 0.10, 0.01], [s * 0.08, 0.005, 0.10]], [0.04, 0.048], [back, back], [[0.42, 0.75], [0.42, 1.0]], 4, 0.02);
   }
   return m.build();
 }
 
+// Anatomically Accurate White-Tailed Deer (Odocoileus virginianus)
+// Slender tapered chest/ribcage, lean tucked waist, proportional hindquarters
+// (zero bulbous rump!), graceful arched neck, narrow muzzle, antlers, and
+// 2-segment articulated upper/lower legs with distinct elbow, knee, stifle, hock & hooves.
 function buildDeerMesh() {
   const m = new MeshBuilder();
-  const coat = [0.64, 0.42, 0.22], belly = [0.88, 0.82, 0.72], dark = [0.22, 0.15, 0.10], antler = [0.76, 0.70, 0.56];
+  const coat   = [0.62, 0.41, 0.22];
+  const flank  = [0.56, 0.37, 0.20];
+  const belly  = [0.90, 0.86, 0.78];
+  const dark   = [0.18, 0.13, 0.09];
+  const antler = [0.78, 0.72, 0.58];
+
+  // Anatomically proportioned torso: lean pelvis (-0.42) -> tucked waist (-0.08) -> deep chest (+0.28) -> withers (+0.38)
   m.smoothLimb(
-    [[0, 0.70, -0.68], [0, 0.78, -0.45], [0, 0.76, 0.0], [0, 0.80, 0.38], [0, 1.08, 0.58], [0, 1.16, 0.72], [0, 1.12, 0.88]],
-    [[0.05, 0.05], [0.17, 0.20], [0.19, 0.22], [0.18, 0.21], [0.10, 0.12], [0.09, 0.10], [0.045, 0.055]],
-    [belly, coat, coat, coat, coat, coat, dark],
-    [[0.8, 0], [0.5, 0.2], [0.5, 0.5], [0.5, 0.75], [0.5, 0.88], [0.5, 0.95], [0.5, 1.0]],
-    7, 0.08
+    [
+      [0, 0.86, -0.48],  // lean croup / pelvis
+      [0, 0.88, -0.24],  // lumbar loin
+      [0, 0.85,  0.04],  // ribcage mid
+      [0, 0.89,  0.32],  // deep chest / withers
+      [0, 1.12,  0.50],  // slender arched neck mid
+      [0, 1.28,  0.62],  // upper neck / occiput
+      [0, 1.27,  0.76],  // cranium
+      [0, 1.21,  0.94]   // tapered narrow muzzle
+    ],
+    [
+      [0.128, 0.152],    // proportional hindquarters (NOT oversized!)
+      [0.118, 0.145],    // lean waist / flank tuck
+      [0.138, 0.178],    // deep slender ribcage
+      [0.142, 0.182],    // muscular chest & shoulders
+      [0.078, 0.102],    // graceful neck
+      [0.068, 0.082],    // poll
+      [0.076, 0.086],    // skull
+      [0.038, 0.044]     // nose
+    ],
+    [coat, flank, coat, coat, coat, coat, coat, dark],
+    [[0.50, 0.18], [0.50, 0.38], [0.50, 0.56], [0.50, 0.72], [0.50, 0.84], [0.50, 0.92], [0.50, 0.96], [0.50, 1.0]],
+    8, 0.03
   );
-  addExpressiveFace(m, 1.15, 0.74, 0.09, 0.10, 0.14, belly, coat, [0.06, 0.04, 0.03], true);
+  // Crisp white underbelly & white-tailed deer flag tail (uv.x = 0.82 for gentle tail flick)
+  m.ellipsoid(0, 0.73, 0.08, 0.105, 0.065, 0.34, belly, 0.50, 0.54, 4, 6);
+  m.smoothLimb(
+    [[0, 0.86, -0.49], [0, 0.82, -0.60], [0, 0.74, -0.66]],
+    [[0.045, 0.052], [0.048, 0.060], [0.022, 0.028]],
+    [coat, belly, belly], [[0.82, 0.04], [0.82, 0.02], [0.82, 0.0]], 5, 0.02
+  );
+
+  // Expressive head: wet eyes (0.12), articulated jaw (0.18), tall alert deer ears (0.25)
+  addExpressiveFace(m, 1.26, 0.75, 0.075, 0.082, 0.13, belly, coat, [0.05, 0.035, 0.025], true);
+
   for (const s of [-1, 1]) {
-    m.tube([[s * 0.06, 1.24, 0.68], [s * 0.18, 1.44, 0.62], [s * 0.24, 1.58, 0.70]], [0.02, 0.016, 0.008], [antler, antler, antler], [[0.5, 0.9], [0.5, 0.95], [0.5, 1]], 4, true);
-    m.smoothLimb([[s * 0.12, 0.72, 0.32], [s * 0.12, 0.38, 0.33], [s * 0.12, 0.0, 0.35]], [0.075, 0.045, 0.04], [coat, coat, dark], [[0.4, 0.7], [0.4, 0.85], [0.4, 1.0]], 5, 0.08);
-    m.smoothLimb([[s * 0.13, 0.74, -0.38], [s * 0.13, 0.38, -0.42], [s * 0.13, 0.0, -0.38]], [0.085, 0.048, 0.04], [coat, coat, dark], [[0.4, 0.3], [0.4, 0.15], [0.4, 0.0]], 5, 0.08);
+    // Multi-tine branching antlers
+    m.tube([[s * 0.045, 1.34, 0.70], [s * 0.14, 1.50, 0.64], [s * 0.22, 1.66, 0.70], [s * 0.19, 1.78, 0.80]], [0.017, 0.014, 0.011, 0.005], [antler, antler, antler, antler], [[0.5, 0.96], [0.5, 0.98], [0.5, 0.99], [0.5, 1.0]], 4, true);
+    m.tube([[s * 0.14, 1.50, 0.64], [s * 0.12, 1.62, 0.76]], [0.011, 0.005], [antler, antler], [[0.5, 0.98], [0.5, 1.0]], 4, true);
+
+    // FRONT LEG: shoulder -> humerus -> elbow (uv.x = 0.36 upper) -> forearm/carpus -> cannon -> cloven hoof (uv.x = 0.42 lower)
+    m.smoothLimb(
+      [[s * 0.115, 0.82, 0.31], [s * 0.110, 0.62, 0.26], [s * 0.105, 0.44, 0.29]],
+      [[0.068, 0.078], [0.050, 0.056], [0.036, 0.040]],
+      [coat, coat, coat], [[0.36, 0.05], [0.36, 0.28], [0.36, 0.48]], 6, 0.04
+    );
+    m.smoothLimb(
+      [[s * 0.105, 0.44, 0.29], [s * 0.102, 0.22, 0.29], [s * 0.102, 0.06, 0.31], [s * 0.102, 0.005, 0.33]],
+      [[0.034, 0.038], [0.024, 0.026], [0.022, 0.025], [0.030, 0.038]],
+      [coat, flank, dark, dark], [[0.42, 0.50], [0.42, 0.76], [0.42, 0.94], [0.42, 1.0]], 6, 0.02
+    );
+
+    // HIND LEG: hip -> tapered thigh -> stifle -> angled hock (uv.x = 0.38 upper) -> slender cannon -> cloven hoof (uv.x = 0.44 lower)
+    m.smoothLimb(
+      [[s * 0.118, 0.82, -0.38], [s * 0.118, 0.62, -0.34], [s * 0.110, 0.44, -0.47]],
+      [[0.078, 0.095], [0.058, 0.068], [0.036, 0.044]],
+      [coat, flank, coat], [[0.38, 0.05], [0.38, 0.28], [0.38, 0.48]], 6, 0.05
+    );
+    m.smoothLimb(
+      [[s * 0.110, 0.44, -0.47], [s * 0.105, 0.22, -0.44], [s * 0.105, 0.06, -0.41], [s * 0.105, 0.005, -0.39]],
+      [[0.034, 0.040], [0.024, 0.026], [0.022, 0.025], [0.030, 0.038]],
+      [coat, flank, dark, dark], [[0.44, 0.50], [0.44, 0.76], [0.44, 0.94], [0.44, 1.0]], 6, 0.02
+    );
   }
   return m.build();
 }
@@ -877,83 +1184,10 @@ function buildSwatchBarMesh() {
 }
 
 // ============================================================================
-// Terrain Clipmap Chunks, Heightmap & Spatial Hash Collision Grid
+// Regional Floating-Origin Flora, Collision Grid & Planetary Wildlife Cohorts
 // ============================================================================
-function buildTerrainChunks(chunkCells = 16, worldChunks = 16) {
-  const step = 2 / chunkCells;
-  const v = [];
-  const idx = [];
-  const stride = chunkCells + 1;
-  for (let z = 0; z <= chunkCells; z++) {
-    for (let x = 0; x <= chunkCells; x++) {
-      v.push(-1 + x * step, -1 + z * step);
-    }
-  }
-  for (let z = 0; z < chunkCells; z++) {
-    for (let x = 0; x < chunkCells; x++) {
-      const r0 = z * stride + x;
-      const r1 = r0 + stride;
-      idx.push(r0, r1, r0 + 1, r0 + 1, r1, r1 + 1);
-    }
-  }
-  const chunkScale = WORLD_HALF / worldChunks;
-  const chunks = [];
-  for (let cz = 0; cz < worldChunks; cz++) {
-    for (let cx = 0; cx < worldChunks; cx++) {
-      const ox = -WORLD_HALF + (cx + 0.5) * chunkScale * 2;
-      const oz = -WORLD_HALF + (cz + 0.5) * chunkScale * 2;
-      chunks.push({ ox, oz, scale: chunkScale });
-    }
-  }
-  return {
-    verts: new Float32Array(v),
-    indices: new Uint32Array(idx),
-    count: idx.length,
-    chunks
-  };
-}
-
-function buildWaterSkirt(n = 150) {
-  const v = [];
-  const idx = [];
-  const step = 2 / n;
-  for (let z = 0; z <= n; z++) {
-    for (let x = 0; x <= n; x++) {
-      v.push(-1 + x * step, -1 + z * step);
-    }
-  }
-  const stride = n + 1;
-  for (let z = 0; z < n; z++) {
-    for (let x = 0; x < n; x++) {
-      const r0 = z * stride + x;
-      const r1 = r0 + stride;
-      idx.push(r0, r1, r0 + 1, r0 + 1, r1, r1 + 1);
-    }
-  }
-  return { verts: new Float32Array(v), indices: new Uint32Array(idx), count: idx.length };
-}
-
 function buildWorld() {
   seedRng(WORLD_SEED);
-
-  const hSize = 512;
-  const hData = new Float32Array(hSize * hSize * 4);
-  const t = {};
-  for (let z = 0; z < hSize; z++) {
-    const wz = ((z / (hSize - 1)) * 2 - 1) * WORLD_HALF;
-    for (let x = 0; x < hSize; x++) {
-      const wx = ((x / (hSize - 1)) * 2 - 1) * WORLD_HALF;
-      terrainAt(wx, wz, t);
-      const o = (z * hSize + x) * 4;
-      hData[o]     = t.h;
-      hData[o + 1] = t.wetness;
-      hData[o + 2] = t.moisture;
-      hData[o + 3] = t.fire;
-    }
-  }
-
-  const chunks = buildTerrainChunks(16, 16);
-  const skirt = buildWaterSkirt(150);
 
   // Build flora & set-piece meshes (including Noniv/abyssal-garden Sunken Galleon, Reef Kelp/Coral, Savanna Acacia)
   const meshes = [
@@ -968,21 +1202,37 @@ function buildWorld() {
     buildKelpCoralReefMesh(),    // 8: Noniv/abyssal-garden Swaying Kelp, Anemones & Reef Coral
     buildAcaciaBambooMesh()      // 9: Savanna Umbrella Acacia, Misty Bamboo & Heritage Plantation Trees
   ];
-  const instances = [[], [], [], [], [], [], [], [], [], []];
 
-  // Uniform 2D Spatial Hash Grid for O(1) solid obstacle collision
+  // Uniform 2D Spatial Hash Grid for O(1) solid obstacle collision within [-REGION_HALF, +REGION_HALF]
   const GRID_CELLS = 64;
-  const CELL_SPAN = (WORLD_HALF * 2) / GRID_CELLS;
+  const CELL_SPAN = (REGION_HALF * 2) / GRID_CELLS;
   const colliders = [];
   const colliderCells = Array.from({ length: GRID_CELLS * GRID_CELLS }, () => []);
+  const t = {};
+
+  const vegBuffers = meshes.map((mesh) => ({
+    verts: mesh.verts,
+    indices: mesh.indices,
+    count: mesh.count,
+    instData: new Float32Array(8),
+    instCount: 0
+  }));
+  let vegVersion = 0;
+  let activeRegionBiomeId = 0;
+
+  function clearColliders() {
+    colliders.length = 0;
+    for (let i = 0; i < colliderCells.length; i++) colliderCells[i].length = 0;
+  }
 
   function addCollider(x, z, r, maxY) {
+    if (abs(x) > REGION_HALF || abs(z) > REGION_HALF) return;
     const id = colliders.length;
     colliders.push({ x, z, r, maxY });
-    const minCx = clamp(floor((x - r + WORLD_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
-    const maxCx = clamp(floor((x + r + WORLD_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
-    const minCz = clamp(floor((z - r + WORLD_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
-    const maxCz = clamp(floor((z + r + WORLD_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
+    const minCx = clamp(floor((x - r + REGION_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
+    const maxCx = clamp(floor((x + r + REGION_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
+    const minCz = clamp(floor((z - r + REGION_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
+    const maxCz = clamp(floor((z + r + REGION_HALF) / CELL_SPAN), 0, GRID_CELLS - 1);
     for (let cz = minCz; cz <= maxCz; cz++) {
       for (let cx = minCx; cx <= maxCx; cx++) {
         colliderCells[cz * GRID_CELLS + cx].push(id);
@@ -990,108 +1240,143 @@ function buildWorld() {
     }
   }
 
-  function pushInst(mIdx, x, y, z, scale, rot, seed, charAmt, wetness, colRadius = 0, colHeight = 0) {
-    instances[mIdx].push(x, y, z, scale, rot, seed, charAmt, wetness);
-    if (colRadius > 0.05) {
-      addCollider(x, z, colRadius * scale, y + colHeight * scale);
+  function populateRegionFlora(biomeId = 0, seedOffset = 0) {
+    activeRegionBiomeId = biomeId;
+    seedRng(WORLD_SEED + biomeId * 9973 + seedOffset * 131);
+    clearColliders();
+    const instances = [[], [], [], [], [], [], [], [], [], []];
+
+    function pushInst(mIdx, x, y, z, scale, rot, seed, charAmt, wetness, colRadius = 0, colHeight = 0) {
+      instances[mIdx].push(x, y, z, scale, rot, seed, charAmt, wetness);
+      if (colRadius > 0.05) {
+        addCollider(x, z, colRadius * scale, y + colHeight * scale);
+      }
     }
-  }
 
-  // Place the iconic Noniv/abyssal-garden Sunken Wooden Galleon in the Abyssal Trench
-  terrainAt(ABYSS_POS[0] - 4, ABYSS_POS[1] - 2, t);
-  pushInst(7, ABYSS_POS[0] - 4, t.h + 0.25, ABYSS_POS[1] - 2, 1.35, 0.42, 0.5, 0, 1.0, 3.2, 8.0);
+    const isMarineRegion = biomeId === 10 || biomeId === 11;
+    const isBeachRegion = biomeId === 9;
+    const isPolarRegion = biomeId === 12 || biomeId === 13;
+    const isSavannaRegion = biomeId === 6;
+    const isBambooRegion = biomeId === 7;
+    const isPlantationRegion = biomeId === 5;
+    const isHighlandRegion = biomeId === 8;
+    const isAridRegion = biomeId === 17;
+    const isVolcanicRegion = biomeId === 14 || biomeId === 15;
 
-  // Place Kelp Forests, Fluorescent Anemones & Staghorn/Brain Corals across Coral Reef & Abyssal Garden
-  const reefCount = round(260 * VEG_DENSITY_SCALE);
-  for (let i = 0; i < reefCount; i++) {
-    const inAbyss = i % 3 === 0;
-    const cx = (inAbyss ? ABYSS_POS[0] : REEF_POS[0]) + rr(-78, 78);
-    const cz = (inAbyss ? ABYSS_POS[1] : REEF_POS[1]) + rr(-48, 52);
-    terrainAt(cx, cz, t);
-    if (t.h < -0.6) {
-      pushInst(8, cx, t.h - 0.05, cz, rr(0.85, 1.75), rr(0, TAU), rnd(), 0, 1.0);
+    // Place the iconic Noniv/abyssal-garden Sunken Wooden Galleon in Abyssal Trench / Coral Reef
+    if (isMarineRegion) {
+      terrainAt(-6, -4, t);
+      pushInst(7, -6, min(-1.5, t.h) + 0.25, -4, 1.35, 0.42, 0.5, 0, 1.0, 3.2, 8.0);
     }
-  }
 
-  // Place Coconut Palms along Golden Tropical Beach
-  for (let i = 0; i < round(65 * VEG_DENSITY_SCALE); i++) {
-    const x = BEACH_POS[0] + rr(-75, 75), z = BEACH_POS[1] + rr(-24, 10);
-    terrainAt(x, z, t);
-    if (t.h > 0.15 && t.h < 3.6) {
-      pushInst(2, x, t.h, z, rr(0.95, 1.42), rr(0, TAU), rnd(), 0, t.wetness, 0.34, 9.0);
+    // Underwater Kelp Forests, Fluorescent Anemones & Reef Corals wherever local seafloor is submerged
+    const reefCount = round((isMarineRegion ? 340 : 120) * VEG_DENSITY_SCALE);
+    for (let i = 0; i < reefCount; i++) {
+      const rSpan = isMarineRegion ? 175 : 220;
+      const cx = rr(-rSpan, rSpan), cz = rr(-rSpan, rSpan);
+      terrainAt(cx, cz, t);
+      if (t.h < -0.55 && t.h > -36.0 && t.polar < 0.7) {
+        pushInst(8, cx, t.h - 0.05, cz, rr(0.85, 1.75), rr(0, TAU), rnd(), 0, 1.0);
+      }
     }
-  }
 
-  // Place Umbrella Acacias, Misty Bamboo Groves, Heritage Plantation Trees & Virunga Cloud Trees
-  for (let i = 0; i < round(240 * VEG_DENSITY_SCALE); i++) {
-    const zone = i % 4;
-    const base = zone === 0 ? SAVANNA_POS : zone === 1 ? BAMBOO_POS : zone === 2 ? PLANTATION_POS : HIGHLAND_POS;
-    const x = base[0] + rr(-82, 82), z = base[1] + rr(-72, 72);
-    terrainAt(x, z, t);
-    if (t.h > 0.35) {
-      const mIdx = zone === 2 && i % 2 === 0 ? 2 : zone === 3 && i % 2 === 0 ? 1 : 9;
-      pushInst(mIdx, x, t.h, z, rr(0.88, 1.48), rr(0, TAU), rnd(), 0, t.wetness, 0.55, 10.0);
+    // Coastal Coconut Palms along beaches and warm shorelines
+    if (isBeachRegion || biomeId === 0 || biomeId === 3 || biomeId === 5) {
+      const palmCount = round((isBeachRegion ? 110 : 48) * VEG_DENSITY_SCALE);
+      for (let i = 0; i < palmCount; i++) {
+        const x = rr(-195, 195), z = rr(-195, 195);
+        terrainAt(x, z, t);
+        if (t.h > 0.2 && t.h < 6.0 && t.polar < 0.25 && t.dune < 0.55) {
+          pushInst(2, x, t.h, z, rr(0.95, 1.42), rr(0, TAU), rnd(), 0, t.wetness, 0.34, 9.0);
+        }
+      }
     }
-  }
 
-  // Interior & Global Canopy Trees (Cypress, Kapok, Palm, Mangrove across the entire planetary domain)
-  const treeCount = round(920 * VEG_DENSITY_SCALE);
-  for (let i = 0; i < treeCount; i++) {
-    const x = rr(-350, 350), z = rr(-215, 225);
-    if (hypot(x - LAGOON_POS[0], z - LAGOON_POS[1]) < 22) continue;
-    terrainAt(x, z, t);
-    if (t.h < -0.55 || (t.clearing > 0.62 && rnd() < 0.85) || t.savanna > 0.55 || t.dune > 0.45 || t.volcano > 0.45 || t.polar > 0.25) continue;
-    const rot = rr(0, TAU), seed = rnd(), charAmt = saturate(t.fire * rr(0.6, 1.25));
-    if (t.mangrove > 0.32 || (t.h < 0.18 && t.river > 0.25)) {
-      pushInst(3, x, max(-0.28, t.h), z, rr(0.85, 1.32), rot, seed, charAmt, t.wetness, 0.55, 5.2);
-    } else if (t.swamp > 0.28 || (t.wetness > 0.5 && rnd() < 0.55)) {
-      pushInst(0, x, max(-0.22, t.h), z, rr(0.88, 1.38), rot, seed, charAmt, t.wetness, 0.72, 13.5);
-    } else if (t.amazon > 0.25 || t.highland > 0.25 || rnd() < 0.48) {
-      pushInst(1, x, t.h, z, rr(0.85, 1.40), rot, seed, charAmt, t.wetness, 0.92, 19.5);
-    } else {
-      pushInst(2, x, t.h, z, rr(0.85, 1.35), rot, seed, charAmt, t.wetness, 0.34, 9.0);
+    // Savanna Acacias, Bamboo Groves, Heritage Plantation & Highland Cloud Trees
+    if (isSavannaRegion || isBambooRegion || isPlantationRegion || isHighlandRegion) {
+      const groveCount = round(260 * VEG_DENSITY_SCALE);
+      for (let i = 0; i < groveCount; i++) {
+        const x = rr(-210, 210), z = rr(-210, 210);
+        terrainAt(x, z, t);
+        if (t.h > 0.35 && t.polar < 0.3) {
+          const mIdx = isPlantationRegion && i % 3 === 0 ? 2 : isHighlandRegion && i % 2 === 0 ? 1 : 9;
+          pushInst(mIdx, x, t.h, z, rr(0.88, 1.48), rr(0, TAU), rnd(), 0, t.wetness, 0.55, 10.0);
+        }
+      }
     }
-  }
 
-  // Dense Understory (Ferns, Monstera, Heliconia, Wildflowers across the full planetary belt)
-  const underCount = round(1600 * VEG_DENSITY_SCALE);
-  for (let i = 0; i < underCount; i++) {
-    const x = rr(-350, 350), z = rr(-215, 225);
-    terrainAt(x, z, t);
-    if (t.h < -0.05 || t.h > 19 || t.dune > 0.45 || t.volcano > 0.45 || t.polar > 0.25) continue;
-    pushInst(4, x, t.h, z, rr(0.75, 1.55), rr(0, TAU), rnd(), saturate(t.fire * 1.1), t.wetness);
-  }
-
-  // Boulders, Fallen Logs, Kopje Rocks, Cenote Karst & North/South Polar Glacial Icebergs
-  const rockCount = round(640 * VEG_DENSITY_SCALE);
-  for (let i = 0; i < rockCount; i++) {
-    const x = rr(-352, 352), z = rr(-352, 352);
-    terrainAt(x, z, t);
-    if (t.h < -1.2 && z > -210 && z < 180) continue;
-    const sc = (z < -225 || z > 235) ? rr(1.15, 2.45) : rr(0.75, 1.85);
-    pushInst(5, x, t.h - 0.08, z, sc, rr(0, TAU), rnd(), saturate(t.fire), t.wetness, 0.78, 0.95);
-  }
-
-  // Water Lilies, Sawgrass & Cattails across main river and outer tributary channels
-  const waterFloraCount = round(760 * VEG_DENSITY_SCALE);
-  for (let i = 0; i < waterFloraCount; i++) {
-    const x = rr(-345, 345), z = rr(-205, 175);
-    terrainAt(x, z, t);
-    if (t.h > -1.35 && t.h < 0.28 && t.polar < 0.1) {
-      pushInst(6, x, 0.01, z, rr(0.75, 1.45), rr(0, TAU), rnd(), saturate(t.fire * 0.8), 1.0);
+    // Primary Biome Canopy Trees (Cypress, Kapok, Palm, Mangrove, Acacia adapted to real local climate)
+    const treeCount = round((isMarineRegion || isPolarRegion || isAridRegion ? 90 : 480) * VEG_DENSITY_SCALE);
+    for (let i = 0; i < treeCount; i++) {
+      const x = rr(-240, 240), z = rr(-240, 240);
+      if (biomeId === 0 && hypot(x, z) < 22) continue; // Keep central River Lagoon open
+      terrainAt(x, z, t);
+      if (t.h < -0.55 || t.polar > 0.45 || t.dune > 0.55 || t.volcano > 0.55) continue;
+      if (isSavannaRegion && rnd() < 0.72) continue;
+      if (biomeId === 4 && hypot(x, z) < 42 && rnd() < 0.84) continue; // Sunlit Wildlife Clearing
+      const rot = rr(0, TAU), seed = rnd(), charAmt = saturate(t.fire * rr(0.6, 1.25));
+      if (t.mangrove > 0.32 || biomeId === 3 || (t.h < 0.18 && t.river > 0.25)) {
+        pushInst(3, x, max(-0.28, t.h), z, rr(0.85, 1.32), rot, seed, charAmt, t.wetness, 0.55, 5.2);
+      } else if (t.swamp > 0.28 || biomeId === 1 || (t.wetness > 0.52 && rnd() < 0.55)) {
+        pushInst(0, x, max(-0.22, t.h), z, rr(0.88, 1.38), rot, seed, charAmt, t.wetness, 0.72, 13.5);
+      } else if (t.savanna > 0.45 || t.bamboo > 0.35) {
+        pushInst(9, x, t.h, z, rr(0.88, 1.42), rot, seed, charAmt, t.wetness, 0.55, 10.0);
+      } else if (t.amazon > 0.25 || t.highland > 0.25 || rnd() < 0.52) {
+        pushInst(1, x, t.h, z, rr(0.85, 1.40), rot, seed, charAmt, t.wetness, 0.92, 19.5);
+      } else {
+        pushInst(2, x, t.h, z, rr(0.85, 1.35), rot, seed, charAmt, t.wetness, 0.34, 9.0);
+      }
     }
+
+    // Lush Understory (Ferns, Monstera, Heliconia, Grasses)
+    const underCount = round((isMarineRegion || isPolarRegion || isAridRegion ? 80 : 720) * VEG_DENSITY_SCALE);
+    for (let i = 0; i < underCount; i++) {
+      const x = rr(-220, 220), z = rr(-220, 220);
+      terrainAt(x, z, t);
+      if (t.h < 0.02 || t.dune > 0.55 || t.volcano > 0.55 || t.polar > 0.38) continue;
+      pushInst(4, x, t.h, z, rr(0.75, 1.55), rr(0, TAU), rnd(), saturate(t.fire * 1.1), t.wetness);
+    }
+
+    // Boulders, Kopjes, Obsidian Rocks & Polar Glacial Ice Blocks
+    const rockCount = round(300 * VEG_DENSITY_SCALE);
+    for (let i = 0; i < rockCount; i++) {
+      const x = rr(-245, 245), z = rr(-245, 245);
+      terrainAt(x, z, t);
+      if (t.h < -1.5 && !isMarineRegion && !isPolarRegion) continue;
+      const sc = isPolarRegion || isVolcanicRegion ? rr(1.1, 2.3) : rr(0.75, 1.8);
+      pushInst(5, x, t.h - 0.08, z, sc, rr(0, TAU), rnd(), saturate(t.fire), t.wetness, 0.78, 0.95);
+    }
+
+    // Water Lilies, Sawgrass & Cattails in warm freshwater/estuary shallows
+    if (!isPolarRegion && !isMarineRegion && !isAridRegion) {
+      const waterFloraCount = round(340 * VEG_DENSITY_SCALE);
+      for (let i = 0; i < waterFloraCount; i++) {
+        const x = rr(-210, 210), z = rr(-210, 210);
+        terrainAt(x, z, t);
+        if (t.h > -1.4 && t.h < 0.28 && t.polar < 0.15) {
+          pushInst(6, x, 0.01, z, rr(0.75, 1.45), rr(0, TAU), rnd(), saturate(t.fire * 0.8), 1.0);
+        }
+      }
+    }
+
+    // Update vegBuffers (ensure every buffer has at least 1 dummy 0-scale instance if empty so WebGPU draw stays safe)
+    for (let idx = 0; idx < meshes.length; idx++) {
+      const arr = instances[idx];
+      if (arr.length === 0) {
+        vegBuffers[idx].instData = new Float32Array([0, -9999, 0, 0, 0, 0, 0, 0]);
+        vegBuffers[idx].instCount = 0;
+      } else {
+        vegBuffers[idx].instData = new Float32Array(arr);
+        vegBuffers[idx].instCount = (arr.length / 8) | 0;
+      }
+    }
+    vegVersion++;
   }
 
-  const vegBuffers = meshes.map((mesh, idx) => ({
-    verts: mesh.verts,
-    indices: mesh.indices,
-    count: mesh.count,
-    instData: new Float32Array(instances[idx]),
-    instCount: (instances[idx].length / 8) | 0
-  }));
+  populateRegionFlora(0, 0);
 
   // ==========================================================================
-  // Solid Obstacle + Ground Collision Solver (Camera & Wildlife, Geodesic-Wrapped)
+  // Solid Obstacle + Ground Collision Solver (Regional Meters, Zero Wrapping!)
   // ==========================================================================
   const _colT = {};
   function resolveWorldCollision(x, y, z, radius, vx, vz, out = {}, minGroundOffset = 0.62) {
@@ -1110,36 +1395,39 @@ function buildWorld() {
       hitGround = true;
     }
 
-    const wx = wrapCoord(nx);
-    const wz = wrapCoord(nz);
-    const cx = clamp(floor((wx + WORLD_HALF) / CELL_SPAN) || 0, 0, GRID_CELLS - 1);
-    const cz = clamp(floor((wz + WORLD_HALF) / CELL_SPAN) || 0, 0, GRID_CELLS - 1);
-    for (let dz = -1; dz <= 1; dz++) {
-      const gz = (cz + dz + GRID_CELLS) % GRID_CELLS;
-      for (let dx = -1; dx <= 1; dx++) {
-        const gx = (cx + dx + GRID_CELLS) % GRID_CELLS;
-        const bucket = colliderCells[gz * GRID_CELLS + gx];
-        if (!bucket) continue;
-        for (let k = 0; k < bucket.length; k++) {
-          const c = colliders[bucket[k]];
-          if (ny > c.maxY) continue;
-          const ox = wrapDelta(wx, c.x), oz = wrapDelta(wz, c.z);
-          const minDist = c.r + radius;
-          const d2 = ox * ox + oz * oz;
-          if (d2 < minDist * minDist && d2 > 1e-9) {
-            const d = sqrt(d2);
-            const push = minDist - d;
-            const ux = ox / d, uz = oz / d;
-            nx += ux * push;
-            nz += uz * push;
-            const vn = nvx * ux + nvz * uz;
-            if (vn < 0) {
-              nvx -= vn * ux * 1.15;
-              nvz -= vn * uz * 1.15;
+    // Only check regional tree/rock colliders when inside the active regional bounds and below canopy height
+    if (ny < 60 && abs(nx) < REGION_HALF - 1 && abs(nz) < REGION_HALF - 1) {
+      const cx = clamp(floor((nx + REGION_HALF) / CELL_SPAN) || 0, 0, GRID_CELLS - 1);
+      const cz = clamp(floor((nz + REGION_HALF) / CELL_SPAN) || 0, 0, GRID_CELLS - 1);
+      for (let dz = -1; dz <= 1; dz++) {
+        const gz = cz + dz;
+        if (gz < 0 || gz >= GRID_CELLS) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const gx = cx + dx;
+          if (gx < 0 || gx >= GRID_CELLS) continue;
+          const bucket = colliderCells[gz * GRID_CELLS + gx];
+          if (!bucket) continue;
+          for (let k = 0; k < bucket.length; k++) {
+            const c = colliders[bucket[k]];
+            if (!c || ny > c.maxY) continue;
+            const ox = nx - c.x, oz = nz - c.z;
+            const minDist = c.r + radius;
+            const d2 = ox * ox + oz * oz;
+            if (d2 < minDist * minDist && d2 > 1e-9) {
+              const d = sqrt(d2);
+              const push = minDist - d;
+              const ux = ox / d, uz = oz / d;
+              nx += ux * push;
+              nz += uz * push;
+              const vn = nvx * ux + nvz * uz;
+              if (vn < 0) {
+                nvx -= vn * ux * 1.15;
+                nvz -= vn * uz * 1.15;
+              }
+              hit = true;
+              hitNx = ux;
+              hitNz = uz;
             }
-            hit = true;
-            hitNx = ux;
-            hitNz = uz;
           }
         }
       }
@@ -1155,64 +1443,99 @@ function buildWorld() {
 
   // ==========================================================================
   // Planetary Wildlife Cohorts (43 Cohorts Across Land, Air, Ocean & Polar)
+  // 12 floats per instance:
+  //   inst0: x, y, z, scale
+  //   inst1: yaw, phase, emoAndSpeed, packedMode
+  //   inst2: pitch, roll, ikFrontFlex, ikHindFlex
   // ==========================================================================
   const SIM_HZ = 120;
   const SIM_DT = 1 / SIM_HZ;
+  const ANIMAL_INST_FLOATS = 12;
   const wildlifeGroups = [];
 
   function addCohort(name, mesh, items, speciesId, flightDist = 18, meta = {}) {
+    const dom = meta.domain || 'land';
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       it.speciesId = speciesId;
       it.flightDist = flightDist;
       it.state = 'forage';
-      it.emotion = i % 3; // 0 = Calm/Grazing, 1 = Curious/Social, 2 = Alert/Scanning, 3 = Dominant/Roar/Stalk, 4 = Startled/Fleeing
-      it.emotionTimer = rr(3, 9);
+      it.emotion = i % 3; // 0=Calm/Grazing, 1=Curious, 2=Alert, 3=Dominant/Stalk/Chase, 4=Startled/Flee
+      it.emotionTimer = rr(3, 10);
       it.roarTimer = 0;
       it.fleeTimer = 0;
-      it.actionTimer = rr(2, 12);
-      it.ang = it.phase;
+      it.restTimer = (i % 4 === 0) ? rr(2, 6) : 0;
+      it.goalTimer = rr(4, 14);
       it.packedMode = speciesId * 16 + (it.mode || 0);
       it.strideLen = meta.strideLen || (0.85 * (it.scale || 1.0));
       it.role = meta.role || 'herbivore';
-      it.domain = meta.domain || (it.type === 'flyCircle' ? 'air' : it.type === 'swimCircle' ? 'water' : 'land');
+      it.domain = dom;
+      it.ang = it.phase ?? rr(0, TAU);
+      it.homeX = it.cx ?? it.x ?? 0;
+      it.homeZ = it.cz ?? it.z ?? 0;
+      it.wanderRad = max(8, (it.rad || 14) * 1.45);
       if (it.x === undefined) {
-        it.x = it.cx + cos(it.ang) * it.rad;
-        it.z = it.cz + sin(it.ang) * it.rad;
-        if (it.y === undefined) {
-          terrainAt(it.x, it.z, t);
-          it.y = max(-0.08, t.h);
-        }
+        const a0 = rr(0, TAU), r0 = rr(2, it.wanderRad * 0.75);
+        it.x = it.homeX + cos(a0) * r0;
+        it.z = it.homeZ + sin(a0) * r0;
       }
+      if (it.y === undefined) {
+        terrainAt(it.x, it.z, t);
+        it.y = dom === 'water' ? min(-1.4, t.h + 2.0) : max(-0.08, t.h);
+      }
+      it.baseY = it.baseY ?? it.y;
       it.prevX = it.x;
       it.prevY = it.y;
       it.prevZ = it.z;
-      // Canonical local +Z forward rotates to world (-sin(yaw), cos(yaw)),
-      // matching circular velocity (-sin(ang), cos(ang)) when yaw === ang
-      it.yaw = normAngle(it.yaw ?? it.ang);
+      it.yaw = normAngle(it.yaw ?? rr(-PI, PI));
       it.prevYaw = it.yaw;
       it.pitch = 0;
+      it.prevPitch = 0;
       it.roll = 0;
+      it.prevRoll = 0;
+      it.ikFrontFlex = 0;
+      it.ikHindFlex = 0;
       it.vx = 0;
+      it.vy = 0;
       it.vz = 0;
+      it.curSpeed = 0;
+      it.cruiseSpeed = meta.cruiseSpeed || (dom === 'air' ? 9.5 : dom === 'water' ? 2.8 : 1.65);
+      it.maxSpeed = meta.baseSpeed || 6.5;
+      it.turnRate = meta.turnRate || (dom === 'water' ? 1.05 : 2.1);
+      it.goalX = it.homeX + rr(-it.wanderRad, it.wanderRad);
+      it.goalZ = it.homeZ + rr(-it.wanderRad, it.wanderRad);
+      it.goalY = it.baseY;
       it.boidsX = 0;
       it.boidsY = 0;
       it.boidsZ = 0;
+      it.aiTickOffset = (i * 7 + speciesId * 3) % 8;
+
+      // Event-driven Whale & Orca Breaching FSM (NEVER for sharks or mantas!)
+      const isBreacher = (speciesId === 31 || speciesId === 32);
+      it.canBreach = isBreacher;
+      it.breachState = 'cruise';
+      it.breachTimer = 0;
+      it.breachCooldown = isBreacher ? rr(speciesId === 31 ? 26 : 18, speciesId === 31 ? 62 : 46) : Infinity;
+      it.breachRollDir = (i % 2 === 0 ? 1 : -1);
+      it.breachPeakVy = speciesId === 31 ? rr(10.2, 12.6) : rr(8.6, 10.8);
     }
     wildlifeGroups.push({
       name,
       speciesId,
       label: meta.label || name,
-      domain: meta.domain || 'land',
+      domain: dom,
       role: meta.role || 'herbivore',
+      nativeBiomes: meta.nativeBiomes || [0],
       eyeOffset: meta.eyeOffset || [0, 0.75, 0.55],
       followDist: meta.followDist || 4.8,
       baseSpeed: meta.baseSpeed || 6.5,
+      bodyHalfLen: meta.bodyHalfLen || 0.55,
+      legLength: meta.legLength || 0.42,
       verts: mesh.verts,
       indices: mesh.indices,
       count: mesh.count,
       items,
-      instData: new Float32Array(items.length * 8),
+      instData: new Float32Array(items.length * ANIMAL_INST_FLOATS),
       instCount: items.length
     });
   }
@@ -1220,316 +1543,273 @@ function buildWorld() {
   // --- Reptiles & Amphibians ---
   const gators = [];
   for (let i = 0; i < 12; i++) {
-    const inSwamp = i < 7;
-    const cx = inSwamp ? CYPRESS_POS[0] + rr(-45, 45) : rr(-70, 95);
-    const cz = inSwamp ? CYPRESS_POS[1] + rr(-45, 45) : 14 + rr(-14, 14);
-    gators.push({ type: 'swimCircle', cx, cz, y: -0.04, rad: rr(4, 12), speed: rr(0.08, 0.16), phase: rr(0, TAU), scale: rr(SIZE_VAR_MIN, SIZE_VAR_MAX), animSpeed: 0.85, mode: 1 });
+    gators.push({ type: 'swim', cx: rr(-85, 85), cz: rr(-55, 55), y: -0.05, rad: rr(8, 22), speed: rr(0.8, 1.5), phase: rr(0, TAU), scale: rr(SIZE_VAR_MIN, SIZE_VAR_MAX), animSpeed: 0.85, mode: 1 });
   }
-  addCohort('alligators', buildAlligatorMesh(), gators, 2, 12, { label: 'American Alligator', domain: 'water', role: 'predator', eyeOffset: [0, 0.28, 0.72], followDist: 4.2, baseSpeed: 6.0 });
+  addCohort('alligators', buildAlligatorMesh(), gators, 2, 12, { label: 'American Alligator', domain: 'water', role: 'predator', nativeBiomes: [0, 1, 3], eyeOffset: [0, 0.28, 0.72], followDist: 4.2, baseSpeed: 5.5, cruiseSpeed: 1.2 });
 
   const caimans = [];
   for (let i = 0; i < 8; i++) {
-    const cx = MANGROVE_POS[0] + rr(-38, 38), cz = MANGROVE_POS[1] + rr(-38, 38);
-    caimans.push({ type: 'swimCircle', cx, cz, y: -0.04, rad: rr(3, 8), speed: rr(0.10, 0.18), phase: rr(0, TAU), scale: rr(0.65, 0.88), animSpeed: 1.0, mode: 1 });
+    caimans.push({ type: 'swim', cx: rr(-75, 75), cz: rr(-55, 55), y: -0.05, rad: rr(6, 16), speed: rr(0.9, 1.6), phase: rr(0, TAU), scale: rr(0.65, 0.88), animSpeed: 1.0, mode: 1 });
   }
-  addCohort('caimans', buildAlligatorMesh(), caimans, 2, 14, { label: 'Black Caiman', domain: 'water', role: 'predator', eyeOffset: [0, 0.25, 0.65], followDist: 3.8, baseSpeed: 6.2 });
+  addCohort('caimans', buildAlligatorMesh(), caimans, 2, 14, { label: 'Black Caiman', domain: 'water', role: 'predator', nativeBiomes: [0, 1, 3], eyeOffset: [0, 0.25, 0.65], followDist: 3.8, baseSpeed: 5.8, cruiseSpeed: 1.3 });
 
   const anacondas = [];
   for (let i = 0; i < 6; i++) {
-    const cx = CYPRESS_POS[0] + rr(-40, 60), cz = CYPRESS_POS[1] + rr(-35, 35);
-    anacondas.push({ type: 'swimCircle', cx, cz, y: -0.03, rad: rr(3, 7), speed: rr(0.12, 0.22), phase: rr(0, TAU), scale: rr(SIZE_VAR_MIN, SIZE_VAR_MAX), animSpeed: 1.15, mode: 1 });
+    anacondas.push({ type: 'swim', cx: rr(-65, 65), cz: rr(-50, 50), y: -0.04, rad: rr(6, 15), speed: rr(0.7, 1.3), phase: rr(0, TAU), scale: rr(SIZE_VAR_MIN, SIZE_VAR_MAX), animSpeed: 1.15, mode: 1 });
   }
-  addCohort('anacondas', buildAnacondaMesh(), anacondas, 15, 10, { label: 'Green Anaconda', domain: 'water', role: 'predator', eyeOffset: [0, 0.16, 1.2], followDist: 3.6, baseSpeed: 5.2 });
+  addCohort('anacondas', buildAnacondaMesh(), anacondas, 15, 10, { label: 'Green Anaconda', domain: 'water', role: 'predator', nativeBiomes: [0, 1, 2], eyeOffset: [0, 0.16, 1.2], followDist: 3.6, baseSpeed: 4.8, cruiseSpeed: 1.1 });
 
   const turtles = [];
   for (let i = 0; i < 16; i++) {
-    const inOcean = i >= 10;
-    const cx = inOcean ? REEF_POS[0] + rr(-45, 45) : LAGOON_POS[0] + rr(-45, 55);
-    const cz = inOcean ? REEF_POS[1] + rr(-35, 35) : LAGOON_POS[1] + rr(-18, 22);
-    const ty = inOcean ? rr(-3.8, -1.2) : 0.02;
-    turtles.push({ type: 'swimCircle', cx, cz, y: ty, rad: rr(2, 9), speed: rr(0.08, 0.22), phase: rr(0, TAU), scale: rr(0.85, 1.35), animSpeed: 0.85, mode: 1 });
+    const ty = i >= 10 ? rr(-4.2, -1.4) : -0.08;
+    turtles.push({ type: 'swim', cx: rr(-85, 85), cz: rr(-65, 65), y: ty, rad: rr(8, 22), speed: rr(0.8, 1.6), phase: rr(0, TAU), scale: rr(0.85, 1.35), animSpeed: 0.85, mode: 1 });
   }
-  addCohort('turtles', buildTurtleMesh(), turtles, 3, 10, { label: 'Green Sea Turtle', domain: 'water', role: 'herbivore', eyeOffset: [0, 0.20, 0.38], followDist: 3.2, baseSpeed: 5.5 });
+  addCohort('turtles', buildTurtleMesh(), turtles, 3, 10, { label: 'Green Sea Turtle', domain: 'water', role: 'herbivore', nativeBiomes: [0, 9, 10, 11], eyeOffset: [0, 0.20, 0.38], followDist: 3.2, baseSpeed: 5.2, cruiseSpeed: 1.4 });
 
   const iguanas = [];
   for (let i = 0; i < 10; i++) {
-    const cx = MANGROVE_POS[0] + rr(-35, 35), cz = MANGROVE_POS[1] + rr(-35, 35);
+    const cx = rr(-75, 75), cz = rr(-65, 65);
     terrainAt(cx, cz, t);
     iguanas.push({ type: 'idle', x: cx, y: max(0.1, t.h), z: cz, yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(0.9, 1.25), animSpeed: 0.7, mode: 0 });
   }
-  addCohort('iguanas', buildIguanaMesh(), iguanas, 15, 14, { label: 'Green Iguana', domain: 'land' });
+  addCohort('iguanas', buildIguanaMesh(), iguanas, 15, 14, { label: 'Green Iguana', domain: 'land', nativeBiomes: [0, 2, 3, 9] });
 
   const dartFrogs = [];
   for (let i = 0; i < 12; i++) {
-    const cx = AMAZON_POS[0] + rr(-45, 45), cz = AMAZON_POS[1] + rr(-45, 45);
+    const cx = rr(-70, 70), cz = rr(-70, 70);
     terrainAt(cx, cz, t);
-    dartFrogs.push({ type: 'idle', x: cx, y: max(0.2, t.h + rr(0.1, 2.2)), z: cz, yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.1, 1.5), animSpeed: 1.2, mode: 4 });
+    dartFrogs.push({ type: 'idle', x: cx, y: max(0.2, t.h + rr(0.05, 0.35)), z: cz, yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.1, 1.5), animSpeed: 1.2, mode: 4 });
   }
-  addCohort('dartFrogs', buildFrogMesh([0.12, 0.46, 0.88], false), dartFrogs, 16, 6, { label: 'Blue Poison Dart Frog' });
+  addCohort('dartFrogs', buildFrogMesh([0.12, 0.46, 0.88], false), dartFrogs, 16, 6, { label: 'Blue Poison Dart Frog', nativeBiomes: [0, 2] });
 
   const treeFrogs = [];
   for (let i = 0; i < 12; i++) {
-    const cx = CYPRESS_POS[0] + rr(-40, 40), cz = CYPRESS_POS[1] + rr(-40, 40);
+    const cx = rr(-70, 70), cz = rr(-70, 70);
     terrainAt(cx, cz, t);
-    treeFrogs.push({ type: 'idle', x: cx, y: max(0.2, t.h + rr(0.2, 2.5)), z: cz, yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.1, 1.45), animSpeed: 1.2, mode: 4 });
+    treeFrogs.push({ type: 'idle', x: cx, y: max(0.2, t.h + rr(0.05, 0.35)), z: cz, yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.1, 1.45), animSpeed: 1.2, mode: 4 });
   }
-  addCohort('treeFrogs', buildFrogMesh([0.26, 0.78, 0.20], true), treeFrogs, 17, 6, { label: 'Red-Eyed Tree Frog' });
+  addCohort('treeFrogs', buildFrogMesh([0.26, 0.78, 0.20], true), treeFrogs, 17, 6, { label: 'Red-Eyed Tree Frog', nativeBiomes: [0, 1, 2] });
 
-  // --- Interior Rainforest & Wetland Mammals ---
+  // --- Rainforest & Wetland Mammals ---
   const jaguars = [];
   for (let i = 0; i < 6; i++) {
-    const cx = FORGOTTEN_POS[0] + rr(-45, 45), cz = FORGOTTEN_POS[1] + rr(-45, 45);
-    jaguars.push({ type: 'walkCircle', cx, cz, rad: rr(8, 18), speed: rr(0.14, 0.24), phase: rr(0, TAU), scale: rr(SIZE_VAR_MIN, SIZE_VAR_MAX), animSpeed: 1.0, mode: 3 });
+    jaguars.push({ type: 'walk', cx: rr(-95, 95), cz: rr(-95, 95), rad: rr(14, 30), speed: rr(1.4, 2.2), phase: rr(0, TAU), scale: rr(SIZE_VAR_MIN, SIZE_VAR_MAX), animSpeed: 1.0, mode: 3 });
   }
-  addCohort('jaguars', buildBigCatMesh([0.84, 0.56, 0.20], [0.88, 0.84, 0.72], false), jaguars, 1, 25, { label: 'Amazonian Jaguar', domain: 'land', role: 'predator', eyeOffset: [0, 0.86, 0.88], followDist: 4.5, baseSpeed: 10.5 });
+  addCohort('jaguars', buildBigCatMesh([0.84, 0.56, 0.20], [0.88, 0.84, 0.72], false), jaguars, 1, 25, { label: 'Amazonian Jaguar', domain: 'land', role: 'predator', nativeBiomes: [0, 2, 16], eyeOffset: [0, 0.86, 0.88], followDist: 4.5, baseSpeed: 11.5, cruiseSpeed: 1.8, bodyHalfLen: 0.56, legLength: 0.44 });
 
   const panthers = [];
   for (let i = 0; i < 5; i++) {
-    const cx = CYPRESS_POS[0] + rr(-35, 50), cz = CYPRESS_POS[1] + rr(10, 65);
-    panthers.push({ type: 'walkCircle', cx, cz, rad: rr(9, 18), speed: rr(0.14, 0.24), phase: rr(0, TAU), scale: rr(SIZE_VAR_MIN, SIZE_VAR_MAX), animSpeed: 1.0, mode: 3 });
+    panthers.push({ type: 'walk', cx: rr(-95, 95), cz: rr(-95, 95), rad: rr(14, 30), speed: rr(1.4, 2.2), phase: rr(0, TAU), scale: rr(SIZE_VAR_MIN, SIZE_VAR_MAX), animSpeed: 1.0, mode: 3 });
   }
-  addCohort('panthers', buildBigCatMesh([0.66, 0.45, 0.28], [0.84, 0.74, 0.60], false), panthers, 11, 40, { label: 'Florida Panther', domain: 'land', role: 'predator', eyeOffset: [0, 0.84, 0.86], followDist: 4.4, baseSpeed: 10.8 });
+  addCohort('panthers', buildBigCatMesh([0.66, 0.45, 0.28], [0.84, 0.74, 0.60], false), panthers, 11, 40, { label: 'Florida Panther', domain: 'land', role: 'predator', nativeBiomes: [1, 3, 4], eyeOffset: [0, 0.84, 0.86], followDist: 4.4, baseSpeed: 11.8, cruiseSpeed: 1.9, bodyHalfLen: 0.54, legLength: 0.44 });
 
+  // Redesigned Slender White-Tailed Deer with full 2-bone IK articulation
   const deer = [];
   for (let i = 0; i < 12; i++) {
-    const cx = CLEARING_POS[0] + rr(-38, 38), cz = CLEARING_POS[1] + rr(-32, 32);
-    const s = i < 4 ? 0.55 : rr(SIZE_VAR_MIN, SIZE_VAR_MAX);
-    deer.push({ type: 'walkCircle', cx, cz, rad: rr(5, 13), speed: rr(0.11, 0.22), phase: rr(0, TAU), scale: s, animSpeed: 0.9, mode: 3 });
+    const s = i < 3 ? 0.62 : rr(0.92, 1.14);
+    deer.push({ type: 'walk', cx: rr(-75, 75), cz: rr(-75, 75), rad: rr(14, 34), speed: rr(1.2, 2.1), phase: rr(0, TAU), scale: s, animSpeed: 0.92, mode: 3 });
   }
-  addCohort('deer', buildDeerMesh(), deer, 13, 50, { label: 'White-Tailed Deer', domain: 'land', role: 'herbivore', eyeOffset: [0, 1.18, 0.72], followDist: 4.6, baseSpeed: 11.0 });
+  addCohort('deer', buildDeerMesh(), deer, 13, 42, { label: 'White-Tailed Deer', domain: 'land', role: 'herbivore', nativeBiomes: [0, 4, 5], eyeOffset: [0, 1.18, 0.76], followDist: 4.6, baseSpeed: 12.0, cruiseSpeed: 1.65, strideLen: 1.15, bodyHalfLen: 0.52, legLength: 0.44 });
 
   const capys = [];
   for (let i = 0; i < 16; i++) {
-    const cx = rr(-35, 70), cz = 18 + rr(-16, 18);
-    capys.push({ type: 'walkCircle', cx, cz, rad: rr(2.5, 6.5), speed: rr(0.08, 0.18), phase: rr(0, TAU), scale: i < 4 ? 0.45 : rr(0.9, 1.15), animSpeed: 0.75, mode: 3 });
+    capys.push({ type: 'walk', cx: rr(-70, 70), cz: rr(-55, 55), rad: rr(8, 18), speed: rr(0.9, 1.5), phase: rr(0, TAU), scale: i < 4 ? 0.48 : rr(0.9, 1.15), animSpeed: 0.75, mode: 3 });
   }
-  addCohort('capybaras', buildCapybaraMesh(), capys, 11, 20, { label: 'Giant Capybara', domain: 'land', role: 'herbivore', eyeOffset: [0, 0.48, 0.48], followDist: 3.2, baseSpeed: 6.2 });
+  addCohort('capybaras', buildCapybaraMesh(), capys, 11, 20, { label: 'Giant Capybara', domain: 'land', role: 'herbivore', nativeBiomes: [0, 1, 2], eyeOffset: [0, 0.48, 0.48], followDist: 3.2, baseSpeed: 6.2, cruiseSpeed: 1.2, bodyHalfLen: 0.34, legLength: 0.22 });
 
   const bears = [];
   for (let i = 0; i < 4; i++) {
-    bears.push({ type: 'walkCircle', cx: CLEARING_POS[0] + rr(-50, 10), cz: CLEARING_POS[1] + rr(-40, 40), rad: rr(6, 15), speed: rr(0.10, 0.20), phase: rr(0, TAU), scale: rr(0.92, 1.18), animSpeed: 0.85, mode: 3 });
+    bears.push({ type: 'walk', cx: rr(-105, 105), cz: rr(-105, 105), rad: rr(16, 34), speed: rr(1.3, 2.0), phase: rr(0, TAU), scale: rr(0.92, 1.18), animSpeed: 0.85, mode: 3 });
   }
-  addCohort('bears', buildBearTapirMesh(false), bears, 11, 60, { label: 'Black Bear', domain: 'land', role: 'predator', eyeOffset: [0, 0.68, 0.74], followDist: 4.6, baseSpeed: 8.5 });
+  addCohort('bears', buildBearTapirMesh(false), bears, 11, 55, { label: 'Black Bear', domain: 'land', role: 'predator', nativeBiomes: [4, 14], eyeOffset: [0, 0.68, 0.74], followDist: 4.6, baseSpeed: 9.0, cruiseSpeed: 1.7, bodyHalfLen: 0.52, legLength: 0.36 });
 
   const tapirs = [];
   for (let i = 0; i < 5; i++) {
-    tapirs.push({ type: 'walkCircle', cx: AMAZON_POS[0] + rr(-45, 45), cz: AMAZON_POS[1] + rr(-45, 45), rad: rr(6, 15), speed: rr(0.10, 0.20), phase: rr(0, TAU), scale: i === 0 ? 0.58 : rr(SIZE_VAR_MIN, 1.05), animSpeed: 0.85, mode: 3 });
+    tapirs.push({ type: 'walk', cx: rr(-85, 85), cz: rr(-85, 85), rad: rr(12, 26), speed: rr(1.1, 1.8), phase: rr(0, TAU), scale: i === 0 ? 0.58 : rr(SIZE_VAR_MIN, 1.05), animSpeed: 0.85, mode: 3 });
   }
-  addCohort('tapirs', buildBearTapirMesh(true), tapirs, 20, 35, { label: 'Amazonian Tapir', domain: 'land', role: 'herbivore', eyeOffset: [0, 0.62, 0.72], followDist: 4.2, baseSpeed: 7.5 });
+  addCohort('tapirs', buildBearTapirMesh(true), tapirs, 20, 35, { label: 'Amazonian Tapir', domain: 'land', role: 'herbivore', nativeBiomes: [0, 2], eyeOffset: [0, 0.62, 0.72], followDist: 4.2, baseSpeed: 7.5, cruiseSpeed: 1.5, bodyHalfLen: 0.48, legLength: 0.32 });
 
   const raccoons = [];
   for (let i = 0; i < 10; i++) {
-    raccoons.push({ type: 'walkCircle', cx: MANGROVE_POS[0] + rr(-30, 30), cz: MANGROVE_POS[1] + rr(-30, 30), rad: rr(2, 6), speed: rr(0.22, 0.45), phase: rr(0, TAU), scale: rr(0.92, 1.25), animSpeed: 1.4, mode: 3 });
+    raccoons.push({ type: 'walk', cx: rr(-85, 85), cz: rr(-85, 85), rad: rr(8, 18), speed: rr(1.1, 1.9), phase: rr(0, TAU), scale: rr(0.92, 1.25), animSpeed: 1.3, mode: 3 });
   }
-  addCohort('raccoons', buildSmallMammalMesh([0.48, 0.46, 0.42], true), raccoons, 12, 12, { label: 'Mangrove Raccoon' });
+  addCohort('raccoons', buildSmallMammalMesh([0.48, 0.46, 0.42], true), raccoons, 12, 12, { label: 'Mangrove Raccoon', nativeBiomes: [0, 1, 3, 4], cruiseSpeed: 1.4 });
 
   const otters = [];
   for (let i = 0; i < 10; i++) {
-    otters.push({ type: 'walkCircle', cx: LAGOON_POS[0] + rr(-55, 55), cz: LAGOON_POS[1] + rr(-25, 25), rad: rr(2, 6), speed: rr(0.25, 0.48), phase: rr(0, TAU), scale: rr(0.92, 1.25), animSpeed: 1.4, mode: 3 });
+    otters.push({ type: 'walk', cx: rr(-65, 65), cz: rr(-45, 45), rad: rr(8, 18), speed: rr(1.2, 2.0), phase: rr(0, TAU), scale: rr(0.92, 1.25), animSpeed: 1.35, mode: 3 });
   }
-  addCohort('otters', buildSmallMammalMesh([0.36, 0.27, 0.20], false), otters, 11, 15, { label: 'Giant River Otter', domain: 'land', eyeOffset: [0, 0.28, 0.42], followDist: 2.8, baseSpeed: 7.0 });
+  addCohort('otters', buildSmallMammalMesh([0.36, 0.27, 0.20], false), otters, 11, 15, { label: 'Giant River Otter', domain: 'land', nativeBiomes: [0, 1, 3], eyeOffset: [0, 0.28, 0.42], followDist: 2.8, baseSpeed: 7.0, cruiseSpeed: 1.6 });
 
   const monkeys = [];
   for (let i = 0; i < 16; i++) {
-    monkeys.push({ type: 'flyCircle', cx: AMAZON_POS[0] + rr(-55, 55), cz: AMAZON_POS[1] + rr(-55, 55), y: rr(14, 24), rad: rr(3, 8), speed: rr(0.35, 0.7), phase: rr(0, TAU), scale: rr(1.05, 1.38), animSpeed: 1.5, mode: 4 });
+    monkeys.push({ type: 'fly', cx: rr(-90, 90), cz: rr(-90, 90), y: rr(14, 24), rad: rr(10, 24), speed: rr(2.2, 3.8), phase: rr(0, TAU), scale: rr(1.05, 1.38), animSpeed: 1.5, mode: 4 });
   }
-  addCohort('monkeys', buildMonkeySlothMesh([0.28, 0.20, 0.14], false), monkeys, 11, 25, { label: 'Spider Monkey', domain: 'air' });
+  addCohort('monkeys', buildMonkeySlothMesh([0.28, 0.20, 0.14], false), monkeys, 11, 25, { label: 'Spider Monkey', domain: 'air', nativeBiomes: [0, 2, 5, 8], cruiseSpeed: 3.0 });
 
   const sloths = [];
   for (let i = 0; i < 10; i++) {
-    sloths.push({ type: 'idle', x: AMAZON_POS[0] + rr(-50, 50), y: rr(13, 21), z: AMAZON_POS[1] + rr(-50, 50), yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.08, 1.35), animSpeed: 0.45, mode: 4 });
+    sloths.push({ type: 'idle', x: rr(-85, 85), y: rr(13, 21), z: rr(-85, 85), yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.08, 1.35), animSpeed: 0.45, mode: 4 });
   }
-  addCohort('sloths', buildMonkeySlothMesh([0.48, 0.44, 0.38], true), sloths, 11, 5, { label: 'Three-Toed Sloth' });
+  addCohort('sloths', buildMonkeySlothMesh([0.48, 0.44, 0.38], true), sloths, 11, 5, { label: 'Three-Toed Sloth', nativeBiomes: [0, 2] });
 
   const manatees = [];
   for (let i = 0; i < 5; i++) {
-    manatees.push({ type: 'swimCircle', cx: LAGOON_POS[0] + rr(-25, 35), cz: LAGOON_POS[1] + rr(-12, 14), y: -0.85, rad: rr(6, 14), speed: rr(0.07, 0.14), phase: rr(0, TAU), scale: i === 0 ? 0.62 : rr(0.92, 1.15), animSpeed: 0.65, mode: 1 });
+    manatees.push({ type: 'swim', cx: rr(-55, 55), cz: rr(-45, 45), y: -0.95, rad: rr(10, 22), speed: rr(0.7, 1.3), phase: rr(0, TAU), scale: i === 0 ? 0.62 : rr(0.92, 1.15), animSpeed: 0.65, mode: 1 });
   }
-  addCohort('manatees', buildFishManateeMesh([0.44, 0.48, 0.50], true), manatees, 14, 10, { label: 'West Indian Manatee', domain: 'water' });
+  addCohort('manatees', buildFishManateeMesh([0.44, 0.48, 0.50], true), manatees, 14, 10, { label: 'West Indian Manatee', domain: 'water', nativeBiomes: [0, 3, 9], cruiseSpeed: 1.1 });
 
-  // --- Savanna, Misty Bamboo Jungle, Ape Highlands & Plantation Megafauna ---
+  // --- Savanna, Bamboo Jungle, Ape Highlands & Plantation Megafauna ---
   const lions = [];
   for (let i = 0; i < 10; i++) {
-    const inDune = i >= 8;
-    const base = inDune ? DUNE_POS : SAVANNA_POS;
-    lions.push({ type: 'walkCircle', cx: base[0] + rr(-55, 55), cz: base[1] + rr(-48, 48), rad: rr(10, 22), speed: rr(0.14, 0.25), phase: rr(0, TAU), scale: rr(1.05, 1.32), animSpeed: 1.0, mode: 3 });
+    lions.push({ type: 'walk', cx: rr(-110, 110), cz: rr(-110, 110), rad: rr(18, 42), speed: rr(1.4, 2.4), phase: rr(0, TAU), scale: rr(1.05, 1.32), animSpeed: 1.0, mode: 3 });
   }
-  addCohort('lions', buildBigCatMesh([0.82, 0.64, 0.34], [0.92, 0.86, 0.72], true), lions, 24, 30, { label: 'African Lion', domain: 'land', role: 'predator', eyeOffset: [0, 0.92, 0.92], followDist: 4.8, baseSpeed: 11.5 });
+  addCohort('lions', buildBigCatMesh([0.82, 0.64, 0.34], [0.92, 0.86, 0.72], true), lions, 24, 30, { label: 'African Lion', domain: 'land', role: 'predator', nativeBiomes: [6, 17], eyeOffset: [0, 0.92, 0.92], followDist: 4.8, baseSpeed: 13.0, cruiseSpeed: 1.85, bodyHalfLen: 0.62, legLength: 0.46 });
 
   const tigers = [];
   for (let i = 0; i < 8; i++) {
-    tigers.push({ type: 'walkCircle', cx: BAMBOO_POS[0] + rr(-55, 55), cz: BAMBOO_POS[1] + rr(-48, 48), rad: rr(9, 20), speed: rr(0.15, 0.26), phase: rr(0, TAU), scale: rr(1.08, 1.35), animSpeed: 1.05, mode: 3 });
+    tigers.push({ type: 'walk', cx: rr(-110, 110), cz: rr(-110, 110), rad: rr(16, 36), speed: rr(1.5, 2.5), phase: rr(0, TAU), scale: rr(1.08, 1.35), animSpeed: 1.05, mode: 3 });
   }
-  addCohort('tigers', buildBigCatMesh([0.92, 0.46, 0.12], [0.96, 0.94, 0.90], false), tigers, 25, 32, { label: 'Bengal Tiger', domain: 'land', role: 'predator', eyeOffset: [0, 0.90, 0.92], followDist: 4.8, baseSpeed: 11.8 });
+  addCohort('tigers', buildBigCatMesh([0.92, 0.46, 0.12], [0.96, 0.94, 0.90], false), tigers, 25, 32, { label: 'Bengal Tiger', domain: 'land', role: 'predator', nativeBiomes: [7], eyeOffset: [0, 0.90, 0.92], followDist: 4.8, baseSpeed: 13.2, cruiseSpeed: 1.95, bodyHalfLen: 0.62, legLength: 0.46 });
 
   const gorillas = [];
   for (let i = 0; i < 9; i++) {
-    gorillas.push({ type: 'walkCircle', cx: HIGHLAND_POS[0] + rr(-48, 48), cz: HIGHLAND_POS[1] + rr(-45, 45), rad: rr(6, 14), speed: rr(0.10, 0.18), phase: rr(0, TAU), scale: rr(1.12, 1.42), animSpeed: 0.9, mode: 3 });
+    gorillas.push({ type: 'walk', cx: rr(-95, 95), cz: rr(-95, 95), rad: rr(12, 26), speed: rr(1.1, 1.8), phase: rr(0, TAU), scale: rr(1.12, 1.42), animSpeed: 0.9, mode: 3 });
   }
-  addCohort('gorillas', buildApeMesh([0.12, 0.13, 0.15], [0.74, 0.76, 0.80], true), gorillas, 26, 28, { label: 'Silverback Mountain Gorilla', domain: 'land', role: 'herbivore', eyeOffset: [0, 1.12, 0.48], followDist: 4.6, baseSpeed: 8.8 });
+  addCohort('gorillas', buildApeMesh([0.12, 0.13, 0.15], [0.74, 0.76, 0.80], true), gorillas, 26, 28, { label: 'Silverback Mountain Gorilla', domain: 'land', role: 'herbivore', nativeBiomes: [8], eyeOffset: [0, 1.12, 0.48], followDist: 4.6, baseSpeed: 8.8, cruiseSpeed: 1.5, bodyHalfLen: 0.45, legLength: 0.36 });
 
   const chimpanzees = [];
   for (let i = 0; i < 12; i++) {
-    const inPlantation = i < 6;
-    const base = inPlantation ? PLANTATION_POS : HIGHLAND_POS;
-    chimpanzees.push({ type: 'walkCircle', cx: base[0] + rr(-45, 45), cz: base[1] + rr(-42, 42), rad: rr(6, 15), speed: rr(0.18, 0.32), phase: rr(0, TAU), scale: rr(0.95, 1.18), animSpeed: 1.25, mode: 3 });
+    chimpanzees.push({ type: 'walk', cx: rr(-95, 95), cz: rr(-95, 95), rad: rr(12, 28), speed: rr(1.4, 2.3), phase: rr(0, TAU), scale: rr(0.95, 1.18), animSpeed: 1.25, mode: 3 });
   }
-  addCohort('chimpanzees', buildApeMesh([0.16, 0.14, 0.12], [0.18, 0.15, 0.13], false), chimpanzees, 27, 25, { label: 'Wild Chimpanzee', domain: 'land', role: 'herbivore', eyeOffset: [0, 0.78, 0.38], followDist: 3.8, baseSpeed: 9.2 });
+  addCohort('chimpanzees', buildApeMesh([0.16, 0.14, 0.12], [0.18, 0.15, 0.13], false), chimpanzees, 27, 25, { label: 'Wild Chimpanzee', domain: 'land', role: 'herbivore', nativeBiomes: [5, 8], eyeOffset: [0, 0.78, 0.38], followDist: 3.8, baseSpeed: 9.2, cruiseSpeed: 1.8, bodyHalfLen: 0.36, legLength: 0.32 });
 
   const elephants = [];
   for (let i = 0; i < 8; i++) {
-    const inDune = i >= 6;
-    const base = inDune ? DUNE_POS : SAVANNA_POS;
-    elephants.push({ type: 'walkCircle', cx: base[0] + rr(-65, 65), cz: base[1] + rr(-55, 55), rad: rr(12, 26), speed: rr(0.07, 0.14), phase: rr(0, TAU), scale: i === 0 ? 0.65 : rr(1.05, 1.35), animSpeed: 0.72, mode: 3 });
+    elephants.push({ type: 'walk', cx: rr(-115, 115), cz: rr(-115, 115), rad: rr(22, 48), speed: rr(1.2, 1.9), phase: rr(0, TAU), scale: i === 0 ? 0.65 : rr(1.05, 1.35), animSpeed: 0.72, mode: 3 });
   }
-  addCohort('elephants', buildElephantMesh(), elephants, 28, 22, { label: 'African Bush Elephant', domain: 'land', role: 'herbivore', eyeOffset: [0, 1.85, 1.05], followDist: 7.5, baseSpeed: 7.8, strideLen: 1.65 });
+  addCohort('elephants', buildElephantMesh(), elephants, 28, 22, { label: 'African Bush Elephant', domain: 'land', role: 'herbivore', nativeBiomes: [6, 17], eyeOffset: [0, 1.85, 1.05], followDist: 7.5, baseSpeed: 7.8, cruiseSpeed: 1.6, strideLen: 1.65, bodyHalfLen: 0.92, legLength: 0.68 });
 
   const giraffes = [];
   for (let i = 0; i < 8; i++) {
-    giraffes.push({ type: 'walkCircle', cx: SAVANNA_POS[0] + rr(-62, 62), cz: SAVANNA_POS[1] + rr(-52, 52), rad: rr(12, 24), speed: rr(0.09, 0.16), phase: rr(0, TAU), scale: rr(1.02, 1.28), animSpeed: 0.78, mode: 3 });
+    giraffes.push({ type: 'walk', cx: rr(-115, 115), cz: rr(-115, 115), rad: rr(20, 44), speed: rr(1.3, 2.2), phase: rr(0, TAU), scale: rr(1.02, 1.28), animSpeed: 0.78, mode: 3 });
   }
-  addCohort('giraffes', buildGiraffeMesh(), giraffes, 29, 30, { label: 'Reticulated Giraffe', domain: 'land', role: 'herbivore', eyeOffset: [0, 3.25, 0.95], followDist: 7.2, baseSpeed: 9.5, strideLen: 1.55 });
+  addCohort('giraffes', buildGiraffeMesh(), giraffes, 29, 30, { label: 'Reticulated Giraffe', domain: 'land', role: 'herbivore', nativeBiomes: [6], eyeOffset: [0, 3.25, 0.95], followDist: 7.2, baseSpeed: 10.5, cruiseSpeed: 1.8, strideLen: 1.55, bodyHalfLen: 0.68, legLength: 0.85 });
 
   const zebras = [];
   for (let i = 0; i < 16; i++) {
-    zebras.push({ type: 'walkCircle', cx: SAVANNA_POS[0] + rr(-60, 60), cz: SAVANNA_POS[1] + rr(-50, 50), rad: rr(10, 22), speed: rr(0.14, 0.26), phase: rr(0, TAU), scale: rr(0.95, 1.18), animSpeed: 1.05, mode: 3 });
+    zebras.push({ type: 'walk', cx: rr(-110, 110), cz: rr(-110, 110), rad: rr(18, 42), speed: rr(1.5, 2.5), phase: rr(0, TAU), scale: rr(0.95, 1.18), animSpeed: 1.05, mode: 3 });
   }
-  addCohort('zebras', buildZebraMesh(), zebras, 30, 42, { label: 'Plains Zebra', domain: 'land', role: 'herbivore', eyeOffset: [0, 1.24, 0.85], followDist: 4.8, baseSpeed: 11.5 });
+  addCohort('zebras', buildZebraMesh(), zebras, 30, 42, { label: 'Plains Zebra', domain: 'land', role: 'herbivore', nativeBiomes: [6], eyeOffset: [0, 1.24, 0.85], followDist: 4.8, baseSpeed: 12.5, cruiseSpeed: 2.0, strideLen: 1.18, bodyHalfLen: 0.56, legLength: 0.48 });
 
-  // --- Ocean & Polar Megafauna (Whales, Orcas, Sharks, Mantas, Penguins, Polar Bears, Seals) ---
+  // --- Rebuilt Pelagic & Polar Marine Megafauna (True Adult Meter Lengths!) ---
   const whales = [];
   for (let i = 0; i < 6; i++) {
-    const inPolar = i >= 4;
-    const base = inPolar ? POLAR_POS : ABYSS_POS;
-    whales.push({ type: 'swimCircle', cx: base[0] + rr(-55, 55), cz: base[1] + rr(-35, 35), y: rr(-8.5, -3.2), rad: rr(18, 36), speed: rr(0.08, 0.15), phase: rr(0, TAU), scale: rr(1.35, 1.85), animSpeed: 0.75, mode: 1 });
+    whales.push({ type: 'swim', cx: rr(-135, 135), cz: rr(-135, 135), y: rr(-10.5, -5.0), rad: rr(32, 68), speed: rr(2.2, 3.6), phase: rr(0, TAU), scale: rr(0.88, 1.14), animSpeed: 0.68, mode: 1 });
   }
-  addCohort('whales', buildWhaleOrcaMesh([0.14, 0.22, 0.32], [0.82, 0.86, 0.90], false), whales, 31, 15, { label: 'Humpback Whale', domain: 'water', role: 'herbivore', eyeOffset: [0, 0.35, 2.2], followDist: 10.5, baseSpeed: 9.5 });
+  addCohort('whales', buildHumpbackWhaleMesh(), whales, 31, 18, { label: 'Humpback Whale', domain: 'water', role: 'herbivore', nativeBiomes: [10, 11, 12, 13], eyeOffset: [0, 0.85, 5.2], followDist: 19.0, baseSpeed: 6.8, cruiseSpeed: 2.8, strideLen: 6.4, turnRate: 0.45 });
 
   const orcas = [];
   for (let i = 0; i < 7; i++) {
-    const inRookery = i >= 4;
-    const base = inRookery ? ROOKERY_POS : ABYSS_POS;
-    orcas.push({ type: 'swimCircle', cx: base[0] + rr(-48, 48), cz: base[1] + rr(-32, 32), y: rr(-6.2, -1.8), rad: rr(14, 28), speed: rr(0.14, 0.24), phase: rr(0, TAU), scale: rr(1.15, 1.45), animSpeed: 1.05, mode: 1 });
+    orcas.push({ type: 'swim', cx: rr(-120, 120), cz: rr(-120, 120), y: rr(-8.5, -3.2), rad: rr(26, 56), speed: rr(3.0, 4.6), phase: rr(0, TAU), scale: rr(0.88, 1.12), animSpeed: 0.95, mode: 1 });
   }
-  addCohort('orcas', buildWhaleOrcaMesh([0.05, 0.06, 0.08], [0.95, 0.96, 0.98], true), orcas, 32, 18, { label: 'Orca (Killer Whale)', domain: 'water', role: 'predator', eyeOffset: [0, 0.28, 1.45], followDist: 7.2, baseSpeed: 11.5 });
+  addCohort('orcas', buildOrcaMesh(), orcas, 32, 20, { label: 'Orca (Killer Whale)', domain: 'water', role: 'predator', nativeBiomes: [10, 11, 12, 13], eyeOffset: [0, 0.55, 2.7], followDist: 12.0, baseSpeed: 9.8, cruiseSpeed: 3.8, strideLen: 3.8, turnRate: 0.78 });
 
   const sharks = [];
   for (let i = 0; i < 8; i++) {
-    const base = i < 4 ? REEF_POS : ABYSS_POS;
-    sharks.push({ type: 'swimCircle', cx: base[0] + rr(-52, 52), cz: base[1] + rr(-35, 35), y: rr(-7.5, -2.0), rad: rr(12, 24), speed: rr(0.16, 0.28), phase: rr(0, TAU), scale: rr(1.08, 1.42), animSpeed: 1.15, mode: 1 });
+    sharks.push({ type: 'swim', cx: rr(-115, 115), cz: rr(-115, 115), y: rr(-9.5, -2.8), rad: rr(22, 48), speed: rr(2.4, 3.8), phase: rr(0, TAU), scale: rr(0.88, 1.18), animSpeed: 1.05, mode: 1 });
   }
-  addCohort('sharks', buildSharkMesh(), sharks, 33, 18, { label: 'Great White Shark', domain: 'water', role: 'predator', eyeOffset: [0, 0.18, 1.15], followDist: 5.8, baseSpeed: 11.2 });
+  addCohort('sharks', buildSharkMesh(), sharks, 33, 20, { label: 'Great White Shark', domain: 'water', role: 'predator', nativeBiomes: [9, 10, 11], eyeOffset: [0, 0.28, 1.8], followDist: 7.5, baseSpeed: 8.6, cruiseSpeed: 3.0, strideLen: 2.4, turnRate: 0.92 });
 
   const mantas = [];
   for (let i = 0; i < 10; i++) {
-    const base = i < 6 ? REEF_POS : ABYSS_POS;
-    mantas.push({ type: 'swimCircle', cx: base[0] + rr(-55, 55), cz: base[1] + rr(-35, 35), y: rr(-6.5, -1.6), rad: rr(10, 22), speed: rr(0.12, 0.22), phase: rr(0, TAU), scale: rr(1.05, 1.45), animSpeed: 0.95, mode: 1 });
+    mantas.push({ type: 'swim', cx: rr(-110, 110), cz: rr(-110, 110), y: rr(-7.5, -2.2), rad: rr(20, 42), speed: rr(1.8, 3.0), phase: rr(0, TAU), scale: rr(0.88, 1.18), animSpeed: 0.85, mode: 1 });
   }
-  addCohort('mantas', buildMantaMesh(), mantas, 34, 16, { label: 'Oceanic Manta Ray', domain: 'water', role: 'herbivore', eyeOffset: [0, 0.14, 0.95], followDist: 5.5, baseSpeed: 9.0 });
+  addCohort('mantas', buildMantaMesh(), mantas, 34, 16, { label: 'Oceanic Manta Ray', domain: 'water', role: 'herbivore', nativeBiomes: [9, 10, 11], eyeOffset: [0, 0.22, 1.3], followDist: 7.0, baseSpeed: 6.4, cruiseSpeed: 2.3, strideLen: 2.6, turnRate: 0.85 });
 
   const penguins = [];
   for (let i = 0; i < 32; i++) {
-    // Populate BOTH South Polar (ROOKERY_POS / POLAR_POS) AND North Antarctica Continent (z < -250)
-    const inNorthAntarctica = i >= 20;
-    const inPolar = i >= 10 && i < 20;
-    const cx = inNorthAntarctica ? rr(-280, 280) : (inPolar ? POLAR_POS[0] : ROOKERY_POS[0]) + rr(-58, 58);
-    const cz = inNorthAntarctica ? rr(-330, -245) : (inPolar ? POLAR_POS[1] : ROOKERY_POS[1]) + rr(-45, 45);
-    penguins.push({ type: 'walkCircle', cx, cz, rad: rr(4, 14), speed: rr(0.12, 0.24), phase: rr(0, TAU), scale: rr(0.92, 1.18), animSpeed: 1.35, mode: 3 });
+    penguins.push({ type: 'walk', cx: rr(-90, 90), cz: rr(-90, 90), rad: rr(10, 26), speed: rr(0.9, 1.6), phase: rr(0, TAU), scale: rr(0.92, 1.18), animSpeed: 1.35, mode: 3 });
   }
-  addCohort('penguins', buildPenguinMesh(), penguins, 35, 22, { label: 'Emperor Penguin', domain: 'land', role: 'herbivore', eyeOffset: [0, 0.78, 0.18], followDist: 3.2, baseSpeed: 6.5 });
+  addCohort('penguins', buildPenguinMesh(), penguins, 35, 22, { label: 'Emperor Penguin', domain: 'land', role: 'herbivore', nativeBiomes: [12, 13], eyeOffset: [0, 0.78, 0.18], followDist: 3.2, baseSpeed: 5.5, cruiseSpeed: 1.15, bodyHalfLen: 0.16, legLength: 0.20 });
 
   const polarBears = [];
   for (let i = 0; i < 10; i++) {
-    const inNorthAntarctica = i >= 5;
-    const cx = inNorthAntarctica ? rr(-260, 260) : POLAR_POS[0] + rr(-58, 58);
-    const cz = inNorthAntarctica ? rr(-335, -248) : POLAR_POS[1] + rr(-45, 45);
-    polarBears.push({ type: 'walkCircle', cx, cz, rad: rr(8, 18), speed: rr(0.10, 0.18), phase: rr(0, TAU), scale: rr(1.15, 1.42), animSpeed: 0.85, mode: 3 });
+    polarBears.push({ type: 'walk', cx: rr(-105, 105), cz: rr(-105, 105), rad: rr(16, 34), speed: rr(1.3, 2.1), phase: rr(0, TAU), scale: rr(1.15, 1.42), animSpeed: 0.85, mode: 3 });
   }
-  addCohort('polarBears', buildBearTapirMesh(false), polarBears, 36, 28, { label: 'Polar Bear', domain: 'land', role: 'predator', eyeOffset: [0, 0.78, 0.82], followDist: 5.0, baseSpeed: 9.2 });
+  addCohort('polarBears', buildBearTapirMesh(false), polarBears, 36, 28, { label: 'Polar Bear', domain: 'land', role: 'predator', nativeBiomes: [12, 13], eyeOffset: [0, 0.78, 0.82], followDist: 5.0, baseSpeed: 9.2, cruiseSpeed: 1.7, bodyHalfLen: 0.56, legLength: 0.38 });
 
   const seals = [];
   for (let i = 0; i < 14; i++) {
-    const inNorthAntarctica = i >= 10;
-    const base = i < 6 ? ROOKERY_POS : POLAR_POS;
-    const cx = inNorthAntarctica ? rr(-250, 250) : base[0] + rr(-48, 48);
-    const cz = inNorthAntarctica ? rr(-245, -222) : base[1] + rr(-38, 38);
-    seals.push({ type: 'swimCircle', cx, cz, y: -0.65, rad: rr(6, 15), speed: rr(0.14, 0.25), phase: rr(0, TAU), scale: rr(0.95, 1.25), animSpeed: 1.05, mode: 1 });
+    seals.push({ type: 'swim', cx: rr(-95, 95), cz: rr(-95, 95), y: -1.4, rad: rr(14, 30), speed: rr(2.0, 3.2), phase: rr(0, TAU), scale: rr(0.95, 1.25), animSpeed: 1.05, mode: 1 });
   }
-  addCohort('seals', buildFishManateeMesh([0.52, 0.56, 0.62], true), seals, 37, 20, { label: 'Leopard Seal', domain: 'water', role: 'predator', eyeOffset: [0, 0.24, 0.65], followDist: 4.0, baseSpeed: 8.5 });
+  addCohort('seals', buildFishManateeMesh([0.52, 0.56, 0.62], true), seals, 37, 20, { label: 'Leopard Seal', domain: 'water', role: 'predator', nativeBiomes: [12, 13], eyeOffset: [0, 0.24, 0.65], followDist: 4.0, baseSpeed: 8.5, cruiseSpeed: 2.5 });
 
   // --- Birds (8 Cohorts) ---
   const macaws = [];
   for (let i = 0; i < 22; i++) {
-    macaws.push({ type: 'flyCircle', cx: AMAZON_POS[0] + rr(-85, 85), cz: AMAZON_POS[1] + rr(-75, 95), y: rr(13, 30), rad: rr(14, 38), speed: rr(0.28, 0.55), phase: rr(0, TAU), scale: rr(1.15, 1.55), animSpeed: 1.45, mode: 2 });
+    macaws.push({ type: 'fly', cx: rr(-115, 115), cz: rr(-115, 115), y: rr(14, 30), rad: rr(24, 58), speed: rr(7.5, 11.5), phase: rr(0, TAU), scale: rr(1.15, 1.55), animSpeed: 1.45, mode: 2 });
   }
-  addCohort('macaws', buildBirdMesh([0.86, 0.16, 0.12], [0.16, 0.42, 0.85], [0.88, 0.80, 0.52], 0.95, 0.16, false), macaws, 4, 30, { label: 'Scarlet Macaw', domain: 'air', eyeOffset: [0, 0.16, 0.35], followDist: 3.6, baseSpeed: 14.0 });
+  addCohort('macaws', buildBirdMesh([0.86, 0.16, 0.12], [0.16, 0.42, 0.85], [0.88, 0.80, 0.52], 0.95, 0.16, false), macaws, 4, 30, { label: 'Scarlet Macaw', domain: 'air', nativeBiomes: [0, 1, 2, 3, 4, 5], eyeOffset: [0, 0.16, 0.35], followDist: 3.6, baseSpeed: 14.0, cruiseSpeed: 9.5 });
 
   const toucans = [];
   for (let i = 0; i < 12; i++) {
-    toucans.push({ type: 'flyCircle', cx: AMAZON_POS[0] + rr(-65, 65), cz: AMAZON_POS[1] + rr(-65, 65), y: rr(14, 25), rad: rr(8, 20), speed: rr(0.22, 0.42), phase: rr(0, TAU), scale: rr(1.1, 1.45), animSpeed: 1.2, mode: 2 });
+    toucans.push({ type: 'fly', cx: rr(-100, 100), cz: rr(-100, 100), y: rr(14, 26), rad: rr(18, 42), speed: rr(6.5, 9.5), phase: rr(0, TAU), scale: rr(1.1, 1.45), animSpeed: 1.2, mode: 2 });
   }
-  addCohort('toucans', buildBirdMesh([0.14, 0.14, 0.16], [0.18, 0.18, 0.22], [0.90, 0.56, 0.10], 0.78, 0.34, false, [0.90, 0.74, 0.14]), toucans, 5, 20, { label: 'Toco Toucan', domain: 'air', eyeOffset: [0, 0.15, 0.32], followDist: 3.4, baseSpeed: 12.5 });
+  addCohort('toucans', buildBirdMesh([0.14, 0.14, 0.16], [0.18, 0.18, 0.22], [0.90, 0.56, 0.10], 0.78, 0.34, false, [0.90, 0.74, 0.14]), toucans, 5, 20, { label: 'Toco Toucan', domain: 'air', nativeBiomes: [0, 2, 4], eyeOffset: [0, 0.15, 0.32], followDist: 3.4, baseSpeed: 12.5, cruiseSpeed: 8.2 });
 
   const eagles = [];
   for (let i = 0; i < 10; i++) {
-    eagles.push({ type: 'flyCircle', cx: rr(-180, 180), cz: rr(-180, 180), y: rr(36, 62), rad: rr(32, 68), speed: rr(0.14, 0.25), phase: rr(0, TAU), scale: rr(1.55, 2.1), animSpeed: 0.55, mode: 2 });
+    eagles.push({ type: 'fly', cx: rr(-140, 140), cz: rr(-140, 140), y: rr(34, 64), rad: rr(45, 95), speed: rr(10.0, 14.5), phase: rr(0, TAU), scale: rr(1.55, 2.1), animSpeed: 0.55, mode: 2 });
   }
-  addCohort('eagles', buildBirdMesh([0.28, 0.20, 0.14], [0.22, 0.16, 0.11], [0.88, 0.72, 0.22], 1.45, 0.18, false, [0.90, 0.90, 0.88]), eagles, 6, 50, { label: 'Crowned Harpy Eagle', domain: 'air', role: 'predator', eyeOffset: [0, 0.22, 0.45], followDist: 4.6, baseSpeed: 16.5 });
+  addCohort('eagles', buildBirdMesh([0.28, 0.20, 0.14], [0.22, 0.16, 0.11], [0.88, 0.72, 0.22], 1.45, 0.18, false, [0.90, 0.90, 0.88]), eagles, 6, 50, { label: 'Crowned Harpy Eagle', domain: 'air', role: 'predator', nativeBiomes: [0, 2, 4, 6, 7, 8, 9, 14, 15, 17], eyeOffset: [0, 0.22, 0.45], followDist: 4.6, baseSpeed: 18.0, cruiseSpeed: 12.0 });
 
   const owls = [];
   for (let i = 0; i < 8; i++) {
-    const cx = FORGOTTEN_POS[0] + rr(-40, 40), cz = FORGOTTEN_POS[1] + rr(-40, 40);
-    owls.push({ type: 'idle', x: cx, y: rr(7, 15), z: cz, yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.0, 1.25), animSpeed: 0.6, mode: 0 });
+    owls.push({ type: 'idle', x: rr(-75, 75), y: rr(8, 16), z: rr(-75, 75), yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.0, 1.25), animSpeed: 0.6, mode: 0 });
   }
-  addCohort('owls', buildBirdMesh([0.46, 0.34, 0.22], [0.38, 0.28, 0.18], [0.42, 0.36, 0.24], 0.85, 0.10, false), owls, 7, 12, { label: 'Spectacled Owl', domain: 'air' });
+  addCohort('owls', buildBirdMesh([0.46, 0.34, 0.22], [0.38, 0.28, 0.18], [0.42, 0.36, 0.24], 0.85, 0.10, false), owls, 7, 12, { label: 'Spectacled Owl', domain: 'air', nativeBiomes: [0, 1, 2, 16] });
 
   const kingfishers = [];
   for (let i = 0; i < 10; i++) {
-    kingfishers.push({ type: 'flyCircle', cx: LAGOON_POS[0] + rr(-50, 50), cz: LAGOON_POS[1] + rr(-20, 20), y: rr(2.5, 6.5), rad: rr(4, 10), speed: rr(0.45, 0.85), phase: rr(0, TAU), scale: rr(0.75, 1.0), animSpeed: 2.0, mode: 2 });
+    kingfishers.push({ type: 'fly', cx: rr(-75, 75), cz: rr(-55, 55), y: rr(2.5, 6.5), rad: rr(10, 24), speed: rr(6.5, 10.0), phase: rr(0, TAU), scale: rr(0.75, 1.0), animSpeed: 2.0, mode: 2 });
   }
-  addCohort('kingfishers', buildBirdMesh([0.76, 0.36, 0.16], [0.10, 0.56, 0.78], [0.16, 0.16, 0.18], 0.52, 0.22, false, [0.12, 0.58, 0.82]), kingfishers, 10, 20, { label: 'Amazon Kingfisher', domain: 'air' });
+  addCohort('kingfishers', buildBirdMesh([0.76, 0.36, 0.16], [0.10, 0.56, 0.78], [0.16, 0.16, 0.18], 0.52, 0.22, false, [0.12, 0.58, 0.82]), kingfishers, 10, 20, { label: 'Amazon Kingfisher', domain: 'air', nativeBiomes: [0, 1, 3, 9], cruiseSpeed: 8.0 });
 
   const flamingos = [];
   for (let i = 0; i < 18; i++) {
-    const onBeach = i >= 12;
-    const base = onBeach ? BEACH_POS : POND_POS;
-    flamingos.push({ type: 'idle', x: base[0] + rr(-18, 18), y: 0.45, z: base[1] + rr(-14, 14), yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.08, 1.32), animSpeed: 0.6, mode: 0 });
+    flamingos.push({ type: 'idle', x: rr(-55, 55), y: 0.35, z: rr(-55, 55), yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.08, 1.32), animSpeed: 0.6, mode: 0 });
   }
-  addCohort('flamingos', buildBirdMesh([0.90, 0.44, 0.54], [0.86, 0.34, 0.44], [0.18, 0.16, 0.18], 0.8, 0.2, true), flamingos, 9, 40, { label: 'Caribbean Flamingo', domain: 'land' });
+  addCohort('flamingos', buildBirdMesh([0.90, 0.44, 0.54], [0.86, 0.34, 0.44], [0.18, 0.16, 0.18], 0.8, 0.2, true), flamingos, 9, 40, { label: 'Caribbean Flamingo', domain: 'land', nativeBiomes: [0, 3, 9] });
 
   const herons = [];
   for (let i = 0; i < 14; i++) {
-    const inSwamp = i < 8;
-    const cx = inSwamp ? CYPRESS_POS[0] + rr(-45, 45) : MANGROVE_POS[0] + rr(-30, 30);
-    const cz = inSwamp ? CYPRESS_POS[1] + rr(-45, 45) : MANGROVE_POS[1] + rr(-30, 30);
-    herons.push({ type: 'idle', x: cx, y: 0.48, z: cz, yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.12, 1.40), animSpeed: 0.6, mode: 0 });
+    herons.push({ type: 'idle', x: rr(-65, 65), y: 0.38, z: rr(-65, 65), yaw: rr(0, TAU), phase: rr(0, TAU), scale: rr(1.12, 1.40), animSpeed: 0.6, mode: 0 });
   }
-  addCohort('herons', buildBirdMesh([0.88, 0.90, 0.90], [0.80, 0.84, 0.88], [0.88, 0.66, 0.18], 0.95, 0.26, true), herons, 9, 25, { label: 'Great White Egret', domain: 'land' });
+  addCohort('herons', buildBirdMesh([0.88, 0.90, 0.90], [0.80, 0.84, 0.88], [0.88, 0.66, 0.18], 0.95, 0.26, true), herons, 9, 25, { label: 'Great White Egret', domain: 'land', nativeBiomes: [0, 1, 3, 9] });
 
   const woodpeckers = [];
   for (let i = 0; i < 8; i++) {
-    const cx = CYPRESS_POS[0] + rr(-55, 55), cz = CYPRESS_POS[1] + rr(-55, 55);
-    woodpeckers.push({ type: 'flyCircle', cx, cz, y: rr(6, 15), rad: rr(6, 14), speed: rr(0.35, 0.65), phase: rr(0, TAU), scale: rr(0.85, 1.15), animSpeed: 1.6, mode: 2 });
+    woodpeckers.push({ type: 'fly', cx: rr(-85, 85), cz: rr(-85, 85), y: rr(6, 16), rad: rr(12, 26), speed: rr(6.0, 9.0), phase: rr(0, TAU), scale: rr(0.85, 1.15), animSpeed: 1.6, mode: 2 });
   }
-  addCohort('woodpeckers', buildBirdMesh([0.14, 0.14, 0.16], [0.18, 0.18, 0.20], [0.35, 0.32, 0.30], 0.56, 0.20, false, [0.82, 0.14, 0.12]), woodpeckers, 8, 22, { label: 'Pileated Woodpecker', domain: 'air' });
+  addCohort('woodpeckers', buildBirdMesh([0.14, 0.14, 0.16], [0.18, 0.18, 0.20], [0.35, 0.32, 0.30], 0.56, 0.20, false, [0.82, 0.14, 0.12]), woodpeckers, 8, 22, { label: 'Pileated Woodpecker', domain: 'air', nativeBiomes: [0, 1, 2, 4, 7], cruiseSpeed: 7.5 });
 
   // --- Fish Schools & Invertebrates ---
   const fish = [];
   for (let s = 0; s < 10; s++) {
-    const inReef = s >= 5;
-    const sx = inReef ? lerp(-130, 95, (s - 5) / 4) : lerp(-60, 110, s / 4);
-    const sz = inReef ? 235 + sin(s) * 28 : 14 + sin(s) * 18;
-    const baseDepth = inReef ? -3.4 : -0.85;
+    const sx = rr(-85, 85);
+    const sz = rr(-75, 75);
+    const baseDepth = s >= 5 ? -3.4 : -0.95;
     for (let k = 0; k < 14; k++) {
       fish.push({
-        type: 'swimCircle',
+        type: 'swim',
         schoolId: s,
         cx: sx + rr(-4, 4),
         cz: sz + rr(-4, 4),
-        y: baseDepth + rr(-1.8, 0.6),
-        baseY: baseDepth + rr(-1.8, 0.6),
-        rad: rr(2.5, 7.5),
-        speed: rr(0.45, 0.95),
+        y: baseDepth + rr(-1.5, 0.4),
+        baseY: baseDepth + rr(-1.5, 0.4),
+        rad: rr(8, 22),
+        speed: rr(1.8, 3.2),
         phase: rr(0, TAU),
         scale: rr(0.85, 1.45),
         animSpeed: 2.2,
@@ -1537,91 +1817,151 @@ function buildWorld() {
       });
     }
   }
-  addCohort('fish', buildFishManateeMesh([0.88, 0.64, 0.22], false), fish, 0, 8, { label: 'Golden Reef & River Fish', domain: 'water', eyeOffset: [0, 0.06, 0.22], followDist: 2.4, baseSpeed: 7.5 });
+  addCohort('fish', buildFishManateeMesh([0.88, 0.64, 0.22], false), fish, 0, 8, { label: 'Golden Reef & River Fish', domain: 'water', nativeBiomes: [0, 1, 3, 9, 10, 11, 16], eyeOffset: [0, 0.06, 0.22], followDist: 2.4, baseSpeed: 6.5, cruiseSpeed: 2.4 });
 
   const butterflies = [];
   for (let i = 0; i < 80; i++) {
-    const inClearing = i < 45;
-    const cx = inClearing ? CLEARING_POS[0] + rr(-38, 38) : rr(-90, 90);
-    const cz = inClearing ? CLEARING_POS[1] + rr(-35, 35) : rr(-70, 70);
+    const cx = rr(-95, 95), cz = rr(-95, 95);
     terrainAt(cx, cz, t);
-    butterflies.push({ type: 'flyCircle', cx, cz, y: max(0.8, t.h + rr(0.9, 3.2)), rad: rr(1.2, 4.5), speed: rr(0.8, 1.8), phase: rr(0, TAU), scale: rr(0.9, 1.40), animSpeed: 2.2, mode: 2 });
+    butterflies.push({ type: 'fly', cx, cz, y: max(0.9, t.h + rr(0.9, 3.4)), rad: rr(4, 14), speed: rr(1.8, 3.2), phase: rr(0, TAU), scale: rr(0.9, 1.40), animSpeed: 2.2, mode: 2 });
   }
-  addCohort('butterflies', buildButterflyInsectMesh([0.16, 0.62, 0.88], [0.88, 0.60, 0.14], false), butterflies, 18, 4, { label: 'Blue Morpho Butterfly', domain: 'air' });
+  addCohort('butterflies', buildButterflyInsectMesh([0.16, 0.62, 0.88], [0.88, 0.60, 0.14], false), butterflies, 18, 4, { label: 'Blue Morpho Butterfly', domain: 'air', nativeBiomes: [0, 2, 4, 5, 7], cruiseSpeed: 2.4 });
 
   const dragonflies = [];
   for (let i = 0; i < 32; i++) {
-    const inLagoon = i < 18;
-    const cx = inLagoon ? LAGOON_POS[0] + rr(-42, 42) : POND_POS[0] + rr(-18, 18);
-    const cz = inLagoon ? LAGOON_POS[1] + rr(-20, 20) : POND_POS[1] + rr(-18, 18);
-    dragonflies.push({ type: 'flyCircle', cx, cz, y: rr(0.35, 1.6), rad: rr(1.5, 4.0), speed: rr(1.1, 2.2), phase: rr(0, TAU), scale: rr(0.95, 1.35), animSpeed: 3.0, mode: 2 });
+    dragonflies.push({ type: 'fly', cx: rr(-75, 75), cz: rr(-55, 55), y: rr(0.45, 1.8), rad: rr(5, 14), speed: rr(2.4, 4.2), phase: rr(0, TAU), scale: rr(0.95, 1.35), animSpeed: 3.0, mode: 2 });
   }
-  addCohort('dragonflies', buildButterflyInsectMesh([0.22, 0.68, 0.64], [0.76, 0.84, 0.88], true), dragonflies, 19, 4, { label: 'Emerald Dragonfly', domain: 'air' });
+  addCohort('dragonflies', buildButterflyInsectMesh([0.22, 0.68, 0.64], [0.76, 0.84, 0.88], true), dragonflies, 19, 4, { label: 'Emerald Dragonfly', domain: 'air', nativeBiomes: [0, 1, 3, 16], cruiseSpeed: 3.2 });
 
   const beetles = [];
   for (let i = 0; i < 24; i++) {
-    const cx = AMAZON_POS[0] + rr(-48, 48), cz = AMAZON_POS[1] + rr(-48, 48);
+    const cx = rr(-70, 70), cz = rr(-70, 70);
     terrainAt(cx, cz, t);
-    beetles.push({ type: 'walkCircle', cx, cz, rad: rr(0.6, 2.2), speed: rr(0.25, 0.55), phase: rr(0, TAU), scale: rr(0.9, 1.3), animSpeed: 1.5, mode: 0 });
+    beetles.push({ type: 'walk', cx, cz, rad: rr(2, 6), speed: rr(0.25, 0.55), phase: rr(0, TAU), scale: rr(0.9, 1.3), animSpeed: 1.5, mode: 0 });
   }
-  addCohort('beetles', buildBeetleMesh(), beetles, 19, 3, { label: 'Hercules Rhinoceros Beetle', domain: 'land' });
+  addCohort('beetles', buildBeetleMesh(), beetles, 19, 3, { label: 'Hercules Rhinoceros Beetle', domain: 'land', nativeBiomes: [0, 2, 5, 7], cruiseSpeed: 0.4 });
 
   const lookdevRig = {
     sphereMesh: buildLookdevMesh(),
     swatchMesh: buildSwatchBarMesh(),
-    instData: new Float32Array(24)
+    instData: new Float32Array(3 * ANIMAL_INST_FLOATS)
   };
 
+  // Relocate native & non-native cohorts cleanly onto valid local terrain/water when changing regions
+  function syncRegion(biomeId = 0, seedOffset = 0) {
+    populateRegionFlora(biomeId, seedOffset);
+    seedRng(WORLD_SEED + biomeId * 4129 + seedOffset * 71);
+    const st = {};
+    for (let g = 0; g < wildlifeGroups.length; g++) {
+      const grp = wildlifeGroups[g];
+      const isNative = grp.nativeBiomes.includes(biomeId);
+      for (let i = 0; i < grp.items.length; i++) {
+        const it = grp.items[i];
+        if (it.playerControlled) continue;
+        if (!isNative) {
+          // Park non-native cohorts out of local regional view so each continent displays authentic native fauna
+          it.x = it.prevX = it.homeX = 2400 + g * 18;
+          it.z = it.prevZ = it.homeZ = 2400 + i * 6;
+          it.y = it.prevY = grp.domain === 'water' ? -12 : 0;
+          it.inactiveInRegion = true;
+          continue;
+        }
+        it.inactiveInRegion = false;
+        let placed = false;
+        for (let tries = 0; tries < 22; tries++) {
+          const rMax = grp.domain === 'water' ? 125 : 110;
+          const px = rr(-rMax, rMax);
+          const pz = rr(-rMax, rMax);
+          terrainAt(px, pz, st);
+          if (grp.domain === 'water') {
+            const minNeed = (grp.speciesId === 31 || grp.speciesId === 32) ? -4.5 : grp.speciesId === 33 ? -3.2 : -0.6;
+            if (st.h <= minNeed) {
+              const py = clamp(lerp(st.h + 1.4, -1.6, 0.55), st.h + 1.0, grp.speciesId === 33 ? -1.8 : -0.25);
+              it.x = it.prevX = it.homeX = px;
+              it.z = it.prevZ = it.homeZ = pz;
+              it.y = it.prevY = it.baseY = py;
+              placed = true;
+              break;
+            }
+          } else if (grp.domain === 'air') {
+            it.x = it.prevX = it.homeX = px;
+            it.z = it.prevZ = it.homeZ = pz;
+            it.y = it.prevY = it.baseY = max(st.h + rr(5, 28), rr(6, 30));
+            placed = true;
+            break;
+          } else {
+            if (st.h >= -0.05 && st.h < 65) {
+              it.x = it.prevX = it.homeX = px;
+              it.z = it.prevZ = it.homeZ = pz;
+              it.y = it.prevY = it.baseY = st.h;
+              placed = true;
+              break;
+            }
+          }
+        }
+        if (!placed) {
+          terrainAt(0, 0, st);
+          it.x = it.prevX = it.homeX = rr(-45, 45);
+          it.z = it.prevZ = it.homeZ = rr(-45, 45);
+          terrainAt(it.x, it.z, st);
+          it.y = it.prevY = it.baseY = grp.domain === 'water' ? min(-2.5, st.h + 1.5) : grp.domain === 'air' ? max(12, st.h + 12) : max(0, st.h);
+        }
+        it.goalX = it.homeX + rr(-it.wanderRad, it.wanderRad);
+        it.goalZ = it.homeZ + rr(-it.wanderRad, it.wanderRad);
+        it.goalY = it.baseY;
+        it.breachState = 'cruise';
+        it.breachTimer = 0;
+        it.pitch = it.prevPitch = 0;
+        it.roll = it.prevRoll = 0;
+      }
+    }
+  }
+
+  // Initial startup placement for River Sanctuary (biomeId = 0)
+  syncRegion(0, 0);
+
   // ==========================================================================
-  // Partitioned GPU Particles: [base] -> [bubbles] -> [rain]
+  // Partitioned GPU Particles: [base + breach splashes] -> [bubbles] -> [rain]
   // ==========================================================================
   const MAX_PARTICLES = MAX_PARTICLES_BUDGET;
   const particles = new Float32Array(MAX_PARTICLES * 8);
   const particleState = [];
   const baseCount = Math.floor(MAX_PARTICLES * 0.72);
+  const splashStart = Math.floor(baseCount * 0.84);
+  const splashCount = baseCount - splashStart;
   const bubbleStart = baseCount;
   const bubbleCount = Math.floor(MAX_PARTICLES * 0.08);
   const rainStart = bubbleStart + bubbleCount;
   const rainCount = MAX_PARTICLES - rainStart;
-  const particleRanges = { baseCount, bubbleStart, bubbleCount, rainStart, rainCount };
+  const particleRanges = { baseCount, splashStart, splashCount, bubbleStart, bubbleCount, rainStart, rainCount };
 
   for (let i = 0; i < MAX_PARTICLES; i++) {
     let kind = 3, x = 0, y = 0, z = 0, size = 0.2, r = 0.5, g = 0.7, b = 0.3, vx = 0, vy = 0, vz = 0, life = rnd();
-    if (i < baseCount) {
-      const f = i / baseCount;
-      if (f < 0.16) {
-        kind = 0;
-        const useVolcano = i % 3 === 0;
-        const base = useVolcano ? VOLCANO_POS : FIRE_POS;
+    if (i < splashStart) {
+      const f = i / splashStart;
+      if (f < 0.14) {
+        kind = 0; // Fire flames (active when near Burning Forest / Caldera)
         const a = rr(0, TAU), rad = rr(0, 26);
-        x = base[0] + cos(a) * rad; z = base[1] + sin(a) * rad;
+        x = cos(a) * rad; z = sin(a) * rad;
         terrainAt(x, z, t);
-        y = t.h + 0.5; size = rr(1.1, 2.7); r = 1; g = 0.5; b = 0.1; vy = rr(1.8, 3.8);
-      } else if (f < 0.34) {
-        kind = 1;
-        const useVolcano = i % 3 === 0;
-        const base = useVolcano ? VOLCANO_POS : FIRE_POS;
+        y = t.h + 0.5; size = rr(1.1, 2.5); r = 1; g = 0.5; b = 0.1; vy = rr(1.8, 3.8);
+      } else if (f < 0.30) {
+        kind = 1; // Smoke / volcanic plume
         const a = rr(0, TAU), rad = rr(0, 34);
-        x = base[0] + cos(a) * rad; z = base[1] + sin(a) * rad;
+        x = cos(a) * rad; z = sin(a) * rad;
         terrainAt(x, z, t);
-        y = t.h + rr(2, 36); size = rr(3.5, 8.8); r = 0.9; g = y < 18 ? 0.6 : 0.1; b = 0;
+        y = t.h + rr(2, 32); size = rr(3.5, 8.2); r = 0.85; g = 0.45; b = 0.08;
         vx = rr(-0.6, -0.2); vy = rr(1.6, 3.2); vz = rr(-0.4, 0.2);
-      } else if (f < 0.50) {
-        kind = 2;
-        if (i % 2 === 0) {
-          x = FIRE_POS[0] + rr(-36, 36); z = FIRE_POS[1] + rr(-36, 36);
-          terrainAt(x, z, t);
-          y = t.h + rr(1, 24); size = rr(0.12, 0.28); r = 1.0; g = 0.42; b = 0.08; vy = rr(1.2, 2.8);
-        } else {
-          x = FORGOTTEN_POS[0] + rr(-60, 60); z = FORGOTTEN_POS[1] + rr(-60, 60);
-          terrainAt(x, z, t);
-          y = max(0.5, t.h + rr(0.6, 6.0)); size = rr(0.10, 0.22); r = 0.25; g = 0.98; b = 0.72; vy = rr(-0.15, 0.15);
-        }
-      } else if (f < 0.80) {
-        kind = 3;
-        x = rr(-240, 240); z = rr(-220, 220);
+      } else if (f < 0.48) {
+        kind = 2; // Bioluminescent fireflies / embers
+        x = rr(-75, 75); z = rr(-75, 75);
         terrainAt(x, z, t);
-        y = max(1, t.h + rr(1, 26)); size = rr(0.10, 0.20);
+        y = max(0.5, t.h + rr(0.6, 6.0)); size = rr(0.10, 0.22); r = 0.25; g = 0.98; b = 0.72; vy = rr(-0.15, 0.15);
+      } else if (f < 0.78) {
+        kind = 3; // Drifting leaves / petals
+        x = rr(-140, 140); z = rr(-140, 140);
+        terrainAt(x, z, t);
+        y = max(1, t.h + rr(1, 24)); size = rr(0.10, 0.20);
         const isPetal = i % 7 === 0;
         r = isPetal ? rr(0.82, 0.92) : rr(0.42, 0.78);
         g = isPetal ? rr(0.45, 0.66) : rr(0.60, 0.85);
@@ -1629,54 +1969,66 @@ function buildWorld() {
         vy = rr(-0.55, -0.15);
       } else {
         kind = 5; // Atmospheric pollen / Underwater marine snow
-        x = rr(-42, 42); y = rr(-8, 18); z = rr(-42, 42);
-        size = rr(0.06, 0.14); r = 0.90; g = 0.88; b = 0.68; vy = rr(-0.08, 0.12);
+        x = rr(-36, 36); y = rr(-8, 16); z = rr(-36, 36);
+        size = rr(0.055, 0.13); r = 0.90; g = 0.88; b = 0.72; vy = rr(-0.08, 0.12);
       }
+    } else if (i < baseCount) {
+      kind = 7; // Dynamic whale breach splash & spray droplets (inactive until spawned)
+      x = 0; y = -999; z = 0; size = 0; r = 0.88; g = 0.95; b = 1.0; life = 0;
     } else if (i < rainStart) {
       kind = 6; // Underwater rising hydrothermal & reef bubbles (Abyssal Garden)
       x = rr(-24, 24); y = rr(-14.0, -0.2); z = rr(-24, 24);
       size = rr(0.035, 0.085); r = 0.8; g = 0.94; b = 0.96; vy = rr(0.55, 1.35);
     } else {
-      kind = 4; // Marshall-Palmer rain / Polar blizzard snow streaks
+      kind = 4; // Rain / Polar blizzard snow streaks
       const layer = (i - rainStart) % 3;
       const span = layer === 0 ? 5.5 : layer === 1 ? 16 : 34;
       x = rr(-span, span); y = rr(-6, 26); z = rr(-span, span);
       size = layer === 0 ? rr(0.06, 0.10) : rr(0.08, 0.14);
       r = 0.78; g = 0.86; b = 0.92; vy = -21;
     }
-    particleState.push({ kind, bx: x, by: y, bz: z, x, y, z, vx, vy, vz, size, r, g, b, life, phase: rr(0, TAU) });
+    particleState.push({ kind, bx: x, by: y, bz: z, x, y, z, vx, vy, vz, size, r, g, b, life, maxLife: 1.8, phase: rr(0, TAU) });
   }
 
-  // Push idle ground wildlife cleanly outside trees/rocks on startup
-  const _anCol = {};
-  const _ikOut = {};
-  const _hazardOut = {};
-  for (let g = 0; g < wildlifeGroups.length; g++) {
-    const grp = wildlifeGroups[g];
-    for (let i = 0; i < grp.items.length; i++) {
-      const it = grp.items[i];
-      if (it.type === 'idle' && it.y < 4.0) {
-        resolveWorldCollision(it.x, it.y + 0.3, it.z, clamp(0.45 * it.scale, 0.2, 0.9), 0, 0, _anCol, 0.02);
-        if (_anCol.hit) {
-          it.x = it.prevX = _anCol.x;
-          it.z = it.prevZ = _anCol.z;
-          terrainAt(it.x, it.z, t);
-          it.y = it.prevY = max(-0.05, t.h);
-        }
-      }
+  let splashCursor = splashStart;
+  function spawnBreachSplash(wx, wy, wz, count = 48, power = 1.0) {
+    for (let k = 0; k < count; k++) {
+      const p = particleState[splashCursor];
+      splashCursor = splashStart + ((splashCursor - splashStart + 1) % max(1, splashCount));
+      const a = rr(0, TAU);
+      const radSpd = rr(1.5, 7.5) * power;
+      p.x = wx + cos(a) * rr(0.3, 2.2) * power;
+      p.y = max(0.05, wy);
+      p.z = wz + sin(a) * rr(0.3, 2.2) * power;
+      p.vx = cos(a) * radSpd;
+      p.vy = rr(4.5, 11.8) * power;
+      p.vz = sin(a) * radSpd;
+      p.size = rr(0.38, 1.35) * power;
+      p.r = 0.86; p.g = 0.95; p.b = 1.0;
+      p.life = 1.0;
+      p.maxLife = rr(1.1, 2.2);
     }
   }
 
+  const _anCol = {};
+  const _ikOutF = {};
+  const _ikOutH = {};
+  const _hazardOut = {};
+  const _tFront = {};
+  const _tRear = {};
+
   // ==========================================================================
-  // Fixed-Rate (120 Hz) Ecological Survival FSM + Canonical IK Locomotion
+  // Fixed-Rate (120 Hz) Ecological Survival FSM + Event-Driven Breaching + IK
   // ==========================================================================
   let simTime = 0;
+  let simTick = 0;
   let hazardAvoidanceEnabled = true;
-  let activeSurvivalEvent = 'Lions stalking Plains Zebras across the Serengeti Savanna';
+  let activeSurvivalEvent = 'Herds foraging and patrolling across living continents';
+  let marineEventCb = null;
 
-  // Quick lookup for predator-prey interactions
   const predatorGroups = wildlifeGroups.filter((g) => g.role === 'predator');
   const preyGroups = wildlifeGroups.filter((g) => g.role === 'herbivore' && g.items.length > 0);
+  const QUADRUPED_SPECIES = new Set([0, 1, 2, 3, 4, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 35, 36, 37, 38, 39]);
 
   const EMOTION_NAMES = [
     'Calm · Grazing & Breathing',
@@ -1686,29 +2038,227 @@ function buildWorld() {
     'Startled · Evading Threat'
   ];
 
+  function emitMarineEvent(type, x, y, z, power = 1.0) {
+    if (marineEventCb) marineEventCb({ type, x, y, z, power });
+  }
+
+  function triggerWhaleBreach(groupName = 'whales', itemIdx = 0) {
+    const grp = wildlifeGroups.find((g) => g.name === groupName && (g.speciesId === 31 || g.speciesId === 32));
+    if (!grp || grp.items.length === 0) return false;
+    const it = grp.items[clamp(itemIdx, 0, grp.items.length - 1)];
+    if (!it || it.playerControlled || !it.canBreach || it.inactiveInRegion) return false;
+    if (it.breachState !== 'cruise') return false;
+    terrainAt(it.x, it.z, t);
+    if (t.h > -4.5) return false; // Need deep water to breach safely
+    it.breachState = 'approach';
+    it.breachTimer = 0;
+    it.breachRollDir = (rnd() < 0.5 ? -1 : 1);
+    it.breachPeakVy = grp.speciesId === 31 ? rr(9.6, 12.2) : rr(10.2, 13.0);
+    it.emotion = 3;
+    activeSurvivalEvent = `${grp.label} initiating deep-water breach ascent`;
+    return true;
+  }
+
+  function pickOrganicGoal(it, grp) {
+    const st = {};
+    const rad = it.wanderRad || 28;
+    for (let a = 0; a < 8; a++) {
+      const ang = rr(0, TAU);
+      const r = rr(rad * 0.25, rad);
+      const gx = clamp(it.homeX + cos(ang) * r, -REGION_HALF + 20, REGION_HALF - 20);
+      const gz = clamp(it.homeZ + sin(ang) * r, -REGION_HALF + 20, REGION_HALF - 20);
+      terrainAt(gx, gz, st);
+      if (grp.domain === 'water') {
+        const minDepth = grp.speciesId === 31 ? -6.5 : grp.speciesId === 32 || grp.speciesId === 33 ? -4.5 : -1.8;
+        if (st.h < minDepth) {
+          it.goalX = gx;
+          it.goalZ = gz;
+          it.goalY = clamp(rr(max(st.h + 1.5, -18), grp.speciesId === 33 ? -1.8 : -1.2), -22, -0.5);
+          it.goalTimer = rr(5.5, 13.5);
+          return;
+        }
+      } else if (grp.domain === 'land') {
+        if (st.h > 0.25) {
+          it.goalX = gx;
+          it.goalZ = gz;
+          it.goalY = st.h;
+          it.goalTimer = rr(4.5, 11.5);
+          return;
+        }
+      } else {
+        it.goalX = gx;
+        it.goalZ = gz;
+        it.goalY = max(st.h + 6.0, it.baseY + rr(-4.5, 6.0));
+        it.goalTimer = rr(4.0, 9.5);
+        return;
+      }
+    }
+    it.goalX = it.homeX;
+    it.goalZ = it.homeZ;
+    it.goalTimer = rr(4.0, 8.0);
+  }
+
+  function stepWhaleBreachFSM(it, grp, dt) {
+    terrainAt(it.x, it.z, t);
+    const seabed = t.h;
+    const isHumpback = grp.speciesId === 31;
+    const cruiseDepth = isHumpback ? clamp(seabed * 0.45, -14.0, -4.8) : clamp(seabed * 0.35, -9.5, -3.2);
+    const [fx, fz] = yawToForward(it.yaw);
+    it.breachTimer += dt;
+
+    if (it.breachState === 'approach') {
+      // Dive slightly deeper & align forward in deep water
+      const targetY = max(seabed + 2.8, isHumpback ? -11.5 : -8.5);
+      it.y = lerp(it.y, targetY, min(1, dt * 1.4));
+      it.curSpeed = lerp(it.curSpeed, it.cruiseSpeed * 1.25, min(1, dt * 2.0));
+      it.x += fx * it.curSpeed * dt;
+      it.z += fz * it.curSpeed * dt;
+      it.pitch = lerp(it.pitch, -0.18, min(1, dt * 2.2));
+      it.roll = lerp(it.roll, 0, min(1, dt * 2.5));
+      if (it.breachTimer > 1.8 || it.y <= targetY + 0.6) {
+        it.breachState = 'pitch_up';
+        it.breachTimer = 0;
+      }
+    } else if (it.breachState === 'pitch_up') {
+      // Angle snout strongly upward (~46 deg)
+      it.curSpeed = lerp(it.curSpeed, it.maxSpeed * 0.9, min(1, dt * 2.5));
+      it.pitch = lerp(it.pitch, 0.78, min(1, dt * 2.8));
+      it.x += fx * it.curSpeed * cos(it.pitch) * dt;
+      it.z += fz * it.curSpeed * cos(it.pitch) * dt;
+      it.y += it.curSpeed * sin(it.pitch) * dt;
+      if (it.breachTimer > 0.95) {
+        it.breachState = 'accelerate';
+        it.breachTimer = 0;
+      }
+    } else if (it.breachState === 'accelerate') {
+      // Powerful fluke-driven surge toward ocean surface
+      it.curSpeed = lerp(it.curSpeed, it.maxSpeed * 1.45, min(1, dt * 4.0));
+      it.pitch = lerp(it.pitch, 0.92, min(1, dt * 3.0));
+      it.x += fx * it.curSpeed * cos(it.pitch) * dt;
+      it.z += fz * it.curSpeed * cos(it.pitch) * dt;
+      it.y += it.curSpeed * sin(it.pitch) * dt;
+      if (it.y >= -0.35) {
+        it.breachState = 'launch';
+        it.breachTimer = 0;
+        it.vy = it.breachPeakVy || (isHumpback ? 10.6 : 11.4);
+        it.vx = fx * it.curSpeed * 0.62;
+        it.vz = fz * it.curSpeed * 0.62;
+        spawnBreachSplash(it.x, 0.12, it.z, isHumpback ? 42 : 30, isHumpback ? 1.15 : 0.85);
+        emitMarineEvent('breach_launch', it.x, 0.2, it.z, isHumpback ? 1.0 : 0.75);
+        activeSurvivalEvent = `${grp.label} breaching clear of the ocean surface!`;
+      }
+    } else if (it.breachState === 'launch') {
+      // Brief surface exit transition into ballistic arc
+      it.vy -= 9.81 * dt;
+      it.x += it.vx * dt;
+      it.y += it.vy * dt;
+      it.z += it.vz * dt;
+      it.pitch = clamp(atan2(it.vy, max(1.0, hypot(it.vx, it.vz))), -1.1, 1.15);
+      it.roll += it.breachRollDir * 1.15 * dt;
+      if (it.breachTimer > 0.22) {
+        it.breachState = 'ballistic';
+        it.breachTimer = 0;
+      }
+    } else if (it.breachState === 'ballistic') {
+      // True ballistic free-fall gravity & dramatic mid-air twist/roll
+      it.vy -= 9.81 * dt;
+      it.x += it.vx * dt;
+      it.y += it.vy * dt;
+      it.z += it.vz * dt;
+      it.pitch = clamp(atan2(it.vy, max(1.0, hypot(it.vx, it.vz))), -1.15, 1.15);
+      it.roll = clamp(it.roll + it.breachRollDir * 1.65 * dt, -2.35, 2.35);
+      if (it.y <= 0.15 && it.vy < 0) {
+        it.breachState = 'impact';
+        it.breachTimer = 0;
+        const impactPower = clamp(abs(it.vy) / 9.5, 0.65, 1.65) * (isHumpback ? 1.25 : 0.9);
+        spawnBreachSplash(it.x, 0.15, it.z, isHumpback ? 68 : 48, impactPower);
+        emitMarineEvent('breach_impact', it.x, 0.0, it.z, impactPower);
+      }
+    } else if (it.breachState === 'impact') {
+      // Hydrodynamic splashdown deceleration
+      it.vx *= max(0, 1 - dt * 3.2);
+      it.vz *= max(0, 1 - dt * 3.2);
+      it.vy = lerp(it.vy, -2.6, min(1, dt * 4.5));
+      it.x += it.vx * dt;
+      it.y = max(seabed + 1.8, it.y + it.vy * dt);
+      it.z += it.vz * dt;
+      it.pitch = lerp(it.pitch, -0.42, min(1, dt * 3.0));
+      it.roll = lerp(it.roll, it.breachRollDir * 0.9, min(1, dt * 2.5));
+      if (it.breachTimer > 0.85) {
+        it.breachState = 'recovery';
+        it.breachTimer = 0;
+      }
+    } else if (it.breachState === 'recovery') {
+      // Righting body upright underwater
+      it.curSpeed = lerp(it.curSpeed, it.cruiseSpeed * 0.85, min(1, dt * 2.0));
+      it.x += fx * it.curSpeed * dt;
+      it.z += fz * it.curSpeed * dt;
+      it.y = lerp(it.y, max(seabed + 2.2, cruiseDepth), min(1, dt * 1.1));
+      it.pitch = lerp(it.pitch, -0.1, min(1, dt * 2.4));
+      it.roll = lerp(it.roll, 0, min(1, dt * 2.4));
+      if (it.breachTimer > 2.2) {
+        it.breachState = 'dive_return';
+        it.breachTimer = 0;
+      }
+    } else if (it.breachState === 'dive_return') {
+      it.curSpeed = lerp(it.curSpeed, it.cruiseSpeed, min(1, dt * 1.8));
+      it.x += fx * it.curSpeed * dt;
+      it.z += fz * it.curSpeed * dt;
+      it.y = lerp(it.y, cruiseDepth, min(1, dt * 1.6));
+      it.pitch = lerp(it.pitch, 0, min(1, dt * 2.5));
+      it.roll = lerp(it.roll, 0, min(1, dt * 3.0));
+      if (it.breachTimer > 2.4 || abs(it.y - cruiseDepth) < 0.6) {
+        it.breachState = 'cruise';
+        it.breachTimer = 0;
+        it.breachCooldown = isHumpback ? rr(28.0, 56.0) : rr(22.0, 44.0);
+        it.emotion = 0;
+      }
+    }
+    it.phase = (it.phase + dt * (it.breachState === 'accelerate' ? 4.2 : 1.6)) % TAU;
+  }
+
   function stepSim(dt, camX, camY, camZ, rainIntensity, windStrength = 0.45) {
     simTime += dt;
+    simTick++;
 
-    // Periodic predator-prey awareness & hunt trigger (throttled across frames)
-    const scanIdx = floor(simTime * 12) % max(1, predatorGroups.length);
+    // Real nearest-prey scanning across ALL prey individuals (never hardcoded items[0]!)
+    const scanIdx = simTick % max(1, predatorGroups.length);
     const predGrp = predatorGroups[scanIdx];
     if (predGrp && predGrp.items.length > 0) {
-      const pItem = predGrp.items[floor(simTime * 3) % predGrp.items.length];
-      if (!pItem.playerControlled) {
+      const pItem = predGrp.items[(simTick >> 3) % predGrp.items.length];
+      if (!pItem.playerControlled && !pItem.inactiveInRegion) {
+        let bestPrey = null, bestPreyGrp = null, bestD = 75.0;
         for (let pg = 0; pg < preyGroups.length; pg++) {
           const preyGrp = preyGroups[pg];
           if (preyGrp.domain !== predGrp.domain && predGrp.name !== 'orcas') continue;
-          const prItem = preyGrp.items[0];
-          const distPP = hypot(pItem.x - prItem.x, pItem.z - prItem.z);
-          if (distPP < 65) {
-            pItem.state = distPP < 26 ? 'chase' : 'stalk';
-            pItem.emotion = 3;
-            prItem.state = 'flee';
-            prItem.emotion = 4;
-            prItem.fleeTimer = 3.5;
-            activeSurvivalEvent = `${predGrp.label} ${pItem.state === 'chase' ? 'hunting' : 'stalking'} ${preyGrp.label}`;
-            break;
+          const pItems = preyGrp.items;
+          for (let pi = 0; pi < pItems.length; pi++) {
+            const pr = pItems[pi];
+            if (pr.inactiveInRegion) continue;
+            const d = hypot(pItem.x - pr.x, pItem.z - pr.z);
+            if (d < bestD) {
+              bestD = d;
+              bestPrey = pr;
+              bestPreyGrp = preyGrp;
+            }
           }
+        }
+        if (bestPrey && bestPreyGrp) {
+          pItem.state = bestD < 28 ? 'chase' : 'stalk';
+          pItem.emotion = 3;
+          pItem.goalX = bestPrey.x;
+          pItem.goalZ = bestPrey.z;
+          pItem.goalTimer = 2.0;
+          const awayX = bestPrey.x - pItem.x;
+          const awayZ = bestPrey.z - pItem.z;
+          const awayLen = max(0.01, hypot(awayX, awayZ));
+          bestPrey.state = 'flee';
+          bestPrey.emotion = 4;
+          bestPrey.fleeTimer = 3.8;
+          bestPrey.goalX = clamp(bestPrey.x + (awayX / awayLen) * 38, -REGION_HALF + 20, REGION_HALF - 20);
+          bestPrey.goalZ = clamp(bestPrey.z + (awayZ / awayLen) * 38, -REGION_HALF + 20, REGION_HALF - 20);
+          bestPrey.goalTimer = 3.2;
+          activeSurvivalEvent = `${predGrp.label} ${pItem.state === 'chase' ? 'pursuing' : 'stalking'} ${bestPreyGrp.label}`;
         }
       }
     }
@@ -1717,6 +2267,7 @@ function buildWorld() {
       const grp = wildlifeGroups[g];
       const items = grp.items;
       const isFishSchool = grp.name === 'fish';
+      const isQuadruped = QUADRUPED_SPECIES.has(grp.speciesId);
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
@@ -1724,27 +2275,39 @@ function buildWorld() {
         it.prevY = it.y;
         it.prevZ = it.z;
         it.prevYaw = it.yaw;
+        it.prevPitch = it.pitch;
+        it.prevRoll = it.roll;
+
+        if (it.inactiveInRegion) continue;
 
         if (it.roarTimer > 0) {
           it.roarTimer = max(0, it.roarTimer - dt);
           it.emotion = 3;
         }
-
-        // Skip autonomous steering if currently embodied & controlled by the player!
         if (it.playerControlled) continue;
 
-        const dCam = hypot(wrapDelta(it.x, camX), wrapDelta(it.z, camZ));
-        const dFire = hypot(wrapDelta(it.x, FIRE_POS[0]), wrapDelta(it.z, FIRE_POS[1]));
+        // Distance-LOD AI throttling: far animals update steering every 4th tick while integrating smoothly
+        const dCam = hypot(it.x - camX, it.z - camZ);
+        const aiUpdate = (dCam < 95) || (((simTick + it.aiTickOffset) & 3) === 0);
 
-        // Dynamic emotional & behavioral expression state machine
+        // Ambient marine vocalization / surfacing breath spatial audio triggers
+        if (grp.domain === 'water' && (grp.speciesId === 31 || grp.speciesId === 32) && dCam < 220) {
+          it.vocalTimer = (it.vocalTimer ?? rr(6, 18)) - dt;
+          if (it.vocalTimer <= 0) {
+            it.vocalTimer = grp.speciesId === 31 ? rr(12, 26) : rr(8, 19);
+            emitMarineEvent(grp.speciesId === 31 ? 'whale_song' : 'orca_call', it.x, it.y, it.z, 1.0);
+          }
+        }
+
+        // Dynamic emotional state machine
         it.emotionTimer -= dt;
-        if (it.roarTimer <= 0) {
-          if (it.state === 'flee' || dFire < 35) {
+        if (it.roarTimer <= 0 && aiUpdate) {
+          if (it.state === 'flee') {
             it.emotion = 4;
           } else if (it.state === 'chase' || it.state === 'stalk') {
             it.emotion = 3;
           } else if (dCam < it.flightDist * 1.45) {
-            it.emotion = (i % 2 === 0) ? 2 : 1; // Alert scan or Curious head-tilt toward observer
+            it.emotion = (i % 2 === 0) ? 2 : 1;
           } else if (it.emotionTimer <= 0) {
             it.emotionTimer = rr(3.5, 9.5);
             const r = rnd();
@@ -1756,72 +2319,156 @@ function buildWorld() {
           }
         }
 
-        if (it.type === 'walkCircle') {
-          let spd = it.speed;
+        if (it.type === 'walk') {
           if (dCam < it.flightDist && it.flightDist >= 10 && grp.role !== 'predator') {
             it.state = 'flee';
             it.emotion = 4;
-            it.fleeTimer = 2.0;
+            it.fleeTimer = 2.4;
+            const ax = it.x - camX, az = it.z - camZ;
+            const al = max(0.01, hypot(ax, az));
+            it.goalX = clamp(it.x + (ax / al) * 28, -REGION_HALF + 18, REGION_HALF - 18);
+            it.goalZ = clamp(it.z + (az / al) * 28, -REGION_HALF + 18, REGION_HALF - 18);
           } else if (it.fleeTimer > 0) {
             it.fleeTimer -= dt;
             if (it.fleeTimer <= 0) it.state = 'forage';
           }
-          if (it.state === 'flee' || it.state === 'chase' || dFire < 35) spd *= 2.25;
-          else if (it.state === 'stalk') spd *= 0.55;
-          else if (rainIntensity > 0.65) spd *= 0.68;
 
-          it.ang += spd * dt;
-          let tx = it.cx + cos(it.ang) * it.rad;
-          let tz = it.cz + sin(it.ang) * it.rad;
+          if (it.restTimer > 0 && it.state !== 'flee' && it.state !== 'chase') {
+            it.restTimer -= dt;
+            it.curSpeed = lerp(it.curSpeed, 0.0, min(1, dt * 6.0));
+          } else {
+            it.goalTimer -= dt;
+            const dGoal = hypot(it.goalX - it.x, it.goalZ - it.z);
+            if (aiUpdate && (it.goalTimer <= 0 || dGoal < 2.2)) {
+              if (it.state !== 'flee' && it.state !== 'chase' && rnd() < 0.34) {
+                it.restTimer = rr(2.2, 6.2); // Natural grazing / resting pause
+                it.state = 'graze';
+              } else {
+                it.state = 'forage';
+                pickOrganicGoal(it, grp);
+              }
+            }
 
-          // Hazard avoidance steering (deep water, steep cliffs, fire, volcanic lava)
-          if (hazardAvoidanceEnabled) {
-            evaluateHazardAt(tx, tz, 0, _hazardOut);
-            if (_hazardOut.hazard > 0.18) {
-              const pushStr = _hazardOut.hazard * 2.2;
-              it.cx = clamp(it.cx - _hazardOut.gradX * pushStr * dt, -WORLD_HALF + 18, WORLD_HALF - 18);
-              it.cz = clamp(it.cz - _hazardOut.gradZ * pushStr * dt, -WORLD_HALF + 18, WORLD_HALF - 18);
-              tx -= _hazardOut.gradX * pushStr * 0.35;
-              tz -= _hazardOut.gradZ * pushStr * 0.35;
+            let wantSpd = it.cruiseSpeed;
+            if (it.state === 'flee' || it.state === 'chase') wantSpd = it.maxSpeed;
+            else if (it.state === 'stalk') wantSpd = it.cruiseSpeed * 0.52;
+            else if (rainIntensity > 0.65) wantSpd *= 0.72;
+            it.curSpeed = lerp(it.curSpeed, wantSpd, min(1, dt * 4.0));
+          }
+
+          let steerX = it.goalX - it.x;
+          let steerZ = it.goalZ - it.z;
+          const sLen = hypot(steerX, steerZ);
+          if (sLen > 0.05) { steerX /= sLen; steerZ /= sLen; }
+
+          if (hazardAvoidanceEnabled && aiUpdate) {
+            evaluateHazardAt(it.x + steerX * 4.0, it.z + steerZ * 4.0, 0, _hazardOut);
+            if (_hazardOut.hazard > 0.16) {
+              steerX -= _hazardOut.gradX * _hazardOut.hazard * 2.8;
+              steerZ -= _hazardOut.gradZ * _hazardOut.hazard * 2.8;
+              if (_hazardOut.hazard > 0.55) pickOrganicGoal(it, grp);
             }
           }
 
-          terrainAt(tx, tz, t);
+          const prevYaw = it.yaw;
+          if (it.curSpeed > 0.08 && (abs(steerX) + abs(steerZ)) > 0.01) {
+            const targetYaw = velocityToYaw(steerX, steerZ, it.yaw);
+            it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * it.turnRate * 2.2));
+          }
+          const yawDelta = normAngle(it.yaw - prevYaw);
+          it.roll = lerp(it.roll, clamp(-yawDelta * 8.5, -0.16, 0.16), min(1, dt * 6.0));
+
+          const [fx, fz] = yawToForward(it.yaw);
+          const nx = clamp(it.x + fx * it.curSpeed * dt, -REGION_HALF + 12, REGION_HALF - 12);
+          const nz = clamp(it.z + fz * it.curSpeed * dt, -REGION_HALF + 12, REGION_HALF - 12);
+          terrainAt(nx, nz, t);
           const colR = clamp(0.45 * it.scale, 0.18, 0.95);
-          resolveWorldCollision(tx, max(-0.1, t.h) + 0.25, tz, colR, 0, 0, _anCol, 0.0);
+          resolveWorldCollision(nx, max(-0.1, t.h) + 0.25, nz, colR, 0, 0, _anCol, 0.0);
           it.x = _anCol.x;
           it.z = _anCol.z;
           terrainAt(it.x, it.z, t);
+          it.y = t.h;
 
-          // Analytical 2-Bone IK Foot-Pinning & Zero-Slide Stride Coupling (v = f_stride * L_stride)
           const mvx = it.x - it.prevX, mvz = it.z - it.prevZ;
           const stepDist = hypot(mvx, mvz);
           it.vx = mvx / max(1e-5, dt);
           it.vz = mvz / max(1e-5, dt);
           it.phase = (it.phase + (stepDist / max(0.18, it.strideLen)) * 1.15) % TAU;
 
-          // Canonical heading: local +Z forward rotates to world (-sin(yaw), cos(yaw))
-          const targetYaw = (stepDist > 1e-5) ? velocityToYaw(mvx, mvz, it.yaw) : normAngle(it.ang);
-          it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * 24.0));
+          // Real CPU 2-Bone Analytical IK & Terrain Slope Alignment
+          const halfBody = clamp(0.55 * it.scale, 0.22, 1.85);
+          terrainAt(it.x + fx * halfBody, it.z + fz * halfBody, _tFront);
+          terrainAt(it.x - fx * halfBody, it.z - fz * halfBody, _tRear);
+          const slopePitch = clamp(atan2(_tFront.h - _tRear.h, max(0.25, halfBody * 2.0)), -0.45, 0.45);
+          it.pitch = lerp(it.pitch, slopePitch, min(1, dt * 10.0));
 
-          const [fx, fz] = yawToForward(it.yaw);
-          const legLen = 0.42 * it.scale;
-          solveTwoBoneIK(it.x, t.h + legLen * 1.85, it.z, it.x, t.h, it.z, fx, 0, fz, legLen, legLen, _ikOut);
-          it.y = t.h;
-        } else if (it.type === 'swimCircle') {
-          let spd = it.speed;
-          if (dCam < it.flightDist) spd *= 1.65;
-          it.ang += spd * dt;
-          let tx = it.cx + cos(it.ang) * it.rad;
-          let tz = it.cz + sin(it.ang) * it.rad;
+          if (isQuadruped) {
+            const legSeg = 0.38 * it.scale;
+            const speedNorm = clamp(it.curSpeed / max(0.4, it.maxSpeed), 0, 1);
+            const swingF = max(0, sin(it.phase)) * legSeg * 0.62 * speedNorm;
+            const swingH = max(0, sin(it.phase + 2.35)) * legSeg * 0.62 * speedNorm;
+            const hipH = legSeg * 1.92;
+            const footFY = _tFront.h + swingF;
+            const footHY = _tRear.h + swingH;
+            solveTwoBoneIK(
+              it.x + fx * halfBody, it.y + hipH + sin(it.pitch) * halfBody, it.z + fz * halfBody,
+              it.x + fx * halfBody, footFY, it.z + fz * halfBody,
+              fx, 0, fz, legSeg, legSeg, _ikOutF
+            );
+            solveTwoBoneIK(
+              it.x - fx * halfBody, it.y + hipH - sin(it.pitch) * halfBody, it.z - fz * halfBody,
+              it.x - fx * halfBody, footHY, it.z - fz * halfBody,
+              -fx, 0, -fz, legSeg, legSeg, _ikOutH
+            );
+            // Convert actual 2-bone IK reach compression into normalized joint bend [0..1]
+            const reachF = clamp(abs((it.y + hipH + sin(it.pitch) * halfBody) - footFY) / max(0.01, legSeg * 2.0), 0.25, 1.0);
+            const reachH = clamp(abs((it.y + hipH - sin(it.pitch) * halfBody) - footHY) / max(0.01, legSeg * 2.0), 0.25, 1.0);
+            it.ikFrontFlex = clamp(Math.acos(reachF) / 1.25, 0.04, 1.0);
+            it.ikHindFlex = clamp(Math.acos(reachH) / 1.25, 0.04, 1.0);
+          } else {
+            it.ikFrontFlex = 0.08;
+            it.ikHindFlex = 0.08;
+          }
+        } else if (it.type === 'swim') {
+          // Event-Driven Whale & Orca Breaching FSM (STRICTLY never sharks!)
+          if (it.canBreach && (grp.speciesId === 31 || grp.speciesId === 32)) {
+            if (it.breachState !== 'cruise') {
+              stepWhaleBreachFSM(it, grp, dt);
+              continue;
+            }
+            it.breachCooldown = max(0, (it.breachCooldown ?? 18) - dt);
+            if (it.breachCooldown <= 0 && dCam < 260 && aiUpdate) {
+              terrainAt(it.x, it.z, t);
+              if (t.h < -5.2 && rnd() < 0.06) {
+                triggerWhaleBreach(grp.name, i);
+                stepWhaleBreachFSM(it, grp, dt);
+                continue;
+              } else {
+                it.breachCooldown = rr(6.0, 14.0);
+              }
+            }
+          }
 
-          // 3D Boids Schooling for Reef & River Fish Cohorts (Separation + Alignment + Cohesion + Depth-Keeping)
-          if (isFishSchool) {
+          it.goalTimer -= dt;
+          const dGoal = hypot(it.goalX - it.x, it.goalZ - it.z);
+          if (aiUpdate && (it.goalTimer <= 0 || dGoal < 3.5)) {
+            pickOrganicGoal(it, grp);
+          }
+
+          let wantSpd = it.cruiseSpeed * (dCam < it.flightDist ? 1.55 : 1.0);
+          if (it.state === 'chase' || it.state === 'flee') wantSpd = it.maxSpeed;
+          it.curSpeed = lerp(it.curSpeed, wantSpd, min(1, dt * 3.0));
+
+          let steerX = it.goalX - it.x;
+          let steerZ = it.goalZ - it.z;
+          const sLen = hypot(steerX, steerZ);
+          if (sLen > 0.05) { steerX /= sLen; steerZ /= sLen; }
+
+          // 3D Boids schooling for fish
+          if (isFishSchool && aiUpdate) {
             const schoolStart = (i / 14 | 0) * 14;
             const schoolEnd = min(items.length, schoolStart + 14);
-            let sepX = 0, sepY = 0, sepZ = 0;
-            let cohX = 0, cohY = 0, cohZ = 0;
-            let aliSpd = 0, neighbors = 0;
+            let sepX = 0, sepY = 0, sepZ = 0, cohX = 0, cohY = 0, cohZ = 0, neighbors = 0;
             for (let j = schoolStart; j < schoolEnd; j++) {
               if (j === i) continue;
               const nb = items[j];
@@ -1831,91 +2478,112 @@ function buildWorld() {
                 const d = sqrt(d2);
                 if (d < 1.35) {
                   const rep = (1.35 - d) / d;
-                  sepX += dx * rep;
-                  sepY += dy * rep;
-                  sepZ += dz * rep;
+                  sepX += dx * rep; sepY += dy * rep; sepZ += dz * rep;
                 }
-                cohX += nb.x;
-                cohY += nb.y;
-                cohZ += nb.z;
-                aliSpd += nb.speed;
+                cohX += nb.x; cohY += nb.y; cohZ += nb.z;
                 neighbors++;
               }
             }
             if (neighbors > 0) {
               const invN = 1 / neighbors;
-              const toCenterX = (cohX * invN - it.x) * 0.22;
-              const toCenterY = (cohY * invN - it.y) * 0.25;
-              const toCenterZ = (cohZ * invN - it.z) * 0.22;
-              it.boidsX = clamp(lerp(it.boidsX, sepX * 0.85 + toCenterX, dt * 4.5), -2.4, 2.4);
-              it.boidsY = clamp(lerp(it.boidsY, sepY * 0.45 + toCenterY, dt * 3.5), -0.85, 0.85);
-              it.boidsZ = clamp(lerp(it.boidsZ, sepZ * 0.85 + toCenterZ, dt * 4.5), -2.4, 2.4);
-              it.speed = lerp(it.speed, aliSpd * invN, dt * 1.5);
-            }
-            tx += it.boidsX;
-            tz += it.boidsZ;
-            const baseDepth = it.baseY ?? (it.baseY = it.y);
-            it.y = clamp(baseDepth + it.boidsY + sin(simTime * 1.4 + it.phase) * 0.14, -18.0, -0.22);
-          }
-
-          // Marine shallow-water stranding avoidance
-          if (hazardAvoidanceEnabled) {
-            evaluateHazardAt(tx, tz, 1, _hazardOut);
-            if (_hazardOut.hazard > 0.25) {
-              const pushStr = _hazardOut.hazard * 1.8;
-              tx -= _hazardOut.gradX * pushStr * 0.35;
-              tz -= _hazardOut.gradZ * pushStr * 0.35;
+              it.boidsX = clamp(lerp(it.boidsX, sepX * 0.9 + (cohX * invN - it.x) * 0.25, dt * 4.0), -2.2, 2.2);
+              it.boidsY = clamp(lerp(it.boidsY, sepY * 0.45 + (cohY * invN - it.y) * 0.25, dt * 3.0), -0.8, 0.8);
+              it.boidsZ = clamp(lerp(it.boidsZ, sepZ * 0.9 + (cohZ * invN - it.z) * 0.25, dt * 4.0), -2.2, 2.2);
+              steerX += it.boidsX * 0.45;
+              steerZ += it.boidsZ * 0.45;
             }
           }
 
-          const colR = clamp(0.42 * it.scale, 0.16, 0.85);
-          resolveWorldCollision(tx, it.y + 0.15, tz, colR, 0, 0, _anCol, -22.0);
+          // Marine shallow-water stranding avoidance (marine domain = 1 ignores fire/lava!)
+          if (hazardAvoidanceEnabled && aiUpdate) {
+            evaluateHazardAt(it.x + steerX * 6.0, it.z + steerZ * 6.0, 1, _hazardOut);
+            if (_hazardOut.hazard > 0.20) {
+              steerX -= _hazardOut.gradX * _hazardOut.hazard * 3.0;
+              steerZ -= _hazardOut.gradZ * _hazardOut.hazard * 3.0;
+            }
+          }
+
+          const prevYaw = it.yaw;
+          if ((abs(steerX) + abs(steerZ)) > 0.01) {
+            const targetYaw = velocityToYaw(steerX, steerZ, it.yaw);
+            it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * it.turnRate * 2.0));
+          }
+          const yawDelta = normAngle(it.yaw - prevYaw);
+          it.roll = lerp(it.roll, clamp(-yawDelta * 9.5, -0.32, 0.32), min(1, dt * 4.5));
+
+          const [fx, fz] = yawToForward(it.yaw);
+          const nx = clamp(it.x + fx * it.curSpeed * dt, -REGION_HALF + 14, REGION_HALF - 14);
+          const nz = clamp(it.z + fz * it.curSpeed * dt, -REGION_HALF + 14, REGION_HALF - 14);
+          resolveWorldCollision(nx, it.y + 0.15, nz, clamp(0.42 * it.scale, 0.16, 0.85), 0, 0, _anCol, -24.0);
           it.x = _anCol.x;
           it.z = _anCol.z;
-          // Periodic surface breaching for Humpback Whales & Orcas
-          if (grp.speciesId === 31 || grp.speciesId === 32) {
-            const baseDepth = it.baseY ?? (it.baseY = it.y);
-            const breachWave = sin(simTime * 0.45 + it.phase);
-            it.y = breachWave > 0.82 ? lerp(baseDepth, 1.4, (breachWave - 0.82) / 0.18) : baseDepth + sin(simTime * 0.8 + it.phase) * 0.6;
+
+          terrainAt(it.x, it.z, t);
+          const seabed = t.h;
+          const targetDepth = it.goalY + sin(simTime * 0.65 + it.phase) * 0.45 + (isFishSchool ? it.boidsY : 0);
+          // STRICT SHARK UNDERWATER CLAMP: Great White Sharks NEVER breach or rise above -1.25 m!
+          const maxSwimY = grp.speciesId === 33 ? -1.25 : grp.speciesId === 34 ? -0.9 : -0.35;
+          const minSwimY = min(maxSwimY - 0.2, max(-24.0, seabed + (grp.speciesId === 31 ? 2.2 : 0.9)));
+          const prevY = it.y;
+          it.y = lerp(it.y, clamp(targetDepth, minSwimY, maxSwimY), min(1, dt * 1.4));
+          it.y = clamp(it.y, minSwimY, maxSwimY);
+          const dy = it.y - prevY;
+          it.pitch = lerp(it.pitch, clamp(atan2(dy / max(1e-4, dt), max(0.6, it.curSpeed)), -0.45, 0.45), min(1, dt * 4.0));
+
+          // Periodic calm whale surfacing breath (distinct from breaching!)
+          if ((grp.speciesId === 31 || grp.speciesId === 32) && prevY < -0.65 && it.y >= -0.65) {
+            emitMarineEvent('surfacing_breath', it.x, 0.1, it.z, 0.8);
           }
+
           const mvx = it.x - it.prevX, mvz = it.z - it.prevZ;
           const stepDist = hypot(mvx, mvz);
           it.vx = mvx / max(1e-5, dt);
           it.vz = mvz / max(1e-5, dt);
-          it.phase = (it.phase + (stepDist / max(0.25, it.strideLen)) * 0.95) % TAU;
-          const targetYaw = (stepDist > 1e-5) ? velocityToYaw(mvx, mvz, it.yaw) : normAngle(it.ang);
-          it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * 24.0));
-        } else if (it.type === 'flyCircle') {
-          const spd = it.speed * (rainIntensity > 0.7 ? 0.72 : 1.0);
-          it.ang += spd * dt;
-          const tx = it.cx + cos(it.ang) * it.rad;
-          const tz = it.cz + sin(it.ang) * it.rad;
-          const baseAlt = it.baseY ?? (it.baseY = it.y);
-          const ty = baseAlt + sin(simTime * 1.15 + it.phase) * 0.9 + sin(simTime * 2.67 + it.phase * 1.7) * 0.35;
-          resolveWorldCollision(tx, ty, tz, 0.45, 0, 0, _anCol, 0.35);
+          it.phase = (it.phase + (stepDist / max(0.30, it.strideLen)) * 0.95) % TAU;
+        } else if (it.type === 'fly') {
+          it.goalTimer -= dt;
+          const dGoal = hypot(it.goalX - it.x, it.goalZ - it.z);
+          if (aiUpdate && (it.goalTimer <= 0 || dGoal < 4.0)) {
+            pickOrganicGoal(it, grp);
+          }
+          const wantSpd = it.cruiseSpeed * (rainIntensity > 0.7 ? 0.75 : 1.0);
+          it.curSpeed = lerp(it.curSpeed, wantSpd, min(1, dt * 3.0));
+          const steerX = it.goalX - it.x, steerZ = it.goalZ - it.z;
+          const prevYaw = it.yaw;
+          if (hypot(steerX, steerZ) > 0.05) {
+            const targetYaw = velocityToYaw(steerX, steerZ, it.yaw);
+            it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * it.turnRate * 2.4));
+          }
+          const yawDelta = normAngle(it.yaw - prevYaw);
+          it.roll = lerp(it.roll, clamp(-yawDelta * 14.0, -0.55, 0.55), min(1, dt * 6.0));
+          const [fx, fz] = yawToForward(it.yaw);
+          const nx = clamp(it.x + fx * it.curSpeed * dt, -REGION_HALF + 16, REGION_HALF - 16);
+          const nz = clamp(it.z + fz * it.curSpeed * dt, -REGION_HALF + 16, REGION_HALF - 16);
+          const ty = it.goalY + sin(simTime * 1.1 + it.phase) * 0.95;
+          const prevY = it.y;
+          resolveWorldCollision(nx, lerp(it.y, ty, min(1, dt * 1.5)), nz, 0.45, 0, 0, _anCol, 0.35);
           it.x = _anCol.x;
           it.y = _anCol.y;
           it.z = _anCol.z;
-          const mvx = it.x - it.prevX, mvz = it.z - it.prevZ;
-          const stepDist = hypot(mvx, mvz);
-          it.vx = mvx / max(1e-5, dt);
-          it.vz = mvz / max(1e-5, dt);
-          const targetYaw = (stepDist > 1e-5) ? velocityToYaw(mvx, mvz, it.yaw) : normAngle(it.ang);
-          it.yaw = lerpAngle(it.yaw, targetYaw, min(1.0, dt * 24.0));
+          it.pitch = lerp(it.pitch, clamp(atan2((it.y - prevY) / max(1e-4, dt), max(1.0, it.curSpeed)), -0.35, 0.35), min(1, dt * 4.5));
+          it.vx = (it.x - it.prevX) / max(1e-5, dt);
+          it.vz = (it.z - it.prevZ) / max(1e-5, dt);
         }
       }
     }
 
-    const doRain = rainIntensity >= 0.02 && camY >= 0;
-    const doBubbles = camY < 0.8 || camZ > 175;
+    const doRain = rainIntensity >= 0.02 && camY >= 0 && camY < 4500;
+    const doBubbles = camY < 0.8;
+    const hasFireBiome = activeRegionBiomeId === 9 || activeRegionBiomeId === 10;
 
-    for (let i = 0; i < baseCount; i++) {
+    for (let i = 0; i < splashStart; i++) {
       const p = particleState[i];
       if (p.kind === 5) {
         p.x = camX + p.bx + sin(simTime * 0.55 + p.phase) * 2.2;
         p.y = camY + p.by + cos(simTime * 0.42 + p.phase) * 1.4;
         p.z = camZ + p.bz + sin(simTime * 0.48 + p.phase * 1.3) * 2.2;
       } else if (p.kind === 0 || p.kind === 1) {
+        if (!hasFireBiome) { p.y = -999; continue; }
         p.life = (p.life + dt * (p.kind === 0 ? 0.85 : 0.14)) % 1;
         const hMax = p.kind === 0 ? 5.5 : 46.0;
         p.x = p.bx + sin(simTime * 1.8 + p.phase) * (p.kind === 0 ? 0.5 : p.life * 6.5) - (p.kind === 1 ? p.life * 8 * windStrength : 0);
@@ -1931,6 +2599,20 @@ function buildWorld() {
         p.x = p.bx + sin(simTime * 0.9 + p.phase) * 2.5 + sin(simTime * 2.3 + p.phase) * 0.45 * windStrength;
         p.y = p.by + (1 - p.life) * 14 - 4;
         p.z = p.bz + cos(simTime * 0.8 + p.phase) * 2.5;
+      }
+    }
+    // Dynamic ballistic whale breach splash droplets (kind = 7)
+    for (let i = splashStart; i < baseCount; i++) {
+      const p = particleState[i];
+      if (p.life > 0) {
+        p.life = max(0, p.life - dt / max(0.3, p.maxLife));
+        p.vy -= 9.81 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.z += p.vz * dt;
+        if (p.y < -0.5) p.life = 0;
+      } else {
+        p.y = -999;
       }
     }
     if (doBubbles) {
@@ -1961,17 +2643,33 @@ function buildWorld() {
       const out = grp.instData;
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        const o = i * 8;
+        const o = i * ANIMAL_INST_FLOATS;
+        if (it.inactiveInRegion) {
+          out[o] = 0; out[o + 1] = -9999; out[o + 2] = 0; out[o + 3] = 0.0001;
+          out[o + 4] = 0; out[o + 5] = 0; out[o + 6] = 0; out[o + 7] = it.packedMode;
+          out[o + 8] = 0; out[o + 9] = 0; out[o + 10] = 0; out[o + 11] = 0;
+          continue;
+        }
         out[o]     = lerp(it.prevX, it.x, a);
         out[o + 1] = lerp(it.prevY, it.y, a);
         out[o + 2] = lerp(it.prevZ, it.z, a);
         out[o + 3] = it.scale;
         out[o + 4] = lerpAngle(it.prevYaw, it.yaw, a);
         out[o + 5] = it.phase;
-        const effSpd = (it.state === 'flee' || it.state === 'chase') ? it.animSpeed * 2.1 : it.animSpeed;
+        // Speed-coupled animation amplitude: zero gait wobble when grazing/resting!
+        const speedRatio = it.type === 'walk'
+          ? clamp(it.curSpeed / max(0.3, it.cruiseSpeed), 0.0, 2.2)
+          : it.type === 'swim'
+            ? clamp(it.curSpeed / max(0.5, it.cruiseSpeed), 0.25, 2.2)
+            : 1.0;
+        const effSpd = it.animSpeed * speedRatio;
         const emo = clamp(round(it.emotion || 0), 0, 4);
-        out[o + 6] = emo + clamp(effSpd * 0.1, 0.03, 0.95);
+        out[o + 6] = emo + clamp(effSpd * 0.1, 0.01, 0.95);
         out[o + 7] = it.packedMode;
+        out[o + 8] = lerp(it.prevPitch, it.pitch, a);
+        out[o + 9] = lerp(it.prevRoll, it.roll, a);
+        out[o + 10] = it.ikFrontFlex || 0;
+        out[o + 11] = it.ikHindFlex || 0;
       }
     }
 
@@ -1981,8 +2679,10 @@ function buildWorld() {
       particles[o]     = p.x;
       particles[o + 1] = p.y;
       particles[o + 2] = p.z;
-      if (p.kind === 0 || p.kind === 1) {
-        particles[o + 3] = p.size * (p.kind === 0 ? (1 - p.life * 0.7) : (0.6 + p.life * 1.3));
+      if (p.kind === 7) {
+        particles[o + 3] = p.life > 0 ? p.size * (0.4 + p.life * 0.9) : 0;
+      } else if (p.kind === 0 || p.kind === 1) {
+        particles[o + 3] = p.y < -500 ? 0 : p.size * (p.kind === 0 ? (1 - p.life * 0.7) : (0.6 + p.life * 1.3));
       } else if (p.kind === 2) {
         const pulse = p.vy > 0 ? (1 - p.life * 0.5) : max(0.08, sin(simTime * 3.8 + p.phase));
         particles[o + 3] = p.size * pulse;
@@ -2005,7 +2705,7 @@ function buildWorld() {
       }
     }
 
-    if (rainIntensity >= 0.02 && camY >= 0) {
+    if (rainIntensity >= 0.02 && camY >= 0 && camY < 4500) {
       for (let i = rainStart; i < MAX_PARTICLES; i++) {
         const p = particleState[i];
         const o = i * 8;
@@ -2028,12 +2728,13 @@ function buildWorld() {
     const rx = cy, rz = sy;
     const cx = camX + fx * 2.4, cy_ = camY + fy * 2.4 - 0.15, cz = camZ + fz * 2.4;
     const d = lookdevRig.instData;
+    const s = ANIMAL_INST_FLOATS;
     d[0] = cx - rx * 0.56; d[1] = cy_; d[2] = cz - rz * 0.56; d[3] = 1.0;
-    d[4] = yaw; d[5] = 0; d[6] = 0.1; d[7] = 21 * 16;
-    d[8] = cx; d[9] = cy_; d[10] = cz; d[11] = 1.0;
-    d[12] = yaw; d[13] = 0; d[14] = 0.1; d[15] = 22 * 16;
-    d[16] = cx + rx * 0.62; d[17] = cy_; d[18] = cz + rz * 0.62; d[19] = 1.0;
-    d[20] = yaw; d[21] = 0; d[22] = 0.1; d[23] = 23 * 16;
+    d[4] = yaw; d[5] = 0; d[6] = 0.1; d[7] = 21 * 16; d[8] = 0; d[9] = 0; d[10] = 0; d[11] = 0;
+    d[s] = cx; d[s + 1] = cy_; d[s + 2] = cz; d[s + 3] = 1.0;
+    d[s + 4] = yaw; d[s + 5] = 0; d[s + 6] = 0.1; d[s + 7] = 22 * 16; d[s + 8] = 0; d[s + 9] = 0; d[s + 10] = 0; d[s + 11] = 0;
+    d[s * 2] = cx + rx * 0.62; d[s * 2 + 1] = cy_; d[s * 2 + 2] = cz + rz * 0.62; d[s * 2 + 3] = 1.0;
+    d[s * 2 + 4] = yaw; d[s * 2 + 5] = 0; d[s * 2 + 6] = 0.1; d[s * 2 + 7] = 23 * 16; d[s * 2 + 8] = 0; d[s * 2 + 9] = 0; d[s * 2 + 10] = 0; d[s * 2 + 11] = 0;
   }
 
   function findNearestAnimal(x, y, z, maxDist = 45) {
@@ -2042,7 +2743,8 @@ function buildWorld() {
       const grp = wildlifeGroups[g];
       for (let i = 0; i < grp.items.length; i++) {
         const it = grp.items[i];
-        const d = hypot(wrapDelta(it.x, x), it.y - y, wrapDelta(it.z, z));
+        if (it.inactiveInRegion) continue;
+        const d = hypot(it.x - x, it.y - y, it.z - z);
         if (d < bestD) {
           bestD = d;
           bestGrp = g;
@@ -2054,13 +2756,14 @@ function buildWorld() {
   }
 
   return {
-    GRID_CELLS, CELL_SPAN, SIM_HZ, SIM_DT,
-    chunks, skirt, hData, hSize,
-    vegBuffers, wildlifeGroups, lookdevRig,
+    GRID_CELLS, CELL_SPAN, REGION_HALF, SIM_HZ, SIM_DT, ANIMAL_INST_FLOATS,
+    vegBuffers, getVegVersion: () => vegVersion, getActiveRegionBiomeId: () => activeRegionBiomeId,
+    syncRegion, wildlifeGroups, lookdevRig,
     colliders, colliderCells, resolveWorldCollision,
     particles, particleState, particleRanges, MAX_PARTICLES,
     stepSim, interpolateSim, updateDynamic, updateLookdevRig,
-    findNearestAnimal,
+    findNearestAnimal, triggerWhaleBreach,
+    setMarineEventCallback: (cb) => { marineEventCb = cb; },
     setHazardAvoidance: (enabled) => { hazardAvoidanceEnabled = !!enabled; },
     getHazardAvoidance: () => hazardAvoidanceEnabled,
     EMOTION_NAMES,

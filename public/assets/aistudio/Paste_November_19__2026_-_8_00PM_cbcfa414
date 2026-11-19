@@ -1,0 +1,1102 @@
+# REALISM — SECOND MAJOR ENGINEERING PASS
+## True Earth-Scale Geography, Distinct Continents and Biomes, Seamless Atmospheric Re-entry, Anatomically Correct Wildlife and Advanced Marine Simulation
+
+You are continuing development of the existing REALISM project.
+
+You must inspect the CURRENT repository before modifying anything.
+
+Repository:
+https://github.com/Jaystarbliss-studios/REALISM.git
+
+This is a corrective engineering pass following the previous planetary expansion.
+
+The previous implementation introduced several improvements:
+- REALISM branding.
+- Planetary coordinate displays.
+- A 3D globe navigator.
+- Altitude and atmospheric layer indicators.
+- Orbital and space visuals.
+- Persistent in-game settings.
+- A new canonical creature heading convention.
+- Basic wildlife hazard avoidance.
+- Fish schooling logic.
+- Improved animal and vegetation shaders.
+- Procedural wildlife audio.
+
+PRESERVE these useful improvements.
+
+However, the underlying simulation still has major structural limitations.
+
+The most important requirement is that you must distinguish between a genuinely implemented simulation feature and a visual representation that merely suggests the feature exists.
+
+A planetary radius declared in a constant does not make the terrain Earth-scale.
+
+A function named updateQuadtreeChunks does not constitute a real quadtree terrain system.
+
+A globe drawn in a sky shader is not necessarily the same planet the player is walking on.
+
+An animal with a breathing animation is not necessarily exhibiting realistic locomotion.
+
+Do not repeat these mistakes.
+
+---
+
+# PART 1 — AUDIT THE CURRENT PLANETARY ARCHITECTURE
+
+Inspect these actual source files first:
+
+- `source/src/biomes.js`
+- `source/src/world.js`
+- `source/src/main.js`
+- `source/src/shaders.js`
+- `source/src/math.js`
+- `source/src/quality.js`
+- `source/src/audio.js`
+- `source/src/assets.js`
+- `source/template.html`
+- `source/tests/world.test.mjs`
+- `source/build.mjs`
+
+Pay particular attention to the following existing implementation issues.
+
+## 1.1 The 720-unit coordinate wrap
+
+The current biome implementation still uses:
+
+`WORLD_SIZE = 720`
+
+`WORLD_HALF = 360`
+
+The `wrapCoord()` function wraps both horizontal coordinates periodically.
+
+`terrainAt()` then samples the terrain from those wrapped coordinates.
+
+This creates a repeating horizontal world.
+
+Remove this as the foundation of planetary geography.
+
+Do not simply increase WORLD_SIZE to 1000000.
+
+Do not replace it with another arbitrary periodic terrain grid.
+
+Do not wrap latitude as if crossing the north or south pole were the same as crossing the international longitude seam.
+
+## 1.2 Inconsistent physical units
+
+The current implementation uses a small coordinate grid to represent a full planetary circumference while also treating the same coordinates as metres for creature movement and environmental dimensions.
+
+This is physically inconsistent.
+
+Establish one coherent unit system:
+
+- Global geographic calculations: metres.
+- Planetary surface displacement: metres.
+- Creature anatomy: metres.
+- Wildlife speed: metres per second.
+- Terrain elevations: metres.
+- Camera altitude: metres.
+- Orbital altitude: metres.
+- Celestial distance: a suitably scaled global coordinate system.
+
+Where the renderer requires smaller numerical values, use camera-relative coordinates rather than falsifying global distances.
+
+## 1.3 Fake terrain streaming
+
+The current `updateQuadtreeChunks()` recentres a fixed collection of chunks.
+
+This must be replaced with actual hierarchical terrain streaming.
+
+Implement the real system, including tile generation, caching, visibility selection, LOD transitions and unloading.
+
+## 1.4 Separate fake globe
+
+The planetary globe currently rendered in `W_SKY` uses a fixed visual radius and an independently generated procedural land pattern.
+
+It must no longer represent a different geography from the surface.
+
+The distant globe and the near-surface terrain must use the same planetary terrain data, the same continent distribution and the same procedural seed.
+
+---
+
+# PART 2 — IMPLEMENT A GENUINE EARTH-SCALE PLANET
+
+This is the highest-priority architectural change.
+
+Use the correct Earth-scale planetary dimensions.
+
+Reference values:
+
+- Mean radius: 6,371,000 metres.
+- Equatorial radius: 6,378,137 metres.
+- Polar radius: 6,356,752 metres.
+- Equatorial circumference: approximately 40,075 kilometres.
+- Total surface area: approximately 510 million km².
+- Land coverage: approximately 29%.
+
+The planet must be a genuine continuous oblate spherical surface.
+
+## 2.1 Global coordinate architecture
+
+Establish global geographic coordinates using:
+
+- Latitude.
+- Longitude.
+- Altitude.
+- Planet-centre coordinates.
+- Geodetic surface normal.
+- Local east, north and up directions.
+
+Use high-precision global coordinates where required.
+
+A suitable architecture is:
+
+- Double-precision geodetic or ECEF calculations on the CPU.
+- Camera-relative floating-origin coordinates for GPU rendering.
+- A local tangent frame for nearby terrain and wildlife.
+- Proper geodesic displacement for planetary travel.
+
+The world must maintain consistent geographical positions when the player moves between regions.
+
+Do not rely on periodic X/Z wrapping to create the illusion of a globe.
+
+Longitude may be normalised across its 180°/-180° seam, but the actual surface must be continuous through proper spherical geometry.
+
+The poles must behave correctly.
+
+## 2.2 Actual cube-sphere terrain
+
+Implement a real six-face cube-sphere.
+
+Each face must support genuine hierarchical terrain subdivision.
+
+A tile should have an identifiable combination of:
+
+- Cube face.
+- LOD level.
+- Tile X.
+- Tile Y.
+- Deterministic procedural seed.
+
+Implement:
+
+- Quadtree subdivision.
+- Screen-space error selection.
+- High-detail nearby terrain.
+- Medium-detail regional terrain.
+- Low-detail distant terrain.
+- Adjacent tile edge consistency.
+- Cube-face transition stitching.
+- Tile cache.
+- Background generation.
+- Memory limits.
+- Proper tile unloading.
+
+The terrain must not have an artificial end.
+
+The player must be able to travel continuously around the entire sphere.
+
+Crossing the 180° longitude seam must not create a visible jump.
+
+Crossing the poles must update the local coordinate frame correctly.
+
+## 2.3 Consistent planetary surface
+
+The same terrain generator must support:
+
+1. The distant 3D globe.
+2. The orbital planetary view.
+3. High-altitude atmospheric viewing.
+4. Regional terrain.
+5. The terrain directly around the player.
+6. The planetary navigator map.
+
+Use different LODs and rendering methods as necessary, but never different geography.
+
+A distant mountain range should correspond to the mountain range encountered when the player travels there.
+
+The same coastline must appear on the globe and at surface level.
+
+The same location must generate the same landscape when revisited.
+
+---
+
+# PART 3 — MAKE THE CONTINENTS AND LOCATIONS GENUINELY DISTINCT
+
+This is essential to fixing the enclosed-world feeling.
+
+The world should not feel like 18 biome stations packed into a small central island.
+
+I want a vast planetary landscape with distinct continental identities.
+
+## 3.1 Continental geography
+
+Introduce several enormous continental landmasses separated by genuinely large ocean basins.
+
+Use a minimum of six distinct continental regions and multiple major island systems.
+
+Develop recognisable geographical forms:
+
+- Continental interiors.
+- Long mountain chains.
+- Coastal plains.
+- River basins.
+- Large lakes.
+- High plateaus.
+- Deserts.
+- Tropical belts.
+- Temperate forests.
+- Northern and southern polar regions.
+- Deep oceanic shelves.
+- Abyssal trenches.
+- Volcanic island arcs.
+
+The planet must not consist of small random noise islands.
+
+Continental outlines must be coherent and geographically meaningful.
+
+## 3.2 Expand the existing 18 biomes
+
+Preserve the identities of the existing 18 curated biomes.
+
+Do not delete them.
+
+Instead, make them specific regional destinations distributed across the planet.
+
+For example:
+
+- The River Sanctuary should become an extensive river and wetland basin.
+- The Cypress Swamp should occupy a much larger subtropical wetland region.
+- The Amazon Emerald Canopy should be part of an enormous tropical rainforest.
+- The Mangrove Passage should have a recognisable estuary and coastal system.
+- The Serengeti Savanna should extend into vast open grasslands.
+- The Virunga Ape Highlands should have proper volcanic highland geography.
+- The Golden Beach should have a genuine coastline, islands and nearby marine ecosystems.
+- The Sunlit Coral Reef should form part of a large tropical reef system.
+- The Abyssal Garden should be part of a deep ocean basin.
+- The Sub-Antarctic Rookery and Polar Ice Shelf should have unique polar geography.
+- The Burning Forest, Volcanic Caldera, Cenote and Skeleton Coast should retain their identities and environmental hazards.
+
+These destinations should be geographically separated.
+
+Use actual geodesic distances between their latitude and longitude coordinates.
+
+Do not locate all 18 destinations within a few hundred game units.
+
+As an initial geographical design constraint, spread the principal destinations across thousands of kilometres where appropriate.
+
+Some small local landmarks can remain close together, but the major destination regions must feel like different parts of a world.
+
+## 3.3 Geographic and climatic variation
+
+Biome appearance must emerge from a combination of:
+
+- Latitude.
+- Elevation.
+- Temperature.
+- Rainfall.
+- Moisture.
+- Terrain slope.
+- Soil type.
+- Ocean proximity.
+- Prevailing climate.
+- Hydrology.
+- Seasonal conditions.
+
+A rainforest must not simply be a grassland with more trees.
+
+A desert must not just be a colour change.
+
+A polar landscape must have appropriate terrain, ice, snow, water and vegetation.
+
+A mangrove ecosystem must have appropriate roots, tidal water, sediment and wildlife.
+
+Make each region visually and ecologically recognisable.
+
+## 3.4 Distinct landmarks
+
+Add identifiable geographical landmarks throughout the world.
+
+Examples:
+
+- Large mountain ranges.
+- Deep canyons.
+- River deltas.
+- Waterfalls.
+- Massive lakes.
+- Glacial valleys.
+- Coral reef systems.
+- Volcanic ridges.
+- Natural caves.
+- Extensive forest canopies.
+- Savannah kopjes.
+- Coastal cliffs.
+
+Use deterministic procedural generation and region-specific feature seeds.
+
+When the player travels far away, the landscape must genuinely feel different.
+
+---
+
+# PART 4 — FIX PLANETARY DISTANCES AND MOVEMENT
+
+The player must no longer reach a completely different major ecosystem in a handful of seconds.
+
+Preserve realistic animal movement speeds.
+
+A lion, elephant, deer or zebra should use appropriate biological movement speeds.
+
+Do not make wildlife run at hundreds of metres per second to compensate for undersized geography.
+
+The player's free-flight observer may have a separate optional high-speed travel mode.
+
+However, rapid travel must be intentional and controlled.
+
+Add clear geographic distance information where useful.
+
+For example:
+
+- Distance to nearest named region.
+- Distance to a selected destination.
+- Current latitude and longitude.
+- Current altitude.
+- Planetary travel progress.
+
+The global map should make the distances understandable.
+
+A player should be able to distinguish between exploring a nearby forest and travelling to another continent.
+
+Preserve optional map teleportation as a convenience feature, but it must not replace real travel.
+
+---
+
+# PART 5 — REDESIGN ATMOSPHERIC RE-ENTRY
+
+This is the most urgent visual problem after planetary geography.
+
+At present, the transition from space back to the planet produces a flash or abrupt appearance of ground.
+
+It must be completely corrected.
+
+## 5.1 Identify and remove the hard visual handoff
+
+Audit the existing `W_SKY` code.
+
+The existing implementation:
+
+- Draws a separate globe only above a camera-altitude threshold.
+- Uses a fixed visual planetary radius.
+- Fades the globe across a narrow altitude range.
+- Removes the globe as the camera descends.
+- Reveals the separate local terrain representation.
+
+This is not acceptable as the final system.
+
+Remove the artificial dependency between a hard altitude threshold and the existence of the planet.
+
+The planetary surface must always represent the same continuous world.
+
+## 5.2 Proper atmospheric altitude
+
+Use real metre-scale altitude.
+
+The atmospheric layers should be represented in coherent physical units.
+
+Use the following approximate reference ranges:
+
+- Troposphere: 0–12 km.
+- Stratosphere: 12–50 km.
+- Mesosphere: 50–85 km.
+- Thermosphere: approximately 85–600 km.
+- Exosphere: upper atmosphere gradually transitioning into space.
+
+Use 100 km as the conventional Kármán-line reference.
+
+Do not use arbitrary 140-unit or 2300-unit boundaries as substitutes for real atmospheric distances.
+
+## 5.3 Continuous descent
+
+Implement an explicit re-entry and landing state system.
+
+The transition must follow a continuous sequence:
+
+1. Orbital space.
+2. Exosphere.
+3. Thermosphere.
+4. Mesosphere.
+5. Stratosphere.
+6. Troposphere.
+7. Cloud approach.
+8. Regional atmospheric flight.
+9. Near-surface flight.
+10. Landing or low-altitude arrival.
+
+Maintain the same longitude and latitude as the player descends.
+
+The player must not teleport to the beginning of the original biome map.
+
+Use continuous position and velocity integration.
+
+Introduce appropriate gravitational acceleration and progressively increasing atmospheric drag.
+
+Introduce atmospheric heating and visual scattering where suitable.
+
+The experience should include:
+
+- The planet getting larger.
+- Increasing visibility of continental details.
+- Atmospheric limb glow.
+- Gradual sky-colour transitions.
+- Clouds approaching.
+- Clouds passing below and around the player.
+- Coastal and mountain details becoming identifiable.
+- Increasing terrain detail.
+- Gradual wind and sound changes.
+- A natural approach to the surface.
+
+The camera must not jump to the ground.
+
+Do not reset the player's altitude to the terrain whenever the atmospheric layer changes.
+
+## 5.4 Collision and ground arrival
+
+Audit `resolveWorldCollision()`.
+
+It currently clamps the camera's vertical position when it falls below the minimum terrain clearance.
+
+Collision correction must not create an apparent teleport from hundreds or thousands of metres above the world.
+
+Use swept collision or sufficiently subdivided simulation steps.
+
+Apply final ground contact only when the player genuinely approaches the surface.
+
+The player should slow down, approach the landscape, and arrive naturally.
+
+There should be no sudden flash, hard switch, or unwanted repositioning.
+
+## 5.5 Reverse the entire experience correctly
+
+The transition must work in both directions.
+
+Going from the planet to space should be continuous.
+
+Going from space back to the planet should be equally continuous.
+
+The globe must remain the same planet in both directions.
+
+Do not solve the return journey by simply switching rendering modes.
+
+---
+
+# PART 6 — CORRECT EVERY ANIMAL'S ORIENTATION
+
+Some animals still appear upside down or incorrectly oriented.
+
+Perform a species-by-species audit.
+
+Establish the universal model-space convention:
+
+- Y = up.
+- +Z = forward.
+- +X = animal's right side.
+
+Every animal model must be checked against this convention.
+
+For each species, test:
+
+- Standing upright.
+- Facing forward.
+- Turning left.
+- Turning right.
+- Walking.
+- Running.
+- Idle animation.
+- Player-controlled embodiment.
+- Third-person viewing.
+- First-person viewing.
+- Shadow rendering.
+
+If individual procedural meshes have different anatomical orientations, create a proper per-species orientation correction.
+
+Do not fix one animal by breaking another.
+
+Do not assume that a universal yaw offset will correct all animal meshes.
+
+Use diagnostic test poses to verify that every animal remains upright.
+
+Make sure the shadow animation uses the same transformation as the visible creature.
+
+---
+
+# PART 7 — REBUILD THE MARINE ANIMAL SYSTEM
+
+This needs special attention.
+
+The current marine wildlife is not sufficiently convincing.
+
+The fish, shark, orca, humpback whale and manta ray should not appear to be the same procedural body with different colours.
+
+Give them recognisable species-specific anatomy.
+
+## 7.1 Humpback whales
+
+Build a recognisable humpback whale.
+
+Target adult body length should be approximately 12–16 metres.
+
+Include:
+
+- Broad head.
+- Characteristic head protuberances.
+- Large pectoral flippers.
+- Ventral throat pleats.
+- Blowhole.
+- Small eye.
+- Tapered body.
+- Peduncle.
+- Broad horizontal tail flukes.
+- Appropriate dorsal profile.
+
+The tail flukes must have a clear anatomical shape.
+
+A humpback must not look like a giant generic fish.
+
+Its movement must be majestic and deliberate.
+
+## 7.2 Orcas
+
+Build a separate orca model.
+
+Do not simply reuse the humpback model and change its colour.
+
+Include:
+
+- Robust streamlined body.
+- Tall dorsal fin.
+- Distinct rostrum.
+- Eye patch.
+- White underside.
+- Appropriate flippers.
+- Powerful tail flukes.
+
+Give orcas their own swimming profile and hunting behaviour.
+
+## 7.3 Great White Sharks
+
+Rebuild the shark's anatomy and animation.
+
+Include:
+
+- Distinct pointed snout.
+- Streamlined fusiform body.
+- Mouth and teeth detail.
+- Five visible gill slits.
+- Large pectoral fins.
+- First and second dorsal fins.
+- Pelvic fins.
+- Anal fin.
+- Heterocercal crescent tail.
+- Countershaded dorsal and ventral surfaces.
+
+The shark must have its own articulated swimming animation.
+
+The body wave should travel progressively towards the tail, with propulsion concentrated toward the rear.
+
+Do not bend the entire shark body at one exaggerated angle.
+
+Its head should remain relatively stable while the rear body and tail generate propulsion.
+
+**IMPORTANT: Sharks must remain underwater by default.**
+
+Do not give sharks a continuous jumping animation.
+
+Do not allow accidental surface breaching caused by a generic aquatic animation routine.
+
+A shark should swim naturally through the water, maintain its depth and avoid being launched above the surface.
+
+## 7.4 Manta rays
+
+Create a distinctive manta ray with:
+
+- Broad diamond-shaped body.
+- Cephalic fins.
+- Wide pectoral wings.
+- Appropriate underside pattern.
+- Smooth gliding behaviour.
+- Slow wing propulsion.
+
+It should look like a manta ray, not an ordinary fish with enlarged fins.
+
+---
+
+# PART 8 — REPLACE THE REPETITIVE WHALE BREACHING SYSTEM
+
+Audit the current periodic breaching logic in `world.js`.
+
+The existing sine-wave threshold produces repeated vertical movements.
+
+This must be removed.
+
+A whale should not repeatedly launch itself from the ocean every few seconds.
+
+Implement an event-driven breach state machine.
+
+Suggested sequence:
+
+1. Normal cruise.
+2. Slow approach to the surface.
+3. Preparation and gradual upward pitch.
+4. Accelerated tail propulsion.
+5. Powerful upward launch.
+6. Ballistic breach arc.
+7. Appropriate body rotation.
+8. Tail and flipper movement.
+9. Water impact.
+10. Large, realistic splash.
+11. Recovery.
+12. Gradual return underwater.
+
+A breach must be a complete event.
+
+It must have an appropriate cooldown.
+
+It must be uncommon, deliberate and species-dependent.
+
+Humpback whales may perform occasional breaches.
+
+Orcas may exhibit their own less frequent surface displays.
+
+Sharks must not inherit this behaviour.
+
+Each breach must be visually understandable and separated from ordinary swimming.
+
+Do not use the creature's ordinary swimming phase as the only trigger for a breach.
+
+Implement independent event timers and behaviour states.
+
+---
+
+# PART 9 — NATURAL UNDERWATER MOVEMENT AND ENVIRONMENTAL AUDIO
+
+All marine species need smooth three-dimensional swimming.
+
+Introduce:
+
+- Depth keeping.
+- Velocity smoothing.
+- Gradual turning.
+- Body undulation.
+- Tail propulsion.
+- Fin articulation.
+- Appropriate pitch.
+- Appropriate roll.
+- Collision avoidance.
+- Surface awareness.
+- Seabed awareness.
+
+Marine animals must not move in obvious circles as their default behaviour.
+
+Use believable navigational paths and environmental steering.
+
+Fish schools must remain coordinated.
+
+Sharks should patrol at appropriate depths.
+
+Whales should travel in wide, graceful paths.
+
+Mantas should glide.
+
+Turtles should swim and occasionally approach the surface.
+
+## 9.1 Marine sound
+
+Improve the existing audio system.
+
+The current procedural whale sound is a starting point, but it must become richer and more convincing.
+
+Implement appropriate:
+
+- Low-frequency whale calls.
+- Humpback song patterns.
+- Orca vocalisations.
+- Underwater ambient rumble.
+- Bubble and water movement sounds.
+- Shark movement ambience where appropriate.
+- Surfacing and breathing sounds.
+- Water-impact sounds during actual breach events.
+
+Use spatial audio.
+
+Audio volume must respond to distance.
+
+Underwater sound should use suitable filtering and reverberation.
+
+If suitable licensed wildlife recordings are available in the project, use them responsibly.
+
+Otherwise, improve the procedural synthesis rather than introducing unlicensed recordings.
+
+Whale sounds should be associated with suitable animal and environmental contexts.
+
+Do not play the same whale call indiscriminately across every location.
+
+---
+
+# PART 10 — REDESIGN THE DEER'S ANATOMY AND LOCOMOTION
+
+The deer currently use a relatively simple continuous body mesh and generic procedural limb deformation.
+
+I want the deer to look and move like real deer.
+
+Audit the current `buildDeerMesh()` and the deer animation in `W_ANIMAL`.
+
+Specifically examine the proportions and movement of:
+
+- Chest.
+- Ribcage.
+- Pelvis.
+- Rump.
+- Hindquarters.
+- Thighs.
+- Knees.
+- Hocks.
+- Hooves.
+- Neck.
+- Head.
+- Tail.
+
+The hindquarters must not look excessively bulky or behave as though the animal's entire rear end is independently swinging.
+
+Do not distort the rump to create movement.
+
+The torso should maintain a relatively stable anatomical centre while the limbs and joints articulate beneath it.
+
+Implement a proper quadruped gait.
+
+## 10.1 Natural deer movement
+
+Develop:
+
+- Standing.
+- Idle breathing.
+- Head turning.
+- Grazing.
+- Drinking.
+- Walking.
+- Trotting.
+- Galloping.
+- Alert standing.
+- Sudden acceleration.
+- Evasive running.
+- Natural stopping.
+
+The movement should be driven by actual speed and stride.
+
+Hind legs should have recognisable anatomical articulation.
+
+Front legs and hind legs should not use identical animation timing where different gait sequencing is appropriate.
+
+The rump should respond naturally to the gait without exaggerated bouncing or lateral wobbling.
+
+## 10.2 Leg articulation
+
+Introduce separate upper and lower limb articulation.
+
+Use actual joint-driven animation or a properly weighted skeletal equivalent.
+
+The foot should:
+
+- Lift during its swing phase.
+- Follow a natural foot arc.
+- Reach the ground.
+- Maintain contact during stance.
+- Avoid sliding.
+- Follow uneven terrain.
+
+The existing IK solver must genuinely influence the rendered limbs.
+
+Do not calculate IK values and then ignore them in the final animation.
+
+## 10.3 More natural deer proportions
+
+Review the entire deer silhouette.
+
+Avoid oversized or strangely rounded hindquarters.
+
+Maintain suitable deer body proportions.
+
+The final animal should look anatomically balanced whether viewed from the side, front or rear.
+
+Apply the same quality standard to zebras, lions, tigers, elephants and all other animals.
+
+---
+
+# PART 11 — IMPROVE WILDLIFE INTELLIGENCE
+
+The current system still has too many circular movement paths.
+
+Keep the existing hazard evaluation as a foundation, but implement more natural local navigation.
+
+Animals should react to:
+
+- Predators.
+- Prey.
+- The player.
+- Water depth.
+- Dangerous cliffs.
+- Fire.
+- Lava.
+- Food.
+- Shelter.
+- Weather.
+- Other members of their species.
+
+Implement smooth steering and destination selection.
+
+Do not have all animals patrol identical circular routes.
+
+Animals should be able to travel around an area, stop, investigate a location and resume movement.
+
+Different species should display distinctive behaviour.
+
+Avoidance must consider the animal's habitat and abilities.
+
+A land herbivore should avoid drowning.
+
+An aquatic animal should avoid becoming stranded.
+
+A shark should maintain suitable marine depth.
+
+A whale should not behave like a deer running away from a forest fire.
+
+Predator and prey behaviour should use nearby relevant animals rather than repeatedly selecting the first individual from a group.
+
+Make interactions believable rather than scripted demonstrations.
+
+---
+
+# PART 12 — CAMERA AND EMBODIMENT
+
+Preserve the improved independent third-person orbit camera.
+
+Ensure that:
+
+- The camera begins behind the creature.
+- The camera rotates independently of the creature's heading.
+- Movement causes the creature to turn naturally.
+- Camera smoothing is stable.
+- The camera never accidentally moves through the creature.
+- Camera collision works on uneven terrain.
+- First-person positioning remains anatomically correct.
+- Every species has an appropriate camera offset.
+
+Do not reintroduce the previous camera-direction mismatch.
+
+Test the camera with deer, elephants, lions, whales, sharks, birds, penguins and smaller animals.
+
+---
+
+# PART 13 — PRESERVE THE SETTINGS AND PERFORMANCE SYSTEM
+
+Do not unnecessarily redesign the settings interface.
+
+The current settings panel and persistent preferences are useful.
+
+Preserve the in-game settings gear.
+
+Preserve the existing quality controls and the four quality tiers.
+
+However, update them to support the genuine planetary architecture.
+
+Use:
+
+- Quadtree terrain LOD.
+- Deterministic tile caching.
+- Camera-relative geometry.
+- Floating-origin coordinates.
+- Vegetation instancing.
+- Animal simulation LOD.
+- GPU batching.
+- Frustum culling.
+- Reduced far-distance AI frequency.
+- Background tile preparation.
+- Limited GPU uploads.
+- Bounded memory allocation.
+
+The player should not need to load an entire continent before entering it.
+
+Distant geography should use low-cost representations.
+
+Nearby terrain should receive the detailed geometry and materials.
+
+Distant animals should not run expensive individual simulations.
+
+Do not introduce heavy libraries simply to avoid implementing the existing renderer correctly.
+
+Preserve the raw WebGPU architecture.
+
+Make sure the game's memory usage does not grow without limit as the player explores.
+
+---
+
+# PART 14 — VALIDATE THE ACTUAL WORLD, NOT JUST THE CONSTANTS
+
+This section is mandatory.
+
+The existing test suite contains tests labelled as Earth-scale planetary tests.
+
+However, checking that `PLANET_RADIUS` equals 6,371,000 and that coordinate conversions return finite values is not sufficient to prove the existence of an Earth-scale world.
+
+Replace superficial planetary tests with meaningful simulation tests.
+
+## 14.1 Geodesic tests
+
+Verify:
+
+- Approximately 111.2 km per degree of latitude.
+- Appropriate longitude distance variation with latitude.
+- Correct great-circle distances.
+- Correct equatorial circumference.
+- Correct polar and equatorial behaviour.
+- No artificial repeated 720-unit terrain.
+
+A round trip around the planetary equator must return to the original geographical location after approximately 40,075 km.
+
+## 14.2 Terrain tests
+
+Verify:
+
+- All six cube faces.
+- Consistent tile edges.
+- Consistent terrain elevations across boundaries.
+- Consistent terrain normals.
+- Deterministic tile regeneration.
+- Correct LOD switching.
+- No gaps.
+- No visual repeated terrain at arbitrary 720-unit intervals.
+- No artificial square boundary.
+
+Ensure the same locations on the planetary globe and the regional terrain produce the same geographic features.
+
+## 14.3 Re-entry tests
+
+Test a complete journey from orbital altitude to ground level.
+
+Verify that:
+
+- Altitude changes continuously.
+- Geographic coordinates remain consistent.
+- There is no instantaneous relocation.
+- The globe remains visually coherent.
+- Atmospheric layers change smoothly.
+- Clouds transition naturally.
+- The ground becomes progressively detailed.
+- Collision only occurs when physically appropriate.
+- The camera never snaps to a starting biome.
+
+## 14.4 Wildlife tests
+
+Test every species for:
+
+- Correct upright orientation.
+- Correct forward direction.
+- No unintentional sideways movement.
+- Smooth turning.
+- Correct underwater depth.
+- Proper surface constraints.
+- Species-specific animation.
+- No unwanted shark breaches.
+- Properly timed whale breaches.
+- Correct deer gait.
+- Appropriate foot contact.
+
+A wildlife model must not be considered finished merely because it compiles.
+
+---
+
+# PART 15 — IMPLEMENTATION PRIORITIES
+
+Implement in this order.
+
+**Phase 1: True planetary coordinates**
+
+Replace the 720-unit toroidal world foundation with actual Earth-scale geodesy.
+
+Establish the continuous planetary coordinate system.
+
+**Phase 2: Real terrain streaming and distinct geography**
+
+Implement the cube-sphere quadtree.
+
+Generate enormous continents and distribute the existing biome destinations across a vast planet.
+
+**Phase 3: Same planet at every altitude**
+
+Connect the near-surface terrain, global globe and orbital rendering to the same planetary data.
+
+**Phase 4: Smooth atmospheric re-entry**
+
+Remove the abrupt globe-to-ground handoff.
+
+Implement continuous descent and proper final ground arrival.
+
+**Phase 5: Marine animal corrections**
+
+Rebuild humpback, orca, shark and manta anatomy.
+
+Remove repetitive whale breaching and implement the appropriate event-driven behaviour.
+
+**Phase 6: Terrestrial animal corrections**
+
+Fix upside-down species, rebuild deer locomotion and improve anatomical animation across all species.
+
+**Phase 7: Wildlife intelligence and audio**
+
+Improve steering, predator/prey behaviour, environmental awareness and spatial audio.
+
+**Phase 8: Performance and regression testing**
+
+Validate the actual world and preserve all existing working features.
+
+---
+
+# FINAL NON-NEGOTIABLE REQUIREMENTS
+
+Do not fake planetary scale.
+
+Do not use a repeating 720-unit map and call it Earth.
+
+Do not use a decorative globe disconnected from the playable geography.
+
+Do not replace the space-to-ground transition with a teleportation effect.
+
+Do not let whales jump repeatedly because of a sine-wave threshold.
+
+Do not make sharks behave like whales.
+
+Do not give all animals the same generic body deformation.
+
+Do not calculate IK without using its output.
+
+Do not allow upside-down creatures to remain in the finished build.
+
+Do not sacrifice performance by rendering the entire planet at full detail.
+
+Do not discard the existing settings or the working procedural material system.
+
+Do not merely add comments claiming that features are implemented.
+
+**Implement, integrate and verify the actual systems.**
+
+At the end, report:
+
+1. What has genuinely been implemented.
+2. Which source files were modified.
+3. Which previous architectural limitations have been removed.
+4. The actual planetary dimensions and coordinate implementation.
+5. The actual terrain streaming approach.
+6. How atmospheric re-entry works.
+7. Which animal models and animations were corrected.
+8. What performance optimisations were introduced.
+9. The tests actually executed and their results.
+10. Any functionality that remains incomplete.
+
+The goal is to make REALISM a genuinely explorable planetary ecosystem, not simply a small procedural environment presented inside a planetary-looking interface.

@@ -1,7 +1,7 @@
 // ============================================================================
-// REALISM — Main WebGPU Engine, Interactive 3D Planetary Globe & 2D Map,
-// Playable Animal Embodiment (1st & 3rd Person Orbit POV), Continuous
-// Surface-to-Space Transition & Full In-Game Settings Control Panel
+// REALISM — Main WebGPU Engine, True Earth-Scale Cube-Sphere Quadtree,
+// Continuous Atmospheric Re-Entry, Unified 3D Planetary Globe & 2D Map,
+// Playable Animal Embodiment (1st & 3rd Person Orbit POV) & Settings Panel
 // ============================================================================
 import {
   SHADOW_SIZE, AA_SAMPLES, TARGET_GPU_MS, RES_SCALE_MIN, RES_SCALE_MAX, keep,
@@ -13,23 +13,30 @@ const SHADOW_RES = SHADOW_SIZE;
 const RAY_SCALE = 0.5;
 const MSAA_SAMPLES = AA_SAMPLES;
 import {
-  PI, TAU, sin, cos, tan, abs, hypot, min, max, floor, round, atan2, exp, pow,
+  PI, TAU, DEG2RAD, RAD2DEG, sin, cos, tan, abs, hypot, min, max, sqrt, floor, round, atan2, exp, pow,
   clamp, saturate, lerp, smoothstep, WORLD_SEED, rr,
   normAngle, lerpAngle, yawToForward, velocityToYaw,
+  oblateRadiusAtSinLat, latLonToDir, dirToLatLon, geodeticToEcef, localENUFrame,
+  moveAlongGeodesic, greatCircleDistanceMeters, dirToCubeFaceUV,
   m4Mul, m4Persp, m4Ortho, m4Look, m4Inv
 } from './math.js';
 import {
-  WORLD_HALF, FIRE_POS, VOLCANO_POS, SAVANNA_POS, BEACH_POS, REEF_POS, ABYSS_POS, POLAR_POS,
-  ATMOSPHERE_LAYERS, atmosphericLayerAt, wrapCoord, wrapDelta, worldToLatLonAlt, latLonToWorld,
-  worldToCubeSphere, updateQuadtreeChunks, spaceSectorAt, nearestBiomeAt,
-  BIOME_CATALOG, terrainAt, POSES, biomeLabelAt
+  PLANET_RADIUS, KARMAN_LINE_ALT, ATMOSPHERE_LAYERS,
+  atmosphericDensityAt, atmosphericLayerAt, reentryStageAt, stepAtmosphericReentry,
+  BIOME_CATALOG, POSES, setActiveOrigin, getActiveOrigin,
+  localMetersToLatLon, latLonToLocalMeters, samplePlanetAtLatLon, terrainAt,
+  nearestBiomeAtGeo, biomeLabelAtGeo, spaceSectorAt,
+  TILE_GRID, TILE_TOTAL_VERTS, TILE_FLOATS_PER_VERT, CubeSphereQuadtree
 } from './biomes.js';
 import { uploadMaterialTextureArray } from './assets.js';
 import {
   W_SKY, W_TERRAIN, W_VEG, W_ANIMAL, W_WATER, W_PARTICLE, W_RAYS, W_RAYS_MS, W_POST, W_POST_MS
 } from './shaders.js';
 import { buildWorld } from './world.js';
-import { initAudio, updateAudio, setVolume, setAudioSettings, toggleMute, triggerSpeciesCall } from './audio.js';
+import {
+  initAudio, updateAudio, setVolume, setAudioSettings, toggleMute,
+  triggerSpeciesCall, triggerWhaleSong, triggerOrcaCall, triggerBreachSplash, triggerSurfacingBreath
+} from './audio.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('c');
@@ -73,10 +80,30 @@ const fail = (msg) => {
 };
 
 // ============================================================================
-// Camera, Weather, Embodiment, Settings & Telemetry State
+// Double-Precision Planetary Geodetic Camera & Floating-Origin State
 // ============================================================================
 const F = new Float64Array(16);
 const TIME = 0, LAST = 1, FLT = 2, CX = 3, CY = 4, CZ = 5, VX = 6, VY = 7, VZ = 8, YAW = 9, PIT = 10;
+
+const startBiome = BIOME_CATALOG[0];
+const camState = {
+  latDeg: startBiome.latDeg,
+  lonDeg: startBiome.lonDeg,
+  latRad: startBiome.latDeg * DEG2RAD,
+  lonRad: startBiome.lonDeg * DEG2RAD,
+  altMeters: 6.5,
+  velE: 0,
+  velN: 0,
+  velU: 0,
+  yaw: 0,
+  pitch: -0.08,
+  reentryHeat: 0,
+  groundH: 0,
+  grounded: false,
+  layer: atmosphericLayerAt(6.5),
+  stage: reentryStageAt(6.5, 0, 0),
+  autopilot: null // null | 'ascent' | 'descent'
+};
 
 let settings = loadSettings();
 const qualityCtrl = createQualityController(settings.qualityTier);
@@ -88,21 +115,19 @@ let cleanUi = !settings.hudVisible;
 let photoMode = false;
 let lookdevMode = false;
 let autoExplore = false;
-let speedMult = settings.speedMult || 1.0;
+let speedMult = settings.moveSpeedMult || 1.0;
 let weatherMode = settings.weatherMode !== undefined ? settings.weatherMode : -1;
 let todIdx = settings.todIdx || 0;
-let instinctPulse = 0.0; // [Q] Instinct Sense bio-aura wave 0..1
+let instinctPulse = 0.0;
 
-let focalMm = round(18 / tan(((settings.fovDeg || 60) * PI) / 360));
+let focalMm = round(18 / tan(((settings.fov || 54) * PI) / 360));
 let apertureF = 2.8;
 let focusDistM = 18;
 let evComp = 0.0;
 
 let lastActivityAt = performance.now();
-const IDLE_EXPLORE_SEC = 30.0;
-let autoTargetIdx = 0;
-let autoLegTimer = 0;
-let autoTargetX = 0, autoTargetY = 4, autoTargetZ = 0;
+const IDLE_EXPLORE_SEC = 35.0;
+let autoTargetX = 0, autoTargetY = 6, autoTargetZ = 0, autoLegTimer = 0;
 
 // Playable Animal Embodiment State with Decoupled 3rd-Person Orbit Camera
 const embodiedState = {
@@ -123,7 +148,6 @@ const TOD_PRESETS = [
 ];
 const TOD_NAMES = TOD_PRESETS.map((p) => p.name);
 
-// 8 Planetary Weather & Natural Phenomena Presets
 const WEATHER_NAMES = [
   'Golden Sunlight',
   'Swamp Morning Mist',
@@ -159,6 +183,32 @@ function noteUserActivity() {
   if (autoExplore) autoExplore = false;
 }
 
+const _locTmp = {};
+const _camT = {};
+const _camCol = {};
+
+function syncCamStateFromLocal() {
+  const ll = localMetersToLatLon(F[CX], F[CZ], getActiveOrigin(), _locTmp);
+  camState.latDeg = ll.latDeg;
+  camState.lonDeg = ll.lonDeg;
+  camState.latRad = ll.latRad;
+  camState.lonRad = ll.lonRad;
+  camState.altMeters = F[CY];
+  camState.yaw = F[YAW];
+  camState.pitch = F[PIT];
+  camState.layer = atmosphericLayerAt(camState.altMeters);
+  camState.stage = reentryStageAt(camState.altMeters, camState.groundH, camState.velU);
+}
+
+function syncLocalFromCamState() {
+  const loc = latLonToLocalMeters(camState.latDeg, camState.lonDeg, getActiveOrigin(), _locTmp);
+  F[CX] = loc.x;
+  F[CY] = camState.altMeters;
+  F[CZ] = loc.z;
+  F[YAW] = camState.yaw;
+  F[PIT] = camState.pitch;
+}
+
 function lookAtPose(cx, cy, cz, tx, ty, tz) {
   F[CX] = cx; F[CY] = cy; F[CZ] = cz;
   F[VX] = F[VY] = F[VZ] = 0;
@@ -166,21 +216,75 @@ function lookAtPose(cx, cy, cz, tx, ty, tz) {
   const d = hypot(dx, dy, dz) || 1;
   F[YAW] = atan2(dx, -dz);
   F[PIT] = Math.asin(clamp(dy / d, -0.98, 0.98));
+  camState.velE = camState.velN = camState.velU = 0;
+  syncCamStateFromLocal();
 }
 
 // ============================================================================
-// Build Procedural World & Wire Up Interactive Planetary Map + Embodiment UI
+// Build Procedural World & Genuine 6-Face Cube-Sphere Quadtree Streamer
 // ============================================================================
-await say('Sculpting 18 planetary biomes, Abyssal Garden reefs & continuous wildlife anatomy…', 0.22);
+await say('Initializing Earth-scale Cube-Sphere Quadtree, 18 continental biomes & wildlife IK…', 0.22);
+setActiveOrigin(startBiome.latDeg, startBiome.lonDeg, startBiome.id);
 const world = buildWorld();
-const _camT = {};
-const _camCol = {};
+const planetQuadtree = new CubeSphereQuadtree({
+  maxLod: 16,
+  maxCachedTiles: 320,
+  maxTilesPerFrame: 18,
+  maxActiveTiles: 220
+});
+
+let activeRegionBiomeId = startBiome.id;
+let forceSyncTiles = true;
 const audioState = { camX: 0, camY: 3, camZ: 0 };
 
-lookAtPose(...POSES[0]);
+// Wire marine breach, humpback song, orca calls & surfacing breath into spatial audio
+world.setMarineEventCallback((ev) => {
+  if (!ev) return;
+  const dx = (ev.x ?? 0) - F[CX];
+  const dy = (ev.y ?? 0) - F[CY];
+  const dz = (ev.z ?? 0) - F[CZ];
+  const dist = hypot(dx, dy, dz);
+  const isUw = F[CY] < 0.0;
+  if (ev.type === 'breach_impact') triggerBreachSplash(dist, ev.power ?? 1.0);
+  else if (ev.type === 'whale_song') triggerWhaleSong(dist, isUw);
+  else if (ev.type === 'orca_call') triggerOrcaCall(dist, isUw);
+  else if (ev.type === 'surface_breath') triggerSurfacingBreath(dist);
+});
+
+function rebaseRegionalOrigin(latDeg, lonDeg, preferredBiomeId = -1) {
+  const near = nearestBiomeAtGeo(latDeg, lonDeg);
+  const biomeId = preferredBiomeId >= 0 ? preferredBiomeId : near.biome.id;
+  setActiveOrigin(latDeg, lonDeg, biomeId);
+  activeRegionBiomeId = biomeId;
+  const regionSeed = (round(latDeg * 20) * 97 + round(lonDeg * 20) * 31) | 0;
+  world.syncRegion(biomeId, regionSeed);
+  syncLocalFromCamState();
+}
+
+function applyBiomePose(biomeIdx) {
+  const b = BIOME_CATALOG[clamp(biomeIdx, 0, BIOME_CATALOG.length - 1)];
+  const p = POSES[b.id] || [-14, 4.8, 18, 5, 2.2, -6];
+  camState.latDeg = b.latDeg;
+  camState.lonDeg = b.lonDeg;
+  camState.latRad = b.latDeg * DEG2RAD;
+  camState.lonRad = b.lonDeg * DEG2RAD;
+  camState.velE = camState.velN = camState.velU = 0;
+  camState.autopilot = null;
+  camState.reentryHeat = 0;
+  rebaseRegionalOrigin(b.latDeg, b.lonDeg, b.id);
+  terrainAt(p[0], p[2], _camT);
+  const camAlt = (b.id === 10 || b.id === 11)
+    ? min(-1.5, max(_camT.h + 2.6, p[1]))
+    : max(_camT.h + 2.2, _camT.h + max(1.8, p[1] * 0.65));
+  const tgtAlt = (b.id === 10 || b.id === 11) ? min(-2.5, _camT.h + 1.2) : max(_camT.h + 1.2, camAlt - 1.4);
+  lookAtPose(p[0], camAlt, p[2], p[3], tgtAlt, p[5]);
+  forceSyncTiles = true;
+}
+
+applyBiomePose(0);
 
 function enterWilderness() {
-  initAudio(audioState);
+  initAudio();
   setAudioSettings(settings);
   noteUserActivity();
   if (mapModal) mapModal.classList.remove('open');
@@ -194,7 +298,7 @@ function enterWilderness() {
 function updateEmbodimentUI() {
   if (!embodiedState.active || embodiedState.groupIdx < 0) {
     if (embodyLabelEl) embodyLabelEl.textContent = 'Observer: Free-Fly';
-    if (embodyHintEl) embodyHintEl.textContent = 'WASD Move · Mouse Look · [E] Inhabit Nearest Animal · [M] 3D Planetary Globe · [O] Settings';
+    if (embodyHintEl) embodyHintEl.textContent = 'WASD Move · Mouse Look · [E] Inhabit Nearest Animal · [M] 3D Planetary Globe · [G] Orbit/Re-Entry · [O] Settings';
     if (togglePovBtn) togglePovBtn.textContent = 'POV: Free [V]';
     if (modalPovToggleBtn) modalPovToggleBtn.textContent = `POV: ${embodiedState.pov === '1st' ? '1st Person' : '3rd Person'} [V]`;
   } else {
@@ -204,7 +308,9 @@ function updateEmbodimentUI() {
     const povText = embodiedState.pov === '1st' ? '1st POV' : '3rd Orbit';
     if (embodyLabelEl) embodyLabelEl.textContent = `${grp.label} (${povText}) · ${emoName}`;
     if (embodyHintEl) {
-      const actionVerb = grp.domain === 'water' ? '[Space] Breach · [C] Dive' : grp.domain === 'air' ? '[Space] Climb · [C] Stoop' : '[Space] Pounce/Display · [Shift] Sprint';
+      const actionVerb = grp.domain === 'water'
+        ? (grp.name === 'whales' || grp.name === 'orcas' ? '[Space] Breach · [C] Dive' : '[Space] Ascend · [C] Dive')
+        : grp.domain === 'air' ? '[Space] Climb · [C] Stoop' : '[Space] Leap/Display · [Shift] Sprint';
       embodyHintEl.textContent = `WASD Move · Mouse Orbit · [V] 1st/3rd POV · ${actionVerb} · [R] Vocalize · [Q] Sense`;
     }
     if (togglePovBtn) togglePovBtn.textContent = `POV: ${embodiedState.pov === '1st' ? '1st' : '3rd'} [V]`;
@@ -234,9 +340,23 @@ function inhabitAnimal(groupIdx, itemIdx = 0) {
   if (groupIdx < 0 || groupIdx >= world.wildlifeGroups.length) return;
   disembodyAnimal();
   const grp = world.wildlifeGroups[groupIdx];
+  // If this species is not native to current region, relocate smoothly to its primary native biome
+  if (grp.nativeBiomes && grp.nativeBiomes.length > 0 && !grp.nativeBiomes.includes(activeRegionBiomeId)) {
+    const homeBiome = BIOME_CATALOG[grp.nativeBiomes[0]];
+    if (homeBiome) {
+      camState.latDeg = homeBiome.latDeg;
+      camState.lonDeg = homeBiome.lonDeg;
+      camState.latRad = homeBiome.latDeg * DEG2RAD;
+      camState.lonRad = homeBiome.lonDeg * DEG2RAD;
+      camState.autopilot = null;
+      rebaseRegionalOrigin(homeBiome.latDeg, homeBiome.lonDeg, homeBiome.id);
+      forceSyncTiles = true;
+    }
+  }
   const idx = clamp(itemIdx, 0, grp.items.length - 1);
   const it = grp.items[idx];
   if (!it) return;
+  it.inactiveInRegion = false;
   it.playerControlled = true;
   embodiedState.active = true;
   embodiedState.groupIdx = groupIdx;
@@ -247,17 +367,17 @@ function inhabitAnimal(groupIdx, itemIdx = 0) {
   embodiedState.orbitPitch = 0.22;
   flyActive = false;
   autoExplore = false;
+  camState.autopilot = null;
 
-  // Canonical local +Z rotates to world forward (-sin(yaw), 0, cos(yaw))
-  // So behind the animal is (+sin(yaw), 0, -cos(yaw))
+  // Canonical local +Z -> world forward (-sin(yaw), 0, cos(yaw)); camera spawns BEHIND creature
   const [fwdX, fwdZ] = yawToForward(it.yaw || 0);
-  const dist = grp.followDist * max(0.85, (it.scale || 1) * 0.9) * (settings.followDist || 1.0);
+  const dist = grp.followDist * max(0.85, (it.scale || 1) * 0.9) * (settings.followDistance || 1.0);
   const eyeH = (grp.eyeOffset[1] * (it.scale || 1) + 0.85) * (settings.followHeight || 1.0);
   F[CX] = it.x - fwdX * dist;
   F[CY] = it.y + eyeH;
   F[CZ] = it.z - fwdZ * dist;
   lookAtPose(F[CX], F[CY], F[CZ], it.x + fwdX * 1.5, it.y + grp.eyeOffset[1] * (it.scale || 1), it.z + fwdZ * 1.5);
-  triggerSpeciesCall(grp.speciesId);
+  triggerSpeciesCall(grp.speciesId, 5, F[CY] < 0);
   updateEmbodimentUI();
 }
 
@@ -268,15 +388,11 @@ function togglePovMode() {
     updateEmbodimentUI();
   } else {
     const nearest = world.findNearestAnimal(F[CX], F[CY], F[CZ], 85);
-    if (nearest) {
-      inhabitAnimal(nearest.groupIdx, nearest.itemIdx);
-    } else {
-      inhabitAnimal(0, 0);
-    }
+    if (nearest) inhabitAnimal(nearest.groupIdx, nearest.itemIdx);
+    else inhabitAnimal(0, 0);
   }
 }
 
-// Populate Playable Species Grid in Embodiment Modal
 const FEATURED_SPECIES = [
   'lions', 'tigers', 'gorillas', 'chimpanzees', 'elephants', 'giraffes', 'zebras',
   'whales', 'orcas', 'sharks', 'mantas', 'turtles',
@@ -305,11 +421,14 @@ if (speciesGrid) {
   });
 }
 
-// --- Interactive 3D Planetary Globe & 2D Topographic/Bathymetric Map Renderer ---
+// ============================================================================
+// Unified 3D Planetary Globe & 2D Topographic Map (Exact Same Planet Data!)
+// Samples samplePlanetAtLatLon(latDeg, lonDeg) directly so globe == surface.
+// ============================================================================
 let mapBaseImageData = null;
-let mapViewMode = 'globe'; // 'globe' = 3D Shaded Planetary Globe, 'flat' = 2D Topographic Map
-let globeYaw = 0.25;
-let globePitch = 0.28;
+let mapViewMode = 'globe';
+let globeYaw = 0.55;
+let globePitch = 0.22;
 let globeDragging = false;
 let globeDragMoved = false;
 let globeLastX = 0;
@@ -322,93 +441,52 @@ function ensureMapBaseImage(ctx, w, h) {
   const d = img.data;
   const mt = {};
   for (let py = 0; py < h; py++) {
-    const wz = ((py / (h - 1)) * 2 - 1) * WORLD_HALF;
+    const latDeg = 90.0 - (py / (h - 1)) * 180.0;
     for (let px = 0; px < w; px++) {
-      const wx = ((px / (w - 1)) * 2 - 1) * WORLD_HALF;
-      terrainAt(wx, wz, mt);
-      const el = mt.h;
-      let r = 24, g = 58, b = 34;
-
-      if (el < -0.15) {
-        const depthT = clamp((-el) / 18.0, 0, 1);
-        r = round(lerp(24, 6, depthT));
-        g = round(lerp(132, 28, depthT));
-        b = round(lerp(158, 56, depthT));
-        if (mt.archMask > 0.1) { r += 35; g += 25; b += 40; }
+      const lonDeg = (px / (w - 1)) * 360.0 - 180.0;
+      samplePlanetAtLatLon(latDeg, lonDeg, mt, 0);
+      let r = mt.colR * 255;
+      let g = mt.colG * 255;
+      let b = mt.colB * 255;
+      if (mt.h < 0.0) {
+        const depthT = clamp((-mt.h) / 4200.0, 0, 1);
+        r = lerp(24, 5, depthT);
+        g = lerp(128, 22, depthT);
+        b = lerp(164, 58, depthT);
+        if (mt.reef > 0.2) { r += 18; g += 44; b += 22; }
       } else {
-        r = round(28 + clamp(el * 3.2, 0, 65));
-        g = round(68 + clamp(el * 2.4, 0, 52));
-        b = round(34 + clamp(el * 1.4, 0, 35));
-        if (mt.savanna > 0.15) {
-          r = round(lerp(r, 168, mt.savanna * 0.85));
-          g = round(lerp(g, 134, mt.savanna * 0.85));
-          b = round(lerp(b, 62, mt.savanna * 0.85));
-        }
-        if (mt.plantation > 0.15) {
-          r = round(lerp(r, 74, mt.plantation * 0.8));
-          g = round(lerp(g, 138, mt.plantation * 0.8));
-          b = round(lerp(b, 56, mt.plantation * 0.8));
-        }
-        if (mt.beach > 0.15 || (wz > 160 && el < 2.2 && el >= -0.15)) {
-          const bw = max(mt.beach, smoothstep(2.2, 0.0, el));
-          r = round(lerp(r, 214, bw * 0.85));
-          g = round(lerp(g, 192, bw * 0.85));
-          b = round(lerp(b, 136, bw * 0.85));
-        }
-        if (mt.polar > 0.15) {
-          r = round(lerp(r, 215, mt.polar * 0.9));
-          g = round(lerp(g, 234, mt.polar * 0.9));
-          b = round(lerp(b, 250, mt.polar * 0.9));
-        }
-        if (mt.dune > 0.15) {
-          r = round(lerp(r, 196, mt.dune * 0.88));
-          g = round(lerp(g, 92, mt.dune * 0.88));
-          b = round(lerp(b, 48, mt.dune * 0.88));
-        }
-        if (mt.fire > 0.15 || mt.volcano > 0.15) {
-          const fw = max(mt.fire, mt.volcano);
-          r = round(lerp(r, 165, fw * 0.85));
-          g = round(lerp(g, 52, fw * 0.85));
-          b = round(lerp(b, 24, fw * 0.85));
-        }
-        if (mt.cenote > 0.2) {
-          r = round(lerp(r, 64, mt.cenote * 0.75));
-          g = round(lerp(g, 148, mt.cenote * 0.75));
-          b = round(lerp(b, 156, mt.cenote * 0.75));
-        }
+        // Subtle hypsometric relief shading
+        const elevShade = clamp(0.84 + mt.h * 0.00018, 0.80, 1.24);
+        r *= elevShade; g *= elevShade; b *= elevShade;
+        const contour = abs(((mt.h + 4000) % 450) - 225);
+        if (contour < 14) { r *= 0.86; g *= 0.86; b *= 0.86; }
       }
-
-      const contour = abs(((el + 30) % 2.5) - 1.25);
-      if (contour < 0.08) {
-        r = round(r * 0.82); g = round(g * 0.82); b = round(b * 0.82);
-      }
-
       const idx = (py * w + px) * 4;
-      d[idx] = clamp(r, 0, 255);
-      d[idx + 1] = clamp(g, 0, 255);
-      d[idx + 2] = clamp(b, 0, 255);
+      d[idx]     = clamp(round(r), 0, 255);
+      d[idx + 1] = clamp(round(g), 0, 255);
+      d[idx + 2] = clamp(round(b), 0, 255);
       d[idx + 3] = 255;
     }
   }
   mapBaseImageData = img;
 }
 
-function worldToMapPx(wx, wz, w, h) {
+function latLonToMapPx(latDeg, lonDeg, w, h) {
   return [
-    ((wrapCoord(wx) / WORLD_HALF) * 0.5 + 0.5) * w,
-    ((wrapCoord(wz) / WORLD_HALF) * 0.5 + 0.5) * h
+    ((lonDeg + 180.0) / 360.0) * w,
+    ((90.0 - latDeg) / 180.0) * h
   ];
 }
-function mapPxToWorld(px, py, w, h) {
+function mapPxToLatLon(px, py, w, h) {
   return [
-    ((px / w) * 2 - 1) * WORLD_HALF,
-    ((py / h) * 2 - 1) * WORLD_HALF
+    clamp(90.0 - (py / h) * 180.0, -89.5, 89.5),
+    clamp((px / w) * 360.0 - 180.0, -180.0, 180.0)
   ];
 }
 
-function worldToGlobePoint(wx, wz, cx, cy, rad) {
-  const lon = (wrapCoord(wx) / WORLD_HALF) * PI;
-  const lat = -(wrapCoord(wz) / WORLD_HALF) * (PI * 0.46);
+function latLonToGlobePoint(latDeg, lonDeg, cx, cy, rad) {
+  const lat = latDeg * DEG2RAD;
+  const lon = lonDeg * DEG2RAD;
   const cl = cos(lat), sl = sin(lat);
   const sx = cl * sin(lon);
   const sy = sl;
@@ -424,17 +502,17 @@ function worldToGlobePoint(wx, wz, cx, cy, rad) {
   return {
     px: cx + x1 * rad,
     py: cy - y2 * rad,
-    vis: z2 > -0.05,
+    vis: z2 > -0.04,
     z: z2
   };
 }
 
-function globePxToWorld(px, py, cx, cy, rad) {
+function globePxToLatLon(px, py, cx, cy, rad) {
   const nx = (px - cx) / rad;
   const ny = -(py - cy) / rad;
   const r2 = nx * nx + ny * ny;
   if (r2 > 1.0) return null;
-  const nz = Math.sqrt(max(0, 1.0 - r2));
+  const nz = sqrt(max(0, 1.0 - r2));
 
   const cp = cos(globePitch), sp = sin(globePitch);
   const sy = ny * cp + nz * sp;
@@ -443,11 +521,9 @@ function globePxToWorld(px, py, cx, cy, rad) {
   const sx = nx * cyw + z1 * syw;
   const sz = -nx * syw + z1 * cyw;
 
-  const lat = Math.asin(clamp(sy, -0.99, 0.99));
-  const lon = atan2(sx, sz);
-  const wx = clamp((lon / PI) * WORLD_HALF, -WORLD_HALF + 8, WORLD_HALF - 8);
-  const wz = clamp((-lat / (PI * 0.46)) * WORLD_HALF, -WORLD_HALF + 8, WORLD_HALF - 8);
-  return [wx, wz];
+  const latDeg = Math.asin(clamp(sy, -0.9995, 0.9995)) * RAD2DEG;
+  const lonDeg = atan2(sx, sz) * RAD2DEG;
+  return [latDeg, lonDeg];
 }
 
 function renderPlanetaryMap() {
@@ -482,7 +558,7 @@ function renderPlanetaryMap() {
         const oIdx = (py * w + px) * 4;
 
         if (r2 > 1.0) {
-          const rDist = Math.sqrt(r2);
+          const rDist = sqrt(r2);
           const halo = exp(-max(0, rDist - 1.0) * 14.0);
           const starHash = ((px * 73856093) ^ (py * 19349663)) & 1023;
           const star = starHash === 1 ? 155 : starHash === 7 ? 90 : 0;
@@ -493,17 +569,17 @@ function renderPlanetaryMap() {
           continue;
         }
 
-        const nz = Math.sqrt(max(0, 1.0 - r2));
+        const nz = sqrt(max(0, 1.0 - r2));
         const sy = ny * cp + nz * sp;
         const z1 = -ny * sp + nz * cp;
         const sx = nx * cyw + z1 * syw;
         const sz = -nx * syw + z1 * cyw;
 
-        const lat = Math.asin(clamp(sy, -0.999, 0.999));
+        const lat = Math.asin(clamp(sy, -0.9999, 0.9999));
         const lon = atan2(sx, sz);
 
-        const u = clamp(lon / TAU + 0.5, 0, 0.999);
-        const v = clamp(-lat / PI + 0.5, 0, 0.999);
+        const u = clamp(lon / TAU + 0.5, 0, 0.9999);
+        const v = clamp(0.5 - lat / PI, 0, 0.9999);
         const tx = floor(u * (w - 1));
         const ty = floor(v * (h - 1));
         const sIdx = (ty * w + tx) * 4;
@@ -512,14 +588,9 @@ function renderPlanetaryMap() {
         const light = clamp(ndl * 0.78 + 0.42, 0.16, 1.18);
         const limb = pow(1.0 - nz, 2.6);
 
-        const polarCap = smoothstep(0.76, 0.93, abs(sy));
-        let r = lerp(sd[sIdx], 228, polarCap);
-        let g = lerp(sd[sIdx + 1], 242, polarCap);
-        let b = lerp(sd[sIdx + 2], 255, polarCap);
-
-        r = r * light + limb * 48;
-        g = g * light + limb * 135;
-        b = b * light + limb * 225;
+        let r = sd[sIdx] * light + limb * 48;
+        let g = sd[sIdx + 1] * light + limb * 135;
+        let b = sd[sIdx + 2] * light + limb * 225;
 
         od[oIdx]     = clamp(round(r), 0, 255);
         od[oIdx + 1] = clamp(round(g), 0, 255);
@@ -529,21 +600,30 @@ function renderPlanetaryMap() {
     }
     ctx.putImageData(out, 0, 0);
 
+    // Real spherical graticule (meridians every 30°, parallels every 30°)
     ctx.strokeStyle = 'rgba(125, 211, 252, 0.16)';
     ctx.lineWidth = 1;
     for (let lonDeg = -150; lonDeg <= 180; lonDeg += 30) {
       ctx.beginPath();
       let started = false;
-      for (let latDeg = -80; latDeg <= 80; latDeg += 8) {
-        const wx = (lonDeg / 180) * WORLD_HALF;
-        const wz = (-latDeg / 82) * WORLD_HALF;
-        const pt = worldToGlobePoint(wx, wz, cx, cy, rad);
+      for (let latDeg = -85; latDeg <= 85; latDeg += 5) {
+        const pt = latLonToGlobePoint(latDeg, lonDeg, cx, cy, rad);
         if (pt.vis) {
           if (!started) { ctx.moveTo(pt.px, pt.py); started = true; }
           else ctx.lineTo(pt.px, pt.py);
-        } else {
-          started = false;
-        }
+        } else started = false;
+      }
+      ctx.stroke();
+    }
+    for (let latDeg = -60; latDeg <= 60; latDeg += 30) {
+      ctx.beginPath();
+      let started = false;
+      for (let lonDeg = -180; lonDeg <= 180; lonDeg += 6) {
+        const pt = latLonToGlobePoint(latDeg, lonDeg, cx, cy, rad);
+        if (pt.vis) {
+          if (!started) { ctx.moveTo(pt.px, pt.py); started = true; }
+          else ctx.lineTo(pt.px, pt.py);
+        } else started = false;
       }
       ctx.stroke();
     }
@@ -553,10 +633,10 @@ function renderPlanetaryMap() {
     ctx.textBaseline = 'middle';
     for (let i = 0; i < BIOME_CATALOG.length; i++) {
       const b = BIOME_CATALOG[i];
-      const pt = worldToGlobePoint(b.pos[0], b.pos[1], cx, cy, rad);
+      const pt = latLonToGlobePoint(b.latDeg, b.lonDeg, cx, cy, rad);
       projectedGlobePins.push({ biome: b, idx: i, px: pt.px, py: pt.py, vis: pt.vis });
       if (!pt.vis) continue;
-      const isForbidden = b.category === 'Forbidden Zones';
+      const isForbidden = b.forbidden;
       const isOcean = b.category === 'Coast & Ocean' || b.category === 'Polar Realm';
       ctx.fillStyle = isForbidden ? 'rgba(220, 58, 58, 0.94)' : isOcean ? 'rgba(20, 148, 212, 0.94)' : 'rgba(226, 184, 87, 0.94)';
       ctx.strokeStyle = '#060d0a';
@@ -567,7 +647,7 @@ function renderPlanetaryMap() {
       ctx.fillText(String(i + 1).padStart(2, '0'), pt.px, pt.py + 0.5);
     }
 
-    const pPt = worldToGlobePoint(F[CX], F[CZ], cx, cy, rad);
+    const pPt = latLonToGlobePoint(camState.latDeg, camState.lonDeg, cx, cy, rad);
     if (pPt.vis) {
       ctx.fillStyle = '#ffffff';
       ctx.strokeStyle = '#0ea5e9';
@@ -580,19 +660,19 @@ function renderPlanetaryMap() {
     return;
   }
 
-  // --- 2D Flat Topographic & Bathymetric Map Mode ---
+  // --- 2D Equirectangular Planetary Topographic & Bathymetric Map ---
   ctx.putImageData(mapBaseImageData, 0, 0);
 
-  for (let g = 0; g < world.wildlifeGroups.length; g++) {
-    const grp = world.wildlifeGroups[g];
-    ctx.fillStyle = grp.role === 'predator' ? '#f87171' : grp.domain === 'water' ? '#38bdf8' : grp.domain === 'air' ? '#fde047' : '#86efac';
-    for (let i = 0; i < grp.items.length; i += 2) {
-      const it = grp.items[i];
-      const [mx, my] = worldToMapPx(it.x, it.z, w, h);
-      ctx.beginPath();
-      ctx.arc(mx, my, 2.2, 0, TAU);
-      ctx.fill();
-    }
+  // Graticule grid
+  ctx.strokeStyle = 'rgba(125, 211, 252, 0.14)';
+  ctx.lineWidth = 1;
+  for (let lonDeg = -150; lonDeg <= 150; lonDeg += 30) {
+    const x = ((lonDeg + 180) / 360) * w;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+  for (let latDeg = -60; latDeg <= 60; latDeg += 30) {
+    const y = ((90 - latDeg) / 180) * h;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
   }
 
   ctx.font = '600 10px "Inter", system-ui, sans-serif';
@@ -600,9 +680,9 @@ function renderPlanetaryMap() {
   ctx.textBaseline = 'middle';
   for (let i = 0; i < BIOME_CATALOG.length; i++) {
     const b = BIOME_CATALOG[i];
-    const [bx, by] = worldToMapPx(b.pos[0], b.pos[1], w, h);
+    const [bx, by] = latLonToMapPx(b.latDeg, b.lonDeg, w, h);
     projectedGlobePins.push({ biome: b, idx: i, px: bx, py: by, vis: true });
-    const isForbidden = b.category === 'Forbidden Zones';
+    const isForbidden = b.forbidden;
     const isOcean = b.category === 'Coast & Ocean' || b.category === 'Polar Realm';
     ctx.fillStyle = isForbidden ? 'rgba(220, 58, 58, 0.94)' : isOcean ? 'rgba(20, 148, 212, 0.94)' : 'rgba(226, 184, 87, 0.94)';
     ctx.strokeStyle = '#060d0a';
@@ -613,11 +693,11 @@ function renderPlanetaryMap() {
     ctx.fillText(String(i + 1).padStart(2, '0'), bx, by + 0.5);
   }
 
-  const [cx, cy] = worldToMapPx(F[CX], F[CZ], w, h);
+  const [cx, cy] = latLonToMapPx(camState.latDeg, camState.lonDeg, w, h);
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.rotate(F[YAW]);
-  ctx.fillStyle = 'rgba(250, 204, 21, 0.26)';
+  ctx.rotate(camState.yaw);
+  ctx.fillStyle = 'rgba(250, 204, 21, 0.28)';
   ctx.beginPath();
   ctx.moveTo(0, 0);
   ctx.arc(0, 0, 28, -PI * 0.72, -PI * 0.28);
@@ -634,57 +714,65 @@ function renderPlanetaryMap() {
   ctx.stroke();
 }
 
+// Continuous Orbital Ascent <-> Atmospheric Re-Entry Toggle (NO Teleportation!)
 function ascendToPlanetaryOrbit() {
   disembodyAnimal();
   flyActive = false;
   autoExplore = false;
-  const targetAlt = F[CY] < 240 ? 320 : F[CY] < 850 ? 920 : 1850;
-  lookAtPose(
-    F[CX],
-    targetAlt,
-    F[CZ],
-    F[CX] + sin(F[YAW]) * 140,
-    -210,
-    F[CZ] - cos(F[YAW]) * 140
-  );
-  if (locEl) locEl.textContent = biomeLabelAt(F[CX], F[CY], F[CZ]);
+  if (camState.altMeters < 180000) {
+    // Initiate smooth continuous ascent through Troposphere -> Stratosphere -> Mesosphere -> Thermosphere -> LEO
+    camState.autopilot = 'ascent';
+    camState.velU = max(camState.velU, 140);
+  } else {
+    // Already in Orbital Space -> initiate smooth continuous atmospheric re-entry right over current (lat, lon)
+    camState.autopilot = 'descent';
+    camState.velU = min(camState.velU, -320);
+  }
   enterWilderness();
 }
 
-function teleportToWorldCoord(wx, wz, poseIdx = -1) {
+// Optional fast-travel convenience via 3D Planetary Globe / 2D Map / Quick-Bar
+function teleportToLatLon(latDeg, lonDeg, poseIdx = -1) {
   flyActive = false;
   autoExplore = false;
-  if (poseIdx >= 0 && POSES[poseIdx]) {
-    const p = POSES[poseIdx];
-    if (embodiedState.active && embodiedState.groupIdx >= 0) {
-      const grp = world.wildlifeGroups[embodiedState.groupIdx];
-      const it = grp.items[embodiedState.itemIdx];
-      if (it) {
-        it.x = it.prevX = it.cx = p[0];
-        it.z = it.prevZ = it.cz = p[2];
-        terrainAt(it.x, it.z, _camT);
-        it.y = it.prevY = grp.domain === 'water' ? min(-1.2, _camT.h + 2.0) : grp.domain === 'air' ? max(15, _camT.h + 12) : max(0.05, _camT.h);
-      }
-    }
-    lookAtPose(p[0], p[1], p[2], p[3], p[4], p[5]);
+  camState.autopilot = null;
+  if (poseIdx >= 0 && BIOME_CATALOG[poseIdx]) {
+    applyBiomePose(poseIdx);
   } else {
-    const tx = wrapCoord(wx);
-    const tz = wrapCoord(wz);
-    terrainAt(tx, tz, _camT);
-    const ty = _camT.h < -0.5 ? max(_camT.h + 2.5, -4.5) : _camT.h + 2.6;
-    if (embodiedState.active && embodiedState.groupIdx >= 0) {
-      const grp = world.wildlifeGroups[embodiedState.groupIdx];
-      const it = grp.items[embodiedState.itemIdx];
-      if (it) {
-        it.x = it.prevX = it.cx = tx;
-        it.z = it.prevZ = it.cz = tz;
-        it.y = it.prevY = grp.domain === 'water' ? min(-1.0, _camT.h + 2.2) : grp.domain === 'air' ? max(14, _camT.h + 10) : max(0.05, _camT.h);
-      }
-    }
-    lookAtPose(tx, ty, tz, tx + sin(F[YAW]) * 18, ty - 0.5, tz - cos(F[YAW]) * 18);
+    camState.latDeg = clamp(latDeg, -89.8, 89.8);
+    camState.lonDeg = normAngle(lonDeg * DEG2RAD) * RAD2DEG;
+    camState.latRad = camState.latDeg * DEG2RAD;
+    camState.lonRad = camState.lonDeg * DEG2RAD;
+    camState.velE = camState.velN = camState.velU = 0;
+    camState.reentryHeat = 0;
+    rebaseRegionalOrigin(camState.latDeg, camState.lonDeg, -1);
+    const surf = samplePlanetAtLatLon(camState.latDeg, camState.lonDeg, _camT, 2);
+    const ty = surf.h < -0.5 ? max(surf.h + 2.5, -5.5) : surf.h + 3.2;
+    lookAtPose(0, ty, 0, sin(F[YAW]) * 18, ty - 0.6, -cos(F[YAW]) * 18);
+    forceSyncTiles = true;
   }
-  if (locEl) locEl.textContent = biomeLabelAt(F[CX], F[CY], F[CZ]);
+  if (embodiedState.active && embodiedState.groupIdx >= 0) {
+    const grp = world.wildlifeGroups[embodiedState.groupIdx];
+    const it = grp.items[embodiedState.itemIdx];
+    if (it) {
+      it.x = it.prevX = it.cx = 0;
+      it.z = it.prevZ = it.cz = 0;
+      terrainAt(0, 0, _camT);
+      it.y = it.prevY = grp.domain === 'water' ? min(-1.5, _camT.h + 2.2) : grp.domain === 'air' ? max(16, _camT.h + 12) : max(0.05, _camT.h);
+    }
+  }
+  if (locEl) locEl.textContent = biomeLabelAtGeo(camState.latDeg, camState.lonDeg, camState.altMeters);
   enterWilderness();
+}
+
+// Backwards-compatible alias for pose index / local meters
+function teleportToWorldCoord(xOrLat, zOrLon, poseIdx = -1) {
+  if (poseIdx >= 0 && BIOME_CATALOG[poseIdx]) {
+    teleportToLatLon(BIOME_CATALOG[poseIdx].latDeg, BIOME_CATALOG[poseIdx].lonDeg, poseIdx);
+    return;
+  }
+  const ll = localMetersToLatLon(xOrLat, zOrLon, getActiveOrigin());
+  teleportToLatLon(ll.latDeg, ll.lonDeg, -1);
 }
 
 // Populate Map Pin Quick-Bar & Canvas Events
@@ -695,7 +783,7 @@ if (mapPinBar) {
     btn.type = 'button';
     btn.className = 'loc-btn';
     btn.textContent = `${String(idx + 1).padStart(2, '0')} ${b.name}`;
-    btn.onclick = () => teleportToWorldCoord(b.pos[0], b.pos[1], idx);
+    btn.onclick = () => teleportToLatLon(b.latDeg, b.lonDeg, idx);
     mapPinBar.appendChild(btn);
   });
 }
@@ -722,7 +810,7 @@ if (planetMapCanvas) {
       const dy = e.clientY - globeLastY;
       if (hypot(dx, dy) > 2) globeDragMoved = true;
       globeYaw = normAngle(globeYaw - dx * 0.008);
-      globePitch = clamp(globePitch + dy * 0.008, -1.25, 1.25);
+      globePitch = clamp(globePitch + dy * 0.008, -1.35, 1.35);
       globeLastX = e.clientX;
       globeLastY = e.clientY;
       renderPlanetaryMap();
@@ -738,31 +826,36 @@ if (planetMapCanvas) {
       }
     }
 
-    let worldCoord = null;
+    let geoCoord = null;
     if (mapViewMode === 'globe') {
       const w = planetMapCanvas.width, h = planetMapCanvas.height;
-      worldCoord = globePxToWorld(px, py, w * 0.5, h * 0.5, min(w, h) * 0.43);
+      geoCoord = globePxToLatLon(px, py, w * 0.5, h * 0.5, min(w, h) * 0.43);
     } else {
-      worldCoord = mapPxToWorld(px, py, planetMapCanvas.width, planetMapCanvas.height);
+      geoCoord = mapPxToLatLon(px, py, planetMapCanvas.width, planetMapCanvas.height);
     }
 
     if (mapTooltip) {
-      if (!nearPin && !worldCoord) {
+      if (!nearPin && !geoCoord) {
         mapTooltip.style.display = 'none';
         return;
       }
       mapTooltip.style.display = 'block';
-      mapTooltip.style.left = clamp(e.clientX - rect.left + 14, 8, rect.width - 250) + 'px';
-      mapTooltip.style.top = clamp(e.clientY - rect.top + 14, 8, rect.height - 95) + 'px';
+      mapTooltip.style.left = clamp(e.clientX - rect.left + 14, 8, rect.width - 265) + 'px';
+      mapTooltip.style.top = clamp(e.clientY - rect.top + 14, 8, rect.height - 105) + 'px';
       if (nearPin) {
-        mapTooltip.innerHTML = `<strong style="color:#fde047">${nearPin.id + 1}. ${nearPin.name}</strong><br><span>${nearPin.category} · Elev ${nearPin.elev} · ${nearPin.weather}</span><br><span style="color:#93c5fd">Fauna: ${nearPin.species}</span>`;
-      } else if (worldCoord) {
-        const [wx, wz] = worldCoord;
-        terrainAt(wx, wz, _camT);
-        const geo = worldToLatLonAlt(wx, _camT.h, wz);
-        const elStr = (_camT.h >= 0 ? '+' : '') + _camT.h.toFixed(1) + 'm';
-        const bName = biomeLabelAt(wx, _camT.h < -0.5 ? _camT.h * 0.5 : _camT.h + 1.5, wz);
-        mapTooltip.innerHTML = `<strong style="color:#fde047">${bName}</strong><br><span>${geo.lat.toFixed(1)}°N ${geo.lon.toFixed(1)}°E · Elev/Depth ${elStr}</span><br><span style="color:#86efac">Click to teleport · Drag to rotate globe</span>`;
+        const distKm = greatCircleDistanceMeters(camState.latDeg, camState.lonDeg, nearPin.latDeg, nearPin.lonDeg) * 0.001;
+        const latS = `${abs(nearPin.latDeg).toFixed(1)}°${nearPin.latDeg >= 0 ? 'N' : 'S'}`;
+        const lonS = `${abs(nearPin.lonDeg).toFixed(1)}°${nearPin.lonDeg >= 0 ? 'E' : 'W'}`;
+        mapTooltip.innerHTML = `<strong style="color:#fde047">${nearPin.id + 1}. ${nearPin.name}</strong><br><span>${nearPin.continent} · ${latS} ${lonS} · ${round(distKm).toLocaleString()} km away</span><br><span style="color:#93c5fd">Fauna: ${nearPin.species}</span>`;
+      } else if (geoCoord) {
+        const [latDeg, lonDeg] = geoCoord;
+        samplePlanetAtLatLon(latDeg, lonDeg, _camT, 1);
+        const distKm = greatCircleDistanceMeters(camState.latDeg, camState.lonDeg, latDeg, lonDeg) * 0.001;
+        const elStr = (_camT.h >= 0 ? '+' : '') + round(_camT.h) + 'm';
+        const bName = biomeLabelAtGeo(latDeg, lonDeg, _camT.h < -0.5 ? _camT.h * 0.5 : _camT.h + 2.0);
+        const latS = `${abs(latDeg).toFixed(1)}°${latDeg >= 0 ? 'N' : 'S'}`;
+        const lonS = `${abs(lonDeg).toFixed(1)}°${lonDeg >= 0 ? 'E' : 'W'}`;
+        mapTooltip.innerHTML = `<strong style="color:#fde047">${bName}</strong><br><span>${latS} ${lonS} · Elev ${elStr} · ${round(distKm).toLocaleString()} km away</span><br><span style="color:#86efac">Click to travel · Drag to rotate Earth</span>`;
       }
     }
   });
@@ -780,17 +873,17 @@ if (planetMapCanvas) {
     for (let i = 0; i < projectedGlobePins.length; i++) {
       const p = projectedGlobePins[i];
       if (p.vis && hypot(px - p.px, py - p.py) < 16) {
-        teleportToWorldCoord(p.biome.pos[0], p.biome.pos[1], p.idx);
+        teleportToLatLon(p.biome.latDeg, p.biome.lonDeg, p.idx);
         return;
       }
     }
     if (mapViewMode === 'globe') {
       const w = planetMapCanvas.width, h = planetMapCanvas.height;
-      const wc = globePxToWorld(px, py, w * 0.5, h * 0.5, min(w, h) * 0.43);
-      if (wc) teleportToWorldCoord(wc[0], wc[1], -1);
+      const gc = globePxToLatLon(px, py, w * 0.5, h * 0.5, min(w, h) * 0.43);
+      if (gc) teleportToLatLon(gc[0], gc[1], -1);
     } else {
-      const [wx, wz] = mapPxToWorld(px, py, planetMapCanvas.width, planetMapCanvas.height);
-      teleportToWorldCoord(wx, wz, -1);
+      const [latDeg, lonDeg] = mapPxToLatLon(px, py, planetMapCanvas.width, planetMapCanvas.height);
+      teleportToLatLon(latDeg, lonDeg, -1);
     }
   });
 }
@@ -1047,6 +1140,8 @@ applySettings();
 // Expose planetary test & inspection hooks on window
 window.__terraPrimordia = {
   world,
+  planetQuadtree,
+  camState,
   settings,
   BIOME_CATALOG,
   POSES,
@@ -1054,12 +1149,15 @@ window.__terraPrimordia = {
   inhabitAnimal,
   disembodyAnimal,
   togglePovMode,
+  teleportToLatLon,
   teleportToWorldCoord,
   ascendToPlanetaryOrbit,
+  triggerWhaleBreach: (idx = 0) => world.triggerWhaleBreach('whales', idx),
   toggleMapModal,
   toggleEmbodimentModal,
   toggleSettingsModal,
-  getCameraPos: () => [F[CX], F[CY], F[CZ]]
+  getCameraPos: () => [F[CX], F[CY], F[CZ]],
+  getGeoPos: () => ({ latDeg: camState.latDeg, lonDeg: camState.lonDeg, altMeters: camState.altMeters, layer: camState.layer, stage: camState.stage })
 };
 window.__realism = window.__terraPrimordia;
 
@@ -1070,12 +1168,13 @@ let kf = 0, kb = 0, kl = 0, kr = 0, ku = 0, kd = 0, kShift = 0, kCtrl = 0;
 let mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0;
 
 function pickNextExploreTarget() {
-  autoTargetIdx = (autoTargetIdx + 1 + floor(rr(0, POSES.length - 1))) % POSES.length;
-  const p = POSES[autoTargetIdx];
-  autoTargetX = p[0] + rr(-18, 18);
-  autoTargetY = max(2.2, p[1] + rr(-0.5, 2.5));
-  autoTargetZ = p[2] + rr(-18, 18);
-  autoLegTimer = rr(14, 24);
+  const ang = rr(0, TAU);
+  const dist = rr(28, 85);
+  autoTargetX = F[CX] + cos(ang) * dist;
+  autoTargetZ = F[CZ] + sin(ang) * dist;
+  terrainAt(autoTargetX, autoTargetZ, _camT);
+  autoTargetY = max(_camT.h + 2.8, 3.2) + rr(0, 4.5);
+  autoLegTimer = rr(12, 22);
 }
 
 const KEY_MAP = {
@@ -1086,9 +1185,14 @@ const KEY_MAP = {
   Space: (v) => {
     ku = v;
     if (v && embodiedState.active && embodiedState.groupIdx >= 0) {
-      embodiedState.vy = 7.8;
       const grp = world.wildlifeGroups[embodiedState.groupIdx];
       const it = grp?.items[embodiedState.itemIdx];
+      // Sharks stay submerged; whales & orcas can breach cleanly when near the surface
+      if (grp.name === 'sharks') {
+        embodiedState.vy = 2.4;
+      } else {
+        embodiedState.vy = grp.name === 'whales' || grp.name === 'orcas' ? 9.5 : 7.8;
+      }
       if (it) {
         it.roarTimer = 2.2;
         it.emotion = 3;
@@ -1117,6 +1221,10 @@ window.addEventListener('keydown', (e) => {
     ascendToPlanetaryOrbit();
     return;
   }
+  if (e.code === 'KeyB') {
+    world.triggerWhaleBreach('whales', 0);
+    return;
+  }
   if (e.code === 'Tab') {
     e.preventDefault();
     toggleEmbodimentModal();
@@ -1143,11 +1251,14 @@ window.addEventListener('keydown', (e) => {
       it.roarTimer = 2.8;
       it.emotion = 3;
     }
-    triggerSpeciesCall(grp.speciesId);
+    triggerSpeciesCall(grp.speciesId, 5, F[CY] < 0);
     updateEmbodimentUI();
     return;
   }
   if (KEY_MAP[e.code]) {
+    if (camState.autopilot && (e.code === 'KeyW' || e.code === 'KeyS' || e.code === 'Space' || e.code === 'KeyC')) {
+      camState.autopilot = null;
+    }
     KEY_MAP[e.code](1);
     return;
   }
@@ -1159,6 +1270,7 @@ window.addEventListener('keydown', (e) => {
     if (menu) document.exitPointerLock?.();
   } else if (e.code === 'KeyF') {
     disembodyAnimal();
+    camState.autopilot = null;
     flyActive = !flyActive;
     F[FLT] = 0;
     if (flyActive && menu) enterWilderness();
@@ -1169,7 +1281,7 @@ window.addEventListener('keydown', (e) => {
     if (infoEl) infoEl.style.display = showHud ? 'block' : 'none';
   } else if (e.code === 'KeyU') {
     cleanUi = !cleanUi;
-    settings.hudVisible = !cleanUi;
+    settings.showHud = !cleanUi;
     saveSettings(settings);
     syncBodyClasses();
   } else if (e.code === 'KeyP') {
@@ -1191,7 +1303,7 @@ window.addEventListener('keydown', (e) => {
     settings.todIdx = todIdx;
     saveSettings(settings);
   } else if (e.code === 'KeyN') {
-    initAudio(audioState);
+    initAudio();
     const m = toggleMute();
     settings.muteAudio = m;
     saveSettings(settings);
@@ -1199,7 +1311,7 @@ window.addEventListener('keydown', (e) => {
     if (mb) mb.textContent = m ? 'Audio: Off' : 'Audio: On';
   } else if (e.code.startsWith('Digit')) {
     const idx = parseInt(e.code.slice(5), 10) - 1;
-    if (POSES[idx]) teleportToWorldCoord(POSES[idx][0], POSES[idx][2], idx);
+    if (BIOME_CATALOG[idx]) teleportToLatLon(BIOME_CATALOG[idx].latDeg, BIOME_CATALOG[idx].lonDeg, idx);
   }
 });
 
@@ -1256,7 +1368,7 @@ if (weatherSel) {
 const muteBtn = $('muteBtn');
 if (muteBtn) {
   muteBtn.onclick = () => {
-    initAudio(audioState);
+    initAudio();
     const m = toggleMute();
     muteBtn.textContent = m ? 'Audio: Off' : 'Audio: On';
   };
@@ -1264,7 +1376,7 @@ if (muteBtn) {
 const volRange = $('volRange');
 if (volRange) {
   volRange.oninput = () => {
-    initAudio(audioState);
+    initAudio();
     setVolume(parseFloat(volRange.value));
   };
 }
@@ -1303,18 +1415,18 @@ const canvasFmt = navigator.gpu.getPreferredCanvasFormat();
 const HDR_FMT = 'rgba16float';
 const DEPTH_FMT = 'depth32float';
 
-await say('Synthesizing 16-layer procedural material texture array…', 0.48);
+await say('Synthesizing 32-material procedural texture array…', 0.48);
 const { tex: matTex } = uploadMaterialTextureArray(device);
 const matSmp = device.createSampler({
   magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
   addressModeU: 'repeat', addressModeV: 'repeat'
 });
 
-await say('Uploading planetary heightmap, sunken galleon & continuous wildlife meshes…', 0.62);
+await say('Allocating Cube-Sphere Quadtree tile VRAM pool & anatomical wildlife meshes…', 0.62);
 
 function makeBuf(data, usage) {
   const b = device.createBuffer({
-    size: (data.byteLength + 3) & ~3,
+    size: max(16, (data.byteLength + 3) & ~3),
     usage,
     mappedAtCreation: true
   });
@@ -1323,6 +1435,7 @@ function makeBuf(data, usage) {
   return b;
 }
 
+// FrameU (96 floats = 384 bytes) + PlanetU (16 floats = 64 bytes)
 const UB_FLOATS = 96;
 const UB = new Float32Array(UB_FLOATS);
 const uBuf = device.createBuffer({
@@ -1330,41 +1443,62 @@ const uBuf = device.createBuffer({
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
 });
 
-const hTex = device.createTexture({
-  size: [world.hSize, world.hSize],
-  format: 'rgba32float',
-  usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+const PB_FLOATS = 16;
+const PB = new Float32Array(PB_FLOATS);
+const pBuf = device.createBuffer({
+  size: PB.byteLength,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
 });
-device.queue.writeTexture(
-  { texture: hTex },
-  world.hData,
-  { bytesPerRow: world.hSize * 16 },
-  [world.hSize, world.hSize]
-);
 
-const terVBuf = makeBuf(world.chunks.verts, GPUBufferUsage.VERTEX);
-const terIBuf = makeBuf(world.chunks.indices, GPUBufferUsage.INDEX);
-const chunkInstData = new Float32Array(world.chunks.chunks.length * 4);
-for (let i = 0; i < world.chunks.chunks.length; i++) {
-  const c = world.chunks.chunks[i];
-  chunkInstData[i * 4]     = c.ox;
-  chunkInstData[i * 4 + 1] = c.oz;
-  chunkInstData[i * 4 + 2] = c.scale;
-  chunkInstData[i * 4 + 3] = 0;
-}
-const terInstBuf = makeBuf(chunkInstData, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
+// Genuine 6-Face Cube-Sphere Quadtree GPU Pool (bounded VRAM, deterministic slot reuse)
+const TILE_VERT_STRIDE_BYTES = TILE_FLOATS_PER_VERT * 4; // 48 bytes
+const TILE_BYTES = TILE_TOTAL_VERTS * TILE_VERT_STRIDE_BYTES; // 357 * 48 = 17,136 bytes
+const terTilePoolBuf = device.createBuffer({
+  size: planetQuadtree.maxCachedTiles * TILE_BYTES,
+  usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+});
+const terTileIBuf = makeBuf(planetQuadtree.indices, GPUBufferUsage.INDEX);
+const terTileIdxCount = planetQuadtree.indices.length;
+const terTileSurfIdxCount = TILE_GRID * TILE_GRID * 6; // Surface-only indices for ocean water
 
-const watVBuf = makeBuf(world.skirt.verts, GPUBufferUsage.VERTEX);
-const watIBuf = makeBuf(world.skirt.indices, GPUBufferUsage.INDEX);
+const terTileInstData = new Float32Array(planetQuadtree.maxActiveTiles * 4);
+const terTileInstBuf = device.createBuffer({
+  size: terTileInstData.byteLength,
+  usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+});
+let activeTiles = [];
 
+// Regional Instanced Flora & Set-Pieces (re-synced automatically whenever region origin rebases)
+let uploadedVegVersion = world.getVegVersion();
 const vegGpu = world.vegBuffers.map((vb) => ({
   vBuf: makeBuf(vb.verts, GPUBufferUsage.VERTEX),
   iBuf: makeBuf(vb.indices, GPUBufferUsage.INDEX),
-  instBuf: makeBuf(vb.instData, GPUBufferUsage.VERTEX),
+  instBuf: makeBuf(vb.instData, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
+  instCapBytes: max(16, (vb.instData.byteLength + 3) & ~3),
   count: vb.count,
   instCount: vb.instCount
 }));
 
+function syncVegGpuBuffers() {
+  const curVer = world.getVegVersion();
+  if (curVer === uploadedVegVersion) return;
+  uploadedVegVersion = curVer;
+  for (let i = 0; i < vegGpu.length; i++) {
+    const vb = world.vegBuffers[i];
+    const vg = vegGpu[i];
+    const needed = max(16, (vb.instData.byteLength + 3) & ~3);
+    if (needed > vg.instCapBytes) {
+      vg.instBuf.destroy();
+      vg.instBuf = makeBuf(vb.instData, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
+      vg.instCapBytes = needed;
+    } else if (vb.instData.byteLength > 0) {
+      device.queue.writeBuffer(vg.instBuf, 0, vb.instData);
+    }
+    vg.instCount = vb.instCount;
+  }
+}
+
+// 43 Species Wildlife Cohorts (12-float instance buffers with real CPU IK, pitch & roll)
 const animalGpu = world.wildlifeGroups.map((ag) => ({
   vBuf: makeBuf(ag.verts, GPUBufferUsage.VERTEX),
   iBuf: makeBuf(ag.indices, GPUBufferUsage.INDEX),
@@ -1397,21 +1531,26 @@ const shadowSmp = device.createSampler({ compare: 'less', magFilter: 'linear', m
 const postSmp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
 // ============================================================================
-// Compile WGSL Render & Post Pipelines
+// Compile WGSL Render & Post Pipelines (Unified Cube-Sphere Planet & Ocean)
 // ============================================================================
-await say('Compiling WGSL planetary, ocean caustic & micro-coat shaders…', 0.78);
+await say('Compiling WGSL Cube-Sphere planetary, ocean caustic & IK wildlife shaders…', 0.78);
 
 const bglFrame = device.createBindGroupLayout({
-  entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }]
+  entries: [
+    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+    { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
+  ]
 });
 const bgFrame = device.createBindGroup({
   layout: bglFrame,
-  entries: [{ binding: 0, resource: { buffer: uBuf } }]
+  entries: [
+    { binding: 0, resource: { buffer: uBuf } },
+    { binding: 1, resource: { buffer: pBuf } }
+  ]
 });
 
 const bglEnv = device.createBindGroupLayout({
   entries: [
-    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
     { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
     { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
     { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array', sampleType: 'float' } },
@@ -1421,20 +1560,11 @@ const bglEnv = device.createBindGroupLayout({
 const bgEnv = device.createBindGroup({
   layout: bglEnv,
   entries: [
-    { binding: 0, resource: hTex.createView() },
     { binding: 1, resource: shadowView },
     { binding: 2, resource: shadowSmp },
     { binding: 3, resource: matTex.createView({ dimension: '2d-array' }) },
     { binding: 4, resource: matSmp }
   ]
-});
-
-const bglWater = device.createBindGroupLayout({
-  entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }]
-});
-const bgWater = device.createBindGroup({
-  layout: bglWater,
-  entries: [{ binding: 0, resource: hTex.createView() }]
 });
 
 const bglRays = device.createBindGroupLayout({
@@ -1451,7 +1581,6 @@ const bglPost = device.createBindGroupLayout({
 
 const plFrameOnly = device.createPipelineLayout({ bindGroupLayouts: [bglFrame] });
 const plEnv = device.createPipelineLayout({ bindGroupLayouts: [bglFrame, bglEnv] });
-const plWater = device.createPipelineLayout({ bindGroupLayouts: [bglFrame, bglWater] });
 const plRays = device.createPipelineLayout({ bindGroupLayouts: [bglFrame, bglRays] });
 const plPost = device.createPipelineLayout({ bindGroupLayouts: [bglFrame, bglPost] });
 
@@ -1488,7 +1617,7 @@ const meshVLayout = {
     { shaderLocation: 3, offset: 36, format: 'float32x2' }
   ]
 };
-const instVLayout = {
+const vegInstVLayout = {
   arrayStride: 32,
   stepMode: 'instance',
   attributes: [
@@ -1496,9 +1625,34 @@ const instVLayout = {
     { shaderLocation: 5, offset: 16, format: 'float32x4' }
   ]
 };
+const aniInstVLayout = {
+  arrayStride: 48, // 12 floats: posScale(4), yawPhaseAnimSp(4), bodyPitchRollIK(4)
+  stepMode: 'instance',
+  attributes: [
+    { shaderLocation: 4, offset: 0,  format: 'float32x4' },
+    { shaderLocation: 5, offset: 16, format: 'float32x4' },
+    { shaderLocation: 6, offset: 32, format: 'float32x4' }
+  ]
+};
 const terVLayouts = [
-  { arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] },
-  { arrayStride: 16, stepMode: 'instance', attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x4' }] }
+  {
+    arrayStride: TILE_VERT_STRIDE_BYTES,
+    attributes: [
+      { shaderLocation: 0, offset: 0,  format: 'float32x3' }, // posOffEcef
+      { shaderLocation: 1, offset: 12, format: 'float32'   }, // elev
+      { shaderLocation: 2, offset: 16, format: 'float32x3' }, // normEcef
+      { shaderLocation: 3, offset: 28, format: 'float32'   }, // wetness
+      { shaderLocation: 4, offset: 32, format: 'float32x3' }, // tileCol
+      { shaderLocation: 5, offset: 44, format: 'float32'   }  // biomePacked
+    ]
+  },
+  {
+    arrayStride: 16,
+    stepMode: 'instance',
+    attributes: [
+      { shaderLocation: 6, offset: 0, format: 'float32x4' }   // tileRelENU + tileArcMeters
+    ]
+  }
 ];
 
 const pipeSky = device.createRenderPipeline({
@@ -1514,21 +1668,21 @@ const pipeTer = device.createRenderPipeline({
   layout: plEnv,
   vertex: { module: modTer, entryPoint: 'vs', buffers: terVLayouts },
   fragment: { module: modTer, entryPoint: 'fs', targets: [{ format: HDR_FMT }] },
-  primitive: { topology: 'triangle-list', cullMode: 'back' },
+  primitive: { topology: 'triangle-list', cullMode: 'none' },
   depthStencil: { format: DEPTH_FMT, depthWriteEnabled: true, depthCompare: 'less' },
   multisample: { count: MSAA_SAMPLES }
 });
 
 const pipeTerShadow = device.createRenderPipeline({
-  layout: plWater,
+  layout: plFrameOnly,
   vertex: { module: modTer, entryPoint: 'vsShadow', buffers: terVLayouts },
-  primitive: { topology: 'triangle-list', cullMode: 'back' },
+  primitive: { topology: 'triangle-list', cullMode: 'none' },
   depthStencil: { format: DEPTH_FMT, depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2.0 }
 });
 
 const pipeVeg = device.createRenderPipeline({
   layout: plEnv,
-  vertex: { module: modVeg, entryPoint: 'vs', buffers: [meshVLayout, instVLayout] },
+  vertex: { module: modVeg, entryPoint: 'vs', buffers: [meshVLayout, vegInstVLayout] },
   fragment: { module: modVeg, entryPoint: 'fs', targets: [{ format: HDR_FMT }] },
   primitive: { topology: 'triangle-list', cullMode: 'none' },
   depthStencil: { format: DEPTH_FMT, depthWriteEnabled: true, depthCompare: 'less' },
@@ -1537,14 +1691,14 @@ const pipeVeg = device.createRenderPipeline({
 
 const pipeVegShadow = device.createRenderPipeline({
   layout: plFrameOnly,
-  vertex: { module: modVeg, entryPoint: 'vsShadow', buffers: [meshVLayout, instVLayout] },
+  vertex: { module: modVeg, entryPoint: 'vsShadow', buffers: [meshVLayout, vegInstVLayout] },
   primitive: { topology: 'triangle-list', cullMode: 'none' },
   depthStencil: { format: DEPTH_FMT, depthWriteEnabled: true, depthCompare: 'less', depthBias: 2, depthBiasSlopeScale: 2.0 }
 });
 
 const pipeAni = device.createRenderPipeline({
   layout: plFrameOnly,
-  vertex: { module: modAni, entryPoint: 'vs', buffers: [meshVLayout, instVLayout] },
+  vertex: { module: modAni, entryPoint: 'vs', buffers: [meshVLayout, aniInstVLayout] },
   fragment: { module: modAni, entryPoint: 'fs', targets: [{ format: HDR_FMT }] },
   primitive: { topology: 'triangle-list', cullMode: 'none' },
   depthStencil: { format: DEPTH_FMT, depthWriteEnabled: true, depthCompare: 'less' },
@@ -1553,7 +1707,7 @@ const pipeAni = device.createRenderPipeline({
 
 const pipeAniShadow = device.createRenderPipeline({
   layout: plFrameOnly,
-  vertex: { module: modAni, entryPoint: 'vsShadow', buffers: [meshVLayout, instVLayout] },
+  vertex: { module: modAni, entryPoint: 'vsShadow', buffers: [meshVLayout, aniInstVLayout] },
   primitive: { topology: 'triangle-list', cullMode: 'none' },
   depthStencil: { format: DEPTH_FMT, depthWriteEnabled: true, depthCompare: 'less' }
 });
@@ -1568,8 +1722,8 @@ const addBlend = {
 };
 
 const pipeWat = device.createRenderPipeline({
-  layout: plWater,
-  vertex: { module: modWat, entryPoint: 'vs', buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }] },
+  layout: plFrameOnly,
+  vertex: { module: modWat, entryPoint: 'vs', buffers: terVLayouts },
   fragment: { module: modWat, entryPoint: 'fs', targets: [{ format: HDR_FMT, blend: alphaBlend }] },
   primitive: { topology: 'triangle-list', cullMode: 'none' },
   depthStencil: { format: DEPTH_FMT, depthWriteEnabled: false, depthCompare: 'less-equal' },
@@ -1703,35 +1857,34 @@ if (canTimestamp) {
 }
 
 // ============================================================================
-// Choreographed Planetary FlythroughSpline
+// Gentle Local Scenic Orbit Flythrough (Title Screen / [F] Tour)
 // ============================================================================
-const FLY_DURATION = 52;
+const FLY_DURATION = 48;
 function flyAt(sec) {
-  const u = ((sec % FLY_DURATION) / FLY_DURATION) * POSES.length;
-  const i0 = floor(u) % POSES.length;
-  const i1 = (i0 + 1) % POSES.length;
-  const f = smoothstep(0, 1, u - floor(u));
-  const a = POSES[i0], b = POSES[i1];
-  const cx = lerp(a[0], b[0], f) + sin(sec * 0.45) * 3.5;
-  const cy = lerp(a[1], b[1], f) + sin(sec * 0.65) * 0.6;
-  const cz = lerp(a[2], b[2], f) + cos(sec * 0.45) * 3.5;
-  const tx = lerp(a[3], b[3], f);
-  const ty = lerp(a[4], b[4], f);
-  const tz = lerp(a[5], b[5], f);
-  lookAtPose(cx, cy, cz, tx, ty, tz);
+  const ang = (sec / FLY_DURATION) * TAU;
+  const rad = 26 + sin(sec * 0.25) * 6;
+  const cx = sin(ang) * rad;
+  const cz = cos(ang) * rad;
+  terrainAt(cx, cz, _camT);
+  const cy = max(_camT.h + 5.5, 6.2) + sin(sec * 0.45) * 1.4;
+  terrainAt(0, 0, _camT);
+  const ty = max(_camT.h + 1.5, 1.8);
+  lookAtPose(cx, cy, cz, 0, ty, 0);
 }
 
 // ============================================================================
-// Frame Uniforms & Render Pass Execution
+// Frame Uniforms, PlanetU & Cube-Sphere Quadtree Streaming
 // ============================================================================
 const mProj = new Float32Array(16);
 const mView = new Float32Array(16);
 const mVp = new Float32Array(16);
 const mInvVp = new Float32Array(16);
-const mSunProj = m4Ortho(-220, 220, -220, 220, -240, 260);
+const mSunProj = m4Ortho(-180, 180, -180, 180, -220, 260);
 const mSunView = new Float32Array(16);
 const mSunVp = new Float32Array(16);
-const eyeV = [0, 0, 0], tgtV = [0, 0, 0], upV = [0, 1, 0];
+const zeroEye = [0, 0, 0], tgtV = [0, 0, -1], upV = [0, 1, 0];
+const camEcef = [0, 0, 0];
+const enuFrame = {};
 
 let activeWeatherIdx = 0;
 let rainLevel = 0;
@@ -1780,19 +1933,20 @@ function updateUniforms(dt) {
   const rx = cy, ry = 0, rz = syw;
   const ux = ry * fz - rz * fy, uy = rz * fx - rx * fz, uz = rx * fy - ry * fx;
 
+  // Camera-relative ENU projection with altitude-adaptive near/far planes for 32-bit depth precision
   const fov = 2 * Math.atan(18 / max(10, focalMm));
   const asp = W / max(1, H);
-  eyeV[0] = F[CX]; eyeV[1] = F[CY]; eyeV[2] = F[CZ];
-  tgtV[0] = F[CX] + fx; tgtV[1] = F[CY] + fy; tgtV[2] = F[CZ] + fz;
-  const farPlane = max(920, 720 * (settings.viewDistance || 1.0) + max(0, F[CY]) * 2.5);
-  m4Persp(fov, asp, 0.15, farPlane, mProj);
-  m4Look(eyeV, tgtV, upV, mView);
+  const agl = max(0.5, camState.altMeters - (camState.groundH || 0));
+  const nearPlane = clamp(max(0.22, agl * 0.0028), 0.22, 35000.0);
+  const farPlane = clamp(max(450000.0, camState.altMeters * 8.5 + 3.2e7), 450000.0, 2.2e8);
+  tgtV[0] = fx; tgtV[1] = fy; tgtV[2] = fz;
+  m4Persp(fov, asp, nearPlane, farPlane, mProj);
+  m4Look(zeroEye, tgtV, upV, mView);
   m4Mul(mProj, mView, mVp);
   m4Inv(mVp, mInvVp);
 
-  const sunFocusX = wrapCoord(F[CX]);
-  const sunFocusZ = wrapCoord(F[CZ]);
-  m4Look([sunFocusX + sx * 80, sy * 80, sunFocusZ + sz * 80], [sunFocusX, 0, sunFocusZ], [0, 1, 0], mSunView);
+  // Camera-relative ENU directional shadow frustum
+  m4Look([sx * 95, sy * 95, sz * 95], zeroEye, upV, mSunView);
   m4Mul(mSunProj, mSunView, mSunVp);
 
   const dofStrength = photoMode ? clamp((4.5 - apertureF) / 3.1, 0.08, 1.0) : 0.0;
@@ -1805,6 +1959,7 @@ function updateUniforms(dt) {
     if (instinctPulse >= 0.99) instinctPulse = 0;
   }
 
+  // FrameU (96 floats)
   UB.set(mVp, 0);
   UB.set(mInvVp, 16);
   UB.set(mSunVp, 32);
@@ -1817,114 +1972,142 @@ function updateUniforms(dt) {
   UB[72] = tod.zen[0] * sTint[0]; UB[73] = tod.zen[1] * sTint[1]; UB[74] = tod.zen[2] * sTint[2]; UB[75] = cloud;
   UB[76] = tod.hor[0] * sTint[0]; UB[77] = tod.hor[1] * sTint[1]; UB[78] = tod.hor[2] * sTint[2]; UB[79] = mist;
   UB[80] = tod.fog[0] * sTint[0]; UB[81] = tod.fog[1] * sTint[1]; UB[82] = tod.fog[2] * sTint[2]; UB[83] = fireStr;
-  // Nearest fire/volcano heat source + focusDistM in firePos.w
-  const wCx = wrapCoord(F[CX]), wCz = wrapCoord(F[CZ]);
-  const dFire = hypot(wCx - FIRE_POS[0], wCz - FIRE_POS[1]);
-  const dVolc = hypot(wCx - VOLCANO_POS[0], wCz - VOLCANO_POS[1]);
-  const heatPos = dVolc < dFire ? VOLCANO_POS : FIRE_POS;
-  UB[84] = heatPos[0]; UB[85] = 4.5; UB[86] = heatPos[1]; UB[87] = focusDistM;
-  // wind.xy = windDir, wind.z = windSpeed, wind.w = exposureScale
+  // Local heat origin (only active in volcanic/wildfire biomes) + focusDistM in w
+  const heatActive = (activeRegionBiomeId === 14 || activeRegionBiomeId === 15) ? 1.0 : 0.0;
+  UB[84] = 0.0; UB[85] = heatActive > 0.5 ? 4.5 : -999.0; UB[86] = 0.0; UB[87] = focusDistM;
   UB[88] = 0.82; UB[89] = 0.57; UB[90] = windLevel; UB[91] = evScale;
-  // misc.x = weatherMode, misc.y = rainIntensity, misc.z = dofStrength, misc.w = instinctPulse (+10 if lookdev)
   UB[92] = activeWeatherIdx;
   UB[93] = rainLevel;
   UB[94] = dofStrength;
   UB[95] = (lookdevMode ? 10.0 : 0.0) + clamp(instinctPulse, 0, 0.98);
-
   Q.writeBuffer(uBuf, 0, UB);
 
-  // Camera-centered cube-sphere quadtree terrain chunk streaming
-  updateQuadtreeChunks(F[CX], F[CY], F[CZ], world.chunks.chunks, chunkInstData, settings.viewDistance || 1.0);
-  Q.writeBuffer(terInstBuf, 0, chunkInstData);
+  // PlanetU (16 floats): Camera ECEF ENU basis, true altitude, WGS-84 radius, re-entry heat, density
+  geodeticToEcef(camState.latRad, camState.lonRad, camState.altMeters, camEcef);
+  localENUFrame(camState.latRad, camState.lonRad, enuFrame);
+  const planetR = oblateRadiusAtSinLat(sin(camState.latRad));
+  const atmoRho = atmosphericDensityAt(camState.altMeters);
+
+  PB[0]  = enuFrame.east[0];  PB[1]  = enuFrame.east[1];  PB[2]  = enuFrame.east[2];  PB[3]  = camState.altMeters;
+  PB[4]  = enuFrame.up[0];    PB[5]  = enuFrame.up[1];    PB[6]  = enuFrame.up[2];    PB[7]  = planetR;
+  PB[8]  = enuFrame.south[0]; PB[9]  = enuFrame.south[1]; PB[10] = enuFrame.south[2]; PB[11] = camState.reentryHeat || 0.0;
+  PB[12] = camState.latRad;   PB[13] = camState.lonRad;   PB[14] = atmoRho;           PB[15] = activeRegionBiomeId;
+  Q.writeBuffer(pBuf, 0, PB);
+
+  // Genuine 6-Face Cube-Sphere Quadtree Tile Selection & Bounded GPU Pool Upload
+  const sseThreshold = 15.5 / clamp(settings.viewDistance || 1.0, 0.5, 2.0);
+  activeTiles = planetQuadtree.selectTiles(camEcef, camState.altMeters, fov, max(360, H), sseThreshold, forceSyncTiles);
+  forceSyncTiles = false;
+
+  const E = enuFrame.east, Uv = enuFrame.up, S = enuFrame.south;
+  for (let i = 0; i < activeTiles.length; i++) {
+    const tile = activeTiles[i];
+    if (tile.needsUpload) {
+      Q.writeBuffer(terTilePoolBuf, tile.gpuSlot * TILE_BYTES, tile.verts);
+      tile.needsUpload = false;
+    }
+    // Float64 subtraction (tile.ecefCenter - camEcef) -> exact zero-jitter ENU offset!
+    const dx = tile.ecefCenter[0] - camEcef[0];
+    const dy = tile.ecefCenter[1] - camEcef[1];
+    const dz = tile.ecefCenter[2] - camEcef[2];
+    terTileInstData[i * 4]     = dx * E[0]  + dy * E[1]  + dz * E[2];
+    terTileInstData[i * 4 + 1] = dx * Uv[0] + dy * Uv[1] + dz * Uv[2];
+    terTileInstData[i * 4 + 2] = dx * S[0]  + dy * S[1]  + dz * S[2];
+    terTileInstData[i * 4 + 3] = tile.tileArcMeters;
+  }
+  if (activeTiles.length > 0) {
+    Q.writeBuffer(terTileInstBuf, 0, terTileInstData.subarray(0, activeTiles.length * 4));
+  }
+
+  syncVegGpuBuffers();
 
   if (lookdevMode) {
     world.updateLookdevRig(F[CX], F[CY], F[CZ], F[YAW], F[PIT]);
     Q.writeBuffer(lookdevGpu.instBuf, 0, world.lookdevRig.instData);
   }
-  updateAudio(wCx, F[CY], wCz, activeWeatherIdx, fireStr, windLevel);
+  updateAudio(F[CX], camState.altMeters, F[CZ], activeWeatherIdx, fireStr, windLevel, activeRegionBiomeId, camState.reentryHeat || 0);
 }
 
 function render(dt) {
   updateUniforms(dt);
 
-  const vegScale = clamp(settings.foliageDensity || 1.0, 0.25, 1.25);
-  for (let i = 0; i < vegGpu.length; i++) {
-    const baseCount = world.vegBuffers[i].instCount;
-    vegGpu[i].instCount = i === 7 ? baseCount : max(1, round(baseCount * min(1.0, vegScale)));
-  }
+  const nearSurface = camState.altMeters < 1850;
+  if (nearSurface) {
+    const vegScale = clamp(settings.foliageDensity || 1.0, 0.25, 1.25);
+    for (let i = 0; i < vegGpu.length; i++) {
+      const baseCount = world.vegBuffers[i].instCount;
+      vegGpu[i].instCount = i === 7 ? baseCount : baseCount > 0 ? max(1, round(baseCount * min(1.0, vegScale))) : 0;
+    }
 
-  const faunaScale = clamp(settings.animalDetail || 1.0, 0.25, 1.25);
-  for (let i = 0; i < animalGpu.length; i++) {
-    const baseCount = world.wildlifeGroups[i].instCount;
-    animalGpu[i].instCount = max(1, round(baseCount * min(1.0, faunaScale)));
-    Q.writeBuffer(animalGpu[i].instBuf, 0, world.wildlifeGroups[i].instData);
-  }
+    const faunaScale = clamp(settings.animalDetail || 1.0, 0.25, 1.25);
+    for (let i = 0; i < animalGpu.length; i++) {
+      const baseCount = world.wildlifeGroups[i].instCount;
+      animalGpu[i].instCount = baseCount > 0 ? max(1, round(baseCount * min(1.0, faunaScale))) : 0;
+      Q.writeBuffer(animalGpu[i].instBuf, 0, world.wildlifeGroups[i].instData);
+    }
 
-  const pRanges = world.particleRanges;
-  const includeBubbles = F[CY] < 0.8 || F[CZ] > 175;
-  const includeRain = rainLevel >= 0.02 && F[CY] >= 0;
-  const activeParticleFloats = includeRain
-    ? world.MAX_PARTICLES * 8
-    : includeBubbles
-      ? pRanges.rainStart * 8
-      : pRanges.baseCount * 8;
-  Q.writeBuffer(partInstBuf, 0, world.particles.subarray(0, activeParticleFloats));
+    const pRanges = world.particleRanges;
+    const includeBubbles = camState.altMeters < 1.5 || activeRegionBiomeId === 9 || activeRegionBiomeId === 10 || activeRegionBiomeId === 11;
+    const includeRain = rainLevel >= 0.02 && camState.altMeters >= 0;
+    const activeParticleFloats = includeRain
+      ? world.MAX_PARTICLES * 8
+      : includeBubbles
+        ? pRanges.rainStart * 8
+        : pRanges.baseCount * 8;
+    Q.writeBuffer(partInstBuf, 0, world.particles.subarray(0, activeParticleFloats));
+  }
 
   const enc = device.createCommandEncoder();
 
-  // 1. Directional Sun Shadow Pass
-  const sp = enc.beginRenderPass({
-    colorAttachments: [],
-    depthStencilAttachment: {
-      view: shadowView,
-      depthClearValue: 1.0,
-      depthLoadOp: 'clear',
-      depthStoreOp: 'store'
+  // 1. Directional Sun Shadow Pass (only near surface where crisp flora/creature shadows are visible)
+  if (nearSurface) {
+    const sp = enc.beginRenderPass({
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: shadowView,
+        depthClearValue: 1.0,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store'
+      }
+    });
+    sp.setPipeline(pipeTerShadow);
+    sp.setBindGroup(0, bgFrame);
+    sp.setVertexBuffer(0, terTilePoolBuf);
+    sp.setVertexBuffer(1, terTileInstBuf);
+    sp.setIndexBuffer(terTileIBuf, 'uint32');
+    for (let i = 0; i < activeTiles.length; i++) {
+      const tile = activeTiles[i];
+      if (tile.lod >= 10) {
+        sp.drawIndexed(terTileIdxCount, 1, 0, tile.gpuSlot * TILE_TOTAL_VERTS, i);
+      }
     }
-  });
-  sp.setPipeline(pipeTerShadow);
-  sp.setBindGroup(0, bgFrame);
-  sp.setBindGroup(1, bgWater);
-  sp.setVertexBuffer(0, terVBuf);
-  sp.setVertexBuffer(1, terInstBuf);
-  sp.setIndexBuffer(terIBuf, 'uint32');
-  sp.drawIndexed(world.chunks.count, world.chunks.chunks.length);
 
-  sp.setPipeline(pipeVegShadow);
-  sp.setBindGroup(0, bgFrame);
-  for (let i = 0; i < 4; i++) {
-    const vg = vegGpu[i];
-    if (vg.instCount > 0) {
-      sp.setVertexBuffer(0, vg.vBuf);
-      sp.setVertexBuffer(1, vg.instBuf);
-      sp.setIndexBuffer(vg.iBuf, 'uint32');
-      sp.drawIndexed(vg.count, vg.instCount);
+    sp.setPipeline(pipeVegShadow);
+    sp.setBindGroup(0, bgFrame);
+    for (const idx of [0, 1, 2, 3, 7, 9]) {
+      const vg = vegGpu[idx];
+      if (vg && vg.instCount > 0) {
+        sp.setVertexBuffer(0, vg.vBuf);
+        sp.setVertexBuffer(1, vg.instBuf);
+        sp.setIndexBuffer(vg.iBuf, 'uint32');
+        sp.drawIndexed(vg.count, vg.instCount);
+      }
     }
-  }
-  // Also cast shadow from Sunken Galleon & Savanna Acacias
-  for (const idx of [7, 9]) {
-    const vg = vegGpu[idx];
-    if (vg && vg.instCount > 0) {
-      sp.setVertexBuffer(0, vg.vBuf);
-      sp.setVertexBuffer(1, vg.instBuf);
-      sp.setIndexBuffer(vg.iBuf, 'uint32');
-      sp.drawIndexed(vg.count, vg.instCount);
+
+    sp.setPipeline(pipeAniShadow);
+    for (let i = 0; i < animalGpu.length; i++) {
+      const ag = animalGpu[i];
+      if (ag.instCount > 0) {
+        sp.setVertexBuffer(0, ag.vBuf);
+        sp.setVertexBuffer(1, ag.instBuf);
+        sp.setIndexBuffer(ag.iBuf, 'uint32');
+        sp.drawIndexed(ag.count, ag.instCount);
+      }
     }
+    sp.end();
   }
 
-  sp.setPipeline(pipeAniShadow);
-  for (let i = 0; i < animalGpu.length; i++) {
-    const ag = animalGpu[i];
-    if (ag.instCount > 0) {
-      sp.setVertexBuffer(0, ag.vBuf);
-      sp.setVertexBuffer(1, ag.instBuf);
-      sp.setIndexBuffer(ag.iBuf, 'uint32');
-      sp.drawIndexed(ag.count, ag.instCount);
-    }
-  }
-  sp.end();
-
-  // 2. Main Forward HDR Scene Pass
+  // 2. Main Forward HDR Scene Pass (Unified Cube-Sphere Planet from -10 km Abyss to Deep Space)
   const mainAttach = MSAA_SAMPLES > 1
     ? { view: hdrMsaaView, resolveTarget: hdrView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }
     : { view: hdrView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' };
@@ -1947,68 +2130,79 @@ function render(dt) {
   mp.setBindGroup(0, bgFrame);
   mp.draw(3);
 
+  // Unified Cube-Sphere Quadtree Planet Terrain
   mp.setPipeline(pipeTer);
   mp.setBindGroup(0, bgFrame);
   mp.setBindGroup(1, bgEnv);
-  mp.setVertexBuffer(0, terVBuf);
-  mp.setVertexBuffer(1, terInstBuf);
-  mp.setIndexBuffer(terIBuf, 'uint32');
-  mp.drawIndexed(world.chunks.count, world.chunks.chunks.length);
+  mp.setVertexBuffer(0, terTilePoolBuf);
+  mp.setVertexBuffer(1, terTileInstBuf);
+  mp.setIndexBuffer(terTileIBuf, 'uint32');
+  for (let i = 0; i < activeTiles.length; i++) {
+    mp.drawIndexed(terTileIdxCount, 1, 0, activeTiles[i].gpuSlot * TILE_TOTAL_VERTS, i);
+  }
 
-  mp.setPipeline(pipeVeg);
-  mp.setBindGroup(0, bgFrame);
-  mp.setBindGroup(1, bgEnv);
-  for (let i = 0; i < vegGpu.length; i++) {
-    const vg = vegGpu[i];
-    if (vg.instCount > 0) {
-      mp.setVertexBuffer(0, vg.vBuf);
-      mp.setVertexBuffer(1, vg.instBuf);
-      mp.setIndexBuffer(vg.iBuf, 'uint32');
-      mp.drawIndexed(vg.count, vg.instCount);
+  if (nearSurface) {
+    mp.setPipeline(pipeVeg);
+    mp.setBindGroup(0, bgFrame);
+    mp.setBindGroup(1, bgEnv);
+    for (let i = 0; i < vegGpu.length; i++) {
+      const vg = vegGpu[i];
+      if (vg.instCount > 0) {
+        mp.setVertexBuffer(0, vg.vBuf);
+        mp.setVertexBuffer(1, vg.instBuf);
+        mp.setIndexBuffer(vg.iBuf, 'uint32');
+        mp.drawIndexed(vg.count, vg.instCount);
+      }
+    }
+
+    mp.setPipeline(pipeAni);
+    mp.setBindGroup(0, bgFrame);
+    for (let i = 0; i < animalGpu.length; i++) {
+      const ag = animalGpu[i];
+      if (ag.instCount > 0) {
+        mp.setVertexBuffer(0, ag.vBuf);
+        mp.setVertexBuffer(1, ag.instBuf);
+        mp.setIndexBuffer(ag.iBuf, 'uint32');
+        mp.drawIndexed(ag.count, ag.instCount);
+      }
+    }
+
+    if (lookdevMode) {
+      mp.setVertexBuffer(0, lookdevGpu.sphereVBuf);
+      mp.setVertexBuffer(1, lookdevGpu.instBuf, 0, 96);
+      mp.setIndexBuffer(lookdevGpu.sphereIBuf, 'uint32');
+      mp.drawIndexed(lookdevGpu.sphereCount, 2);
+
+      mp.setVertexBuffer(0, lookdevGpu.swatchVBuf);
+      mp.setVertexBuffer(1, lookdevGpu.instBuf, 96, 48);
+      mp.setIndexBuffer(lookdevGpu.swatchIBuf, 'uint32');
+      mp.drawIndexed(lookdevGpu.swatchCount, 1);
     }
   }
 
-  mp.setPipeline(pipeAni);
-  mp.setBindGroup(0, bgFrame);
-  for (let i = 0; i < animalGpu.length; i++) {
-    const ag = animalGpu[i];
-    if (ag.instCount > 0) {
-      mp.setVertexBuffer(0, ag.vBuf);
-      mp.setVertexBuffer(1, ag.instBuf);
-      mp.setIndexBuffer(ag.iBuf, 'uint32');
-      mp.drawIndexed(ag.count, ag.instCount);
-    }
-  }
-
-  if (lookdevMode) {
-    mp.setVertexBuffer(0, lookdevGpu.sphereVBuf);
-    mp.setVertexBuffer(1, lookdevGpu.instBuf, 0, 64);
-    mp.setIndexBuffer(lookdevGpu.sphereIBuf, 'uint32');
-    mp.drawIndexed(lookdevGpu.sphereCount, 2);
-
-    mp.setVertexBuffer(0, lookdevGpu.swatchVBuf);
-    mp.setVertexBuffer(1, lookdevGpu.instBuf, 64, 32);
-    mp.setIndexBuffer(lookdevGpu.swatchIBuf, 'uint32');
-    mp.drawIndexed(lookdevGpu.swatchCount, 1);
-  }
-
+  // Unified Spherical Planetary Ocean (Same Cube-Sphere Tiles, Surface Triangles Only, All Altitudes!)
   mp.setPipeline(pipeWat);
   mp.setBindGroup(0, bgFrame);
-  mp.setBindGroup(1, bgWater);
-  mp.setVertexBuffer(0, watVBuf);
-  mp.setIndexBuffer(watIBuf, 'uint32');
-  mp.drawIndexed(world.skirt.count);
-
-  mp.setPipeline(pipePar);
-  mp.setBindGroup(0, bgFrame);
-  mp.setVertexBuffer(0, partQBuf);
-  mp.setVertexBuffer(1, partInstBuf);
-  mp.draw(6, pRanges.baseCount, 0, 0);
-  if (includeBubbles) {
-    mp.draw(6, pRanges.bubbleCount, 0, pRanges.bubbleStart);
+  mp.setVertexBuffer(0, terTilePoolBuf);
+  mp.setVertexBuffer(1, terTileInstBuf);
+  mp.setIndexBuffer(terTileIBuf, 'uint32');
+  for (let i = 0; i < activeTiles.length; i++) {
+    if (activeTiles[i].hasOcean) {
+      mp.drawIndexed(terTileSurfIdxCount, 1, 0, activeTiles[i].gpuSlot * TILE_TOTAL_VERTS, i);
+    }
   }
-  if (includeRain) {
-    mp.draw(6, pRanges.rainCount, 0, pRanges.rainStart);
+
+  if (nearSurface) {
+    const pRanges = world.particleRanges;
+    const includeBubbles = camState.altMeters < 1.5 || activeRegionBiomeId === 9 || activeRegionBiomeId === 10 || activeRegionBiomeId === 11;
+    const includeRain = rainLevel >= 0.02 && camState.altMeters >= 0;
+    mp.setPipeline(pipePar);
+    mp.setBindGroup(0, bgFrame);
+    mp.setVertexBuffer(0, partQBuf);
+    mp.setVertexBuffer(1, partInstBuf);
+    mp.draw(6, pRanges.baseCount, 0, 0);
+    if (includeBubbles) mp.draw(6, pRanges.bubbleCount, 0, pRanges.bubbleStart);
+    if (includeRain) mp.draw(6, pRanges.rainCount, 0, pRanges.rainStart);
   }
   mp.end();
 
@@ -2052,11 +2246,12 @@ function render(dt) {
 }
 
 // ============================================================================
-// Main Frame Loop (120 Hz Fixed-Step Accumulator, Zero-Slide Embodiment & Map)
+// Main Frame Loop (120 Hz Fixed-Step, Continuous Atmospheric Re-Entry & IK)
 // ============================================================================
 let dynT = 0, dynN = 0, dynG = 0, dynGN = 0;
 let simAcc = 0;
 const FIXED_DT = world.SIM_DT;
+const reentryInput = { thrustE: 0, thrustN: 0, thrustU: 0, gravityScale: 0, allowUnderwater: true, clearance: 0.72 };
 
 function frame(now) {
   requestAnimationFrame(frame);
@@ -2066,7 +2261,7 @@ function frame(now) {
   const timeScale = clamp(settings.timeSpeedMult ?? 1.0, 0.0, 10.0);
   F[TIME] += dt * max(0.05, timeScale);
 
-  if (!photoMode && dtr < 500 && dynT >= 0) {
+  if (!photoMode && dtr < 500 && dynT >= 0 && settings.autoQuality) {
     dynT += dtr; dynN++;
     if (gpuMs > 0) { dynG += gpuMs; dynGN++; }
     if (dynT > 1500) {
@@ -2107,15 +2302,11 @@ function frame(now) {
     const ax = lkx * kq, ay = lky * kq;
     lkx -= ax; lky -= ay;
 
-    // Mouse orbits independent camera around the animal
     embodiedState.orbitYaw = normAngle(embodiedState.orbitYaw + ax);
     embodiedState.orbitPitch = clamp(embodiedState.orbitPitch + ay, -0.75, 1.25);
 
     it.prevX = it.x; it.prevY = it.y; it.prevZ = it.z; it.prevYaw = it.yaw;
 
-    // A/D turns the animal's body heading directly
-    // In W_ANIMAL, local +Z rotates to (-sin(yaw), cos(yaw)),
-    // so increasing yaw turns left and decreasing yaw turns right.
     const turnInput = kl - kr;
     const turnRate = (grp.turnSpeed || 2.1) * (settings.turnSensitivity || 1.0);
     it.yaw = normAngle(it.yaw + turnInput * turnRate * dt);
@@ -2123,9 +2314,8 @@ function frame(now) {
     const moveFwd = kf - kb;
     const moveUp = ku - kd;
     const speedFactor = kShift ? 1.95 : kCtrl ? 0.42 : 1.0;
-    const spd = grp.baseSpeed * speedMult * speedFactor;
+    const spd = grp.baseSpeed * clamp(speedMult, 0.2, 4.0) * speedFactor;
 
-    // When moving forward, gently steer animal toward camera orbit look and recenter orbitYaw
     if (abs(moveFwd) > 0.01 && abs(embodiedState.orbitYaw) > 0.005) {
       const alignRate = hadMouseInput ? 2.4 : (settings.autoRecenter ? 4.2 : 1.6);
       const steerDelta = embodiedState.orbitYaw * min(1, dt * alignRate);
@@ -2135,7 +2325,6 @@ function frame(now) {
       }
     }
 
-    // Canonical world forward vector for creature heading it.yaw: [-sin(yaw), cos(yaw)]
     const [fwdX, fwdZ] = yawToForward(it.yaw);
     const wantVx = fwdX * moveFwd * spd;
     const wantVz = fwdZ * moveFwd * spd;
@@ -2143,12 +2332,11 @@ function frame(now) {
     F[VX] = lerp(F[VX], wantVx, kVel);
     F[VZ] = lerp(F[VZ], wantVz, kVel);
 
-    let nextX = wrapCoord(it.x + F[VX] * dt);
-    let nextZ = wrapCoord(it.z + F[VZ] * dt);
+    let nextX = it.x + F[VX] * dt;
+    let nextZ = it.z + F[VZ] * dt;
     terrainAt(nextX, nextZ, _camT);
 
     if (grp.domain === 'water') {
-      // 6-DOF Marine Swimming + Surface Breaching
       const pitchClimb = -sin(embodiedState.orbitPitch) * moveFwd;
       const wantVy = (pitchClimb + moveUp * 0.75) * spd * 0.65;
       embodiedState.vy = lerp(embodiedState.vy, wantVy, kVel);
@@ -2157,17 +2345,19 @@ function frame(now) {
         embodiedState.vy -= 14.5 * dt;
         nextY = it.y + embodiedState.vy * dt;
       }
-      nextY = clamp(nextY, _camT.h + 0.45, 4.8);
+      // Sharks remain strictly underwater; whales/orcas may breach above surface
+      const maxSurfaceY = grp.name === 'sharks' ? -1.25 : (grp.name === 'whales' || grp.name === 'orcas') ? 7.5 : -0.45;
+      nextY = clamp(nextY, _camT.h + 0.55, maxSurfaceY);
       it.x = nextX; it.y = nextY; it.z = nextZ;
+      it.pitch = clamp(atan2(embodiedState.vy, max(1.5, hypot(F[VX], F[VZ]))), -0.65, 0.75);
     } else if (grp.domain === 'air') {
-      // Avian Wingbeat Climb, Thermal Soaring & Raptor Stoop Dive
       const pitchClimb = -sin(embodiedState.orbitPitch) * moveFwd;
       const wantVy = (pitchClimb + moveUp * 0.85) * spd * 0.72;
       embodiedState.vy = lerp(embodiedState.vy, wantVy, kVel);
-      const nextY = clamp(it.y + embodiedState.vy * dt, _camT.h + 0.6, 195);
+      const nextY = clamp(it.y + embodiedState.vy * dt, _camT.h + 0.6, 260);
       it.x = nextX; it.y = nextY; it.z = nextZ;
+      it.pitch = clamp(atan2(embodiedState.vy, max(2.0, hypot(F[VX], F[VZ]))), -0.55, 0.55);
     } else {
-      // Terrestrial Zero-Slide IK Quadruped / Biped / Ape Locomotion
       embodiedState.vy -= 18.5 * dt;
       let nextY = it.y + embodiedState.vy * dt;
       if (nextY <= _camT.h) {
@@ -2175,14 +2365,13 @@ function frame(now) {
         embodiedState.vy = 0;
       }
       world.resolveWorldCollision(nextX, nextY + 0.35, nextZ, clamp(0.45 * it.scale, 0.2, 0.95), F[VX], F[VZ], _camCol, 0.0);
-      it.x = wrapCoord(_camCol.x);
-      it.z = wrapCoord(_camCol.z);
+      it.x = _camCol.x;
+      it.z = _camCol.z;
       terrainAt(it.x, it.z, _camT);
       it.y = max(_camT.h, nextY);
     }
 
-    // Zero-Slide Stride Phase Coupling: advance limb animation strictly with actual distance moved
-    const stepDist = hypot(wrapDelta(it.x - it.prevX), wrapDelta(it.z - it.prevZ));
+    const stepDist = hypot(it.x - it.prevX, it.z - it.prevZ);
     if (stepDist > 1e-4) {
       it.phase = (it.phase + (stepDist / max(0.18, it.strideLen)) * 1.45) % TAU;
       it.state = kShift ? 'chase' : 'forage';
@@ -2192,7 +2381,6 @@ function frame(now) {
       if (it.roarTimer <= 0) it.emotion = 0;
     }
 
-    // Mount Camera to either 1st-Person True Eye POV or 3rd-Person Orbit Follow POV
     const sc = it.scale || 1.0;
     const eyeH = grp.eyeOffset[1] * sc;
     const eyeFwd = grp.eyeOffset[2] * sc;
@@ -2212,47 +2400,46 @@ function frame(now) {
       const hMult = settings.followHeight || 1.0;
       const cp = cos(embodiedState.orbitPitch), sp = sin(embodiedState.orbitPitch);
 
-      // Place camera BEHIND the animal (-camFwd) and elevated by orbitPitch
       const camTargetX = it.x - camFwdX * dist * cp;
       const camTargetZ = it.z - camFwdZ * dist * cp;
       terrainAt(camTargetX, camTargetZ, _camT);
-      const camTargetY = max(_camT.h + 0.42, it.y + (eyeH + 0.65) * hMult + sp * dist * 0.65);
+      const camTargetY = max(_camT.h + 0.45, it.y + (eyeH + 0.65) * hMult + sp * dist * 0.65);
 
       const smoothRate = lerp(24, 6, clamp(settings.cameraSmoothing || 0.85, 0.1, 0.98));
       const kCam = 1 - exp(-dt * smoothRate);
-      F[CX] = F[CX] + wrapDelta(camTargetX - F[CX]) * kCam;
+      F[CX] = lerp(F[CX], camTargetX, kCam);
       F[CY] = lerp(F[CY], camTargetY, kCam);
-      F[CZ] = F[CZ] + wrapDelta(camTargetZ - F[CZ]) * kCam;
+      F[CZ] = lerp(F[CZ], camTargetZ, kCam);
 
-      // Orient camera to look at the creature's upper back / head target
       const lookTargetX = it.x + fwdX * (eyeFwd * 0.65);
       const lookTargetY = it.y + eyeH * 0.95;
       const lookTargetZ = it.z + fwdZ * (eyeFwd * 0.65);
-      const dx = wrapDelta(lookTargetX - F[CX]);
+      const dx = lookTargetX - F[CX];
       const dy = lookTargetY - F[CY];
-      const dz = wrapDelta(lookTargetZ - F[CZ]);
+      const dz = lookTargetZ - F[CZ];
       const d = hypot(dx, dy, dz) || 1;
       F[YAW] = atan2(dx, -dz);
       F[PIT] = Math.asin(clamp(dy / d, -0.98, 0.98));
     }
+    syncCamStateFromLocal();
   } else if (!menu && typeof window.__flyOverride === 'undefined') {
     const idleSec = (now - lastActivityAt) / 1000;
-    if (!autoExplore && !photoMode && !lookdevMode && idleSec >= IDLE_EXPLORE_SEC) {
+    if (!autoExplore && !photoMode && !lookdevMode && !camState.autopilot && camState.altMeters < 450 && idleSec >= IDLE_EXPLORE_SEC) {
       autoExplore = true;
       pickNextExploreTarget();
     }
 
     if (autoExplore) {
       autoLegTimer -= dt;
-      const dxT = wrapDelta(autoTargetX - F[CX]), dzT = wrapDelta(autoTargetZ - F[CZ]);
+      const dxT = autoTargetX - F[CX], dzT = autoTargetZ - F[CZ];
       const distT = hypot(dxT, dzT);
       if (distT < 8.5 || autoLegTimer <= 0) pickNextExploreTarget();
 
-      const wantYaw = atan2(dxT, -dzT) + sin(F[TIME] * 0.24) * 0.28;
+      const wantYaw = atan2(dxT, -dzT) + sin(F[TIME] * 0.24) * 0.25;
       F[YAW] = lerpAngle(F[YAW], wantYaw, 1 - exp(-dt * 1.15));
 
       terrainAt(F[CX], F[CZ], _camT);
-      const cruiseAlt = max(_camT.h + 2.4, autoTargetY + sin(F[TIME] * 0.31) * 1.8);
+      const cruiseAlt = max(_camT.h + 2.6, autoTargetY + sin(F[TIME] * 0.31) * 1.6);
       const wantPit = clamp(atan2(cruiseAlt - F[CY], max(12, distT)) * 0.55 - 0.06, -0.45, 0.38);
       F[PIT] = lerp(F[PIT], wantPit, 1 - exp(-dt * 1.2));
 
@@ -2263,14 +2450,17 @@ function frame(now) {
       F[VY] = lerp(F[VY], clamp((cruiseAlt - F[CY]) * 0.85, -3.5, 3.5), kVel);
       F[VZ] = lerp(F[VZ], dirZ * cruiseSpd, kVel);
 
-      const nextX = F[CX] + F[VX] * dt;
-      const nextY = clamp(F[CY] + F[VY] * dt, -24.0, 3200);
-      const nextZ = F[CZ] + F[VZ] * dt;
-      world.resolveWorldCollision(nextX, nextY, nextZ, 0.72, F[VX], F[VZ], _camCol, 0.75);
+      world.resolveWorldCollision(F[CX] + F[VX] * dt, F[CY] + F[VY] * dt, F[CZ] + F[VZ] * dt, 0.72, F[VX], F[VZ], _camCol, 0.75);
       F[CX] = _camCol.x; F[CY] = _camCol.y; F[CZ] = _camCol.z;
       F[VX] = _camCol.vx; F[VZ] = _camCol.vz;
+      syncCamStateFromLocal();
     } else {
-      // Unbounded Free-Fly Observer Mode: Abyssal Trench (-24m) -> Atmosphere -> Orbital Space (4800m)
+      // ======================================================================
+      // Continuous Earth-Scale Geodetic Flight & Atmospheric Re-Entry Engine
+      // Seamless travel from -10 km ocean trenches -> troposphere -> clouds
+      // -> stratosphere -> mesosphere -> 100 km Kármán -> LEO -> Deep Universe
+      // and back down to ANY coordinate on Earth with zero teleportation!
+      // ======================================================================
       const mSens = 0.0022 * (settings.mouseSensitivity || 1.0);
       const ySign = settings.invertY ? -1 : 1;
       const kq = 1 - exp(-dt * 28);
@@ -2282,54 +2472,109 @@ function frame(now) {
       l2x += ax; l2y += ay;
       const dyw = l2x * kq, dpt = l2y * kq;
       l2x -= dyw; l2y -= dpt;
-      F[YAW] += dyw + (kr - kl) * 0.35 * (settings.turnSensitivity || 1.0) * dt;
-      F[PIT] = clamp(F[PIT] - dpt, -1.52, 1.52);
+      camState.yaw = normAngle(camState.yaw + dyw + (kr - kl) * 0.35 * (settings.turnSensitivity || 1.0) * dt);
+      camState.pitch = clamp(camState.pitch - dpt, -1.52, 1.52);
 
-      // Altitude-adaptive planetary & hyper-orbital velocity scaling (1x..10x warp)
-      const altBoost = 1.0 + max(0, F[CY] - 42) * 0.052 + max(0, F[CY] - 220) * 0.14;
-      const warpMult = speedMult <= 3.0 ? speedMult : 3.0 * pow(speedMult / 3.0, 2.35);
-      const baseSpeed = (kShift ? 36.0 : kCtrl ? 3.2 : 12.0) * altBoost;
-      const sp = baseSpeed * warpMult;
-      const mf = kf - kb;
-      const mr = kr - kl;
-      const mu = ku - kd;
-      const cp = cos(F[PIT]), sy = sin(F[YAW]), cy = cos(F[YAW]);
-      const tx = (sy * cp * mf + cy * mr) * sp;
-      const ty = (sin(F[PIT]) * mf + mu) * sp;
-      const tz = (-cy * cp * mf + sy * mr) * sp;
-      const kVel = 1 - exp(-dt * 5.8);
-      F[VX] = lerp(F[VX], tx, kVel);
-      F[VY] = lerp(F[VY], ty, kVel);
-      F[VZ] = lerp(F[VZ], tz, kVel);
+      // Continuous Autopilot Ascent / Re-Entry (press [G] or click Orbit button)
+      if (camState.autopilot === 'ascent') {
+        const targetAlt = 450000; // 450 km LEO
+        const remain = targetAlt - camState.altMeters;
+        if (remain <= 800) {
+          camState.autopilot = null;
+          camState.velU *= 0.25;
+        } else {
+          const wantClimb = clamp(max(160, camState.altMeters * 1.15), 160, 140000);
+          reentryInput.thrustE = 0;
+          reentryInput.thrustN = 0;
+          reentryInput.thrustU = (wantClimb - camState.velU) * 3.8;
+          reentryInput.gravityScale = 0.0;
+          reentryInput.allowUnderwater = true;
+          // Gently tilt view down toward the curving planet as we ascend
+          camState.pitch = lerp(camState.pitch, -0.58, dt * 0.65);
+        }
+      } else if (camState.autopilot === 'descent') {
+        const agl = camState.altMeters - (camState.groundH || 0);
+        if (agl <= 42) {
+          camState.autopilot = null;
+          camState.velU = 0;
+        } else {
+          const wantDesc = -clamp(max(18, agl * 0.42), 18, 95000);
+          reentryInput.thrustE = 0;
+          reentryInput.thrustN = 0;
+          reentryInput.thrustU = (wantDesc - camState.velU) * 2.8;
+          reentryInput.gravityScale = 1.0;
+          reentryInput.allowUnderwater = false;
+          camState.pitch = lerp(camState.pitch, agl > 8000 ? -0.72 : -0.18, dt * 0.85);
+        }
+      } else {
+        // Manual real-meter altitude-adaptive flight control (1x..10x planetary warp)
+        const alt = max(0, camState.altMeters);
+        const altScale = 1.0 + max(0, alt - 35) * 0.018 + pow(max(0, alt - 500), 1.08) * 0.024;
+        const warpMult = speedMult <= 3.0 ? speedMult : 3.0 * pow(speedMult / 3.0, 2.45);
+        const targetSpd = (kShift ? 42.0 : kCtrl ? 3.5 : 14.0) * altScale * warpMult;
 
-      const nextX = F[CX] + F[VX] * dt;
-      const nextY = clamp(F[CY] + F[VY] * dt, -24.0, 7500);
-      const nextZ = F[CZ] + F[VZ] * dt;
-      const minClear = nextY < 0.05 ? 0.42 : 0.58;
-      world.resolveWorldCollision(nextX, nextY, nextZ, 0.65, F[VX], F[VZ], _camCol, minClear);
-      F[CX] = _camCol.x;
-      F[CY] = clamp(_camCol.y, -24.0, 7500);
-      F[CZ] = _camCol.z;
-      F[VX] = _camCol.vx;
-      F[VZ] = _camCol.vz;
-      if (_camCol.hitGround && F[VY] < 0) F[VY] = 0;
+        const mf = kf - kb;
+        const mr = kr - kl;
+        const mu = ku - kd;
+        const cp = cos(camState.pitch), sp = sin(camState.pitch);
+        const sy = sin(camState.yaw), cy = cos(camState.yaw);
+        // ENU horizontal basis: East = +X, North = -Z
+        const fwdE = sy * cp, fwdN = cy * cp, fwdU = sp;
+        const rgtE = cy, rgtN = -sy;
+
+        const wantE = (fwdE * mf + rgtE * mr) * targetSpd;
+        const wantN = (fwdN * mf + rgtN * mr) * targetSpd;
+        const wantU = (fwdU * mf + mu) * targetSpd;
+
+        const resp = 5.4;
+        reentryInput.thrustE = (wantE - camState.velE) * resp;
+        reentryInput.thrustN = (wantN - camState.velN) * resp;
+        reentryInput.thrustU = (wantU - camState.velU) * resp;
+        // Engage gentle natural gravity during high-altitude freefall when not pressing vertical thrust
+        reentryInput.gravityScale = (alt > 4000 && abs(mu) < 0.01 && abs(mf) < 0.01 && camState.velU < -25) ? 0.5 : 0.0;
+        reentryInput.allowUnderwater = true;
+      }
+
+      reentryInput.clearance = camState.altMeters < 0.2 ? 0.45 : 0.72;
+      stepAtmosphericReentry(camState, reentryInput, dt);
+      camState.altMeters = clamp(camState.altMeters, -11000, 2.5e7);
+      syncLocalFromCamState();
+
+      // Solid flora/tree/rock collision ONLY when near surface (< 160m AGL)
+      if (camState.altMeters < (camState.groundH || 0) + 160) {
+        world.resolveWorldCollision(F[CX], F[CY], F[CZ], 0.65, camState.velE, -camState.velN, _camCol, reentryInput.clearance);
+        if (_camCol.hit) {
+          F[CX] = _camCol.x;
+          F[CZ] = _camCol.z;
+          camState.velE = _camCol.vx;
+          camState.velN = -_camCol.vz;
+          syncCamStateFromLocal();
+        }
+      }
+
+      // Floating-origin rebasing: seamlessly stream local flora/wildlife as player travels across Earth
+      if (camState.altMeters < 2200 && hypot(F[CX], F[CZ]) > 190) {
+        rebaseRegionalOrigin(camState.latDeg, camState.lonDeg, -1);
+      }
     }
   }
 
-  audioState.camX = wrapCoord(F[CX]);
-  audioState.camY = F[CY];
-  audioState.camZ = wrapCoord(F[CZ]);
+  audioState.camX = F[CX];
+  audioState.camY = camState.altMeters;
+  audioState.camZ = F[CZ];
 
-  simAcc = min(simAcc + dt, FIXED_DT * 4);
-  while (simAcc >= FIXED_DT) {
-    world.stepSim(FIXED_DT, F[CX], F[CY], F[CZ], rainLevel, windLevel);
-    simAcc -= FIXED_DT;
+  // Step 120 Hz local ecosystem & wildlife simulation only when within regional distance
+  if (camState.altMeters < 2400) {
+    simAcc = min(simAcc + dt, FIXED_DT * 4);
+    while (simAcc >= FIXED_DT) {
+      world.stepSim(FIXED_DT, F[CX], F[CY], F[CZ], rainLevel, windLevel);
+      simAcc -= FIXED_DT;
+    }
+    world.interpolateSim(simAcc / FIXED_DT, F[CY], rainLevel);
   }
-  world.interpolateSim(simAcc / FIXED_DT, F[CY], rainLevel);
 
   render(dt);
 
-  // Refresh live Planetary Map if open
   if (mapModal?.classList.contains('open') && !globeDragging) {
     renderPlanetaryMap();
   }
@@ -2338,42 +2583,57 @@ function frame(now) {
   hudT += dtr;
   if (dtr > hudMax) hudMax = dtr;
   hudTextTimer += dtr;
-  if (hudTextTimer > 380) {
-    if (locEl) locEl.textContent = biomeLabelAt(F[CX], F[CY], F[CZ]);
+  if (hudTextTimer > 360) {
+    if (locEl) locEl.textContent = biomeLabelAtGeo(camState.latDeg, camState.lonDeg, camState.altMeters);
     if (weatherEl) {
-      const exploreTag = autoExplore ? ' · Auto' : '';
+      const exploreTag = autoExplore ? ' · Auto' : camState.autopilot ? ` · ${camState.autopilot === 'ascent' ? 'Ascending' : 'Re-Entry'}` : '';
       weatherEl.textContent = `${WEATHER_NAMES[activeWeatherIdx]} · ${TOD_NAMES[todIdx]} · ${focalMm}mm${exploreTag}`;
     }
     if (settings.showCoordinates && layerLabelEl && coordLabelEl) {
-      const layer = atmosphericLayerAt(F[CY]);
-      const geo = worldToLatLonAlt(F[CX], F[CY], F[CZ]);
-      const latDir = geo.lat >= 0 ? 'N' : 'S';
-      const lonDir = geo.lon >= 0 ? 'E' : 'W';
-      const altTxt = F[CY] >= 1200 ? `${(geo.altKm).toFixed(0)}km` : `${F[CY] >= 0 ? '+' : ''}${F[CY].toFixed(1)}m`;
+      const layer = camState.layer || atmosphericLayerAt(camState.altMeters);
+      const latDir = camState.latDeg >= 0 ? 'N' : 'S';
+      const lonDir = camState.lonDeg >= 0 ? 'E' : 'W';
+      const altM = camState.altMeters;
+      const altTxt = abs(altM) >= 10000
+        ? `${(altM / 1000).toFixed(0)} km`
+        : abs(altM) >= 1000
+          ? `${(altM / 1000).toFixed(2)} km`
+          : `${altM >= 0 ? '+' : ''}${altM.toFixed(1)} m`;
       layerLabelEl.textContent = layer.code;
-      coordLabelEl.textContent = `${abs(geo.lat).toFixed(1)}°${latDir} ${abs(geo.lon).toFixed(1)}°${lonDir} · ${altTxt}`;
+      coordLabelEl.textContent = `${abs(camState.latDeg).toFixed(2)}°${latDir} ${abs(camState.lonDeg).toFixed(2)}°${lonDir} · ${altTxt}`;
     }
     if (embodiedState.active && embodiedState.groupIdx >= 0) {
       updateEmbodimentUI();
     } else if (embodyLabelEl) {
-      const near = world.findNearestAnimal(F[CX], F[CY], F[CZ], 36);
-      if (near) {
-        const nGrp = world.wildlifeGroups[near.groupIdx];
-        const nIt = nGrp.items[near.itemIdx];
-        const emoStr = world.EMOTION_NAMES ? world.EMOTION_NAMES[clamp(round(nIt.emotion || 0), 0, 4)] : '';
-        embodyLabelEl.textContent = `Nearby: ${nGrp.label} (${emoStr})`;
+      if (camState.altMeters >= 12000) {
+        const stg = camState.stage?.label || camState.layer?.name || 'Orbital Flight';
+        const sec = spaceSectorAt(camState.latDeg, camState.lonDeg, camState.altMeters);
+        embodyLabelEl.textContent = `${stg} · ${sec.name}`;
       } else {
-        embodyLabelEl.textContent = F[CY] > 380 ? `Orbital Flight · ${spaceSectorAt(F[CX], F[CY], F[CZ]).name}` : 'Observer: Free-Fly';
+        const near = world.findNearestAnimal(F[CX], F[CY], F[CZ], 36);
+        if (near) {
+          const nGrp = world.wildlifeGroups[near.groupIdx];
+          const nIt = nGrp.items[near.itemIdx];
+          const emoStr = world.EMOTION_NAMES ? world.EMOTION_NAMES[clamp(round(nIt.emotion || 0), 0, 4)] : '';
+          embodyLabelEl.textContent = `Nearby: ${nGrp.label} (${emoStr})`;
+        } else {
+          const nb = nearestBiomeAtGeo(camState.latDeg, camState.lonDeg);
+          embodyLabelEl.textContent = nb.distanceKm > 5 ? `Observer · ${round(nb.distanceKm)} km to ${nb.biome.name}` : 'Observer: Free-Fly';
+        }
       }
     }
     if (survivalLabelEl && world.getActiveSurvivalEvent) {
-      survivalLabelEl.textContent = world.getActiveSurvivalEvent();
+      survivalLabelEl.textContent = camState.reentryHeat > 0.08
+        ? `Atmospheric Re-Entry Plasma · Heat ${round(camState.reentryHeat * 100)}% · ${camState.stage?.label || ''}`
+        : world.getActiveSurvivalEvent();
     }
     if (showHud && infoEl) {
       const fps = round((hudFrames * 1000) / max(1, hudT));
-      const cs = worldToCubeSphere(F[CX], F[CY], F[CZ]);
-      const modeTag = embodiedState.active ? ` · Embody (${embodiedState.pov})` : autoExplore ? ' · Auto-Explore' : lookdevMode ? ' · Lookdev' : photoMode ? ' · Photo' : F[CY] < -0.02 ? ' · Submerged' : F[CY] > 380 ? ' · Orbit' : '';
-      infoEl.textContent = `${fps} fps · max ${hudMax.toFixed(1)} ms · GPU ${gpuMs ? gpuMs.toFixed(2) + ' ms' : 'n/a'} · ${W}×${H} · Face ${cs.face}\nSeed ${WORLD_SEED} · ${focalMm}mm f/${apertureF.toFixed(1)} · EV ${(evScale).toFixed(2)}${modeTag}`;
+      const cDir = latLonToDir(camState.latRad, camState.lonRad);
+      const cs = dirToCubeFaceUV(cDir[0], cDir[1], cDir[2]);
+      const qt = planetQuadtree.stats;
+      const modeTag = embodiedState.active ? ` · Embody (${embodiedState.pov})` : camState.autopilot ? ` · ${camState.autopilot}` : lookdevMode ? ' · Lookdev' : photoMode ? ' · Photo' : camState.altMeters < -0.02 ? ' · Submerged' : camState.altMeters >= KARMAN_LINE_ALT ? ' · Space' : '';
+      infoEl.textContent = `${fps} fps · max ${hudMax.toFixed(1)} ms · GPU ${gpuMs ? gpuMs.toFixed(2) + ' ms' : 'n/a'} · ${W}×${H} · Face ${cs.face} · Tiles ${qt.activeCount}/${qt.cachedCount} LOD${qt.maxLodActive}\nSeed ${WORLD_SEED} · ${focalMm}mm f/${apertureF.toFixed(1)} · EV ${evScale.toFixed(2)}${modeTag}`;
     }
     hudFrames = 0; hudT = 0; hudMax = 0; hudTextTimer = 0;
   }
@@ -2382,11 +2642,11 @@ function frame(now) {
 // ============================================================================
 // Initial First Frame & Reveal
 // ============================================================================
-await say('Warming shaders & illuminating the 18 planetary biomes…', 0.92);
+await say('Warming Cube-Sphere planetary & IK wildlife shaders…', 0.92);
 keep('verdantLoad', 1);
 addEventListener('pagehide', () => keep('verdantLoad', ''));
 
-lookAtPose(...POSES[0]);
+applyBiomePose(0);
 world.updateDynamic(0, 0.016, F[CX], F[CY], F[CZ], 0, 0.45);
 device.pushErrorScope('validation');
 render(0.016);
@@ -2398,11 +2658,7 @@ await Q.onSubmittedWorkDone();
 setTimeout(() => keep('verdantLoad', ''), 12000);
 
 const autoStart = new URLSearchParams(location.search).get('autostart') === '1';
-if (autoStart) {
-  setMenu(false);
-} else {
-  setMenu(true);
-}
+setMenu(!autoStart);
 
 requestAnimationFrame((t) => {
   F[LAST] = t;
