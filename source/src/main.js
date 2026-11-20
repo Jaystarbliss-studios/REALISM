@@ -601,14 +601,241 @@ world.setMarineEventCallback((ev) => {
   else if (ev.type === 'surface_breath') triggerSurfacingBreath(dist);
 });
 
-function rebaseRegionalOrigin(latDeg, lonDeg, preferredBiomeId = -1) {
+function rebaseRegionalOrigin(latDeg, lonDeg, preferredBiomeId = -1, continuousShift = false) {
+  const prevOrigin = continuousShift ? { ...getActiveOrigin() } : null;
   const near = nearestBiomeAtGeo(latDeg, lonDeg);
   const biomeId = preferredBiomeId >= 0 ? preferredBiomeId : near.biome.id;
+  let shiftMeters = null;
+  if (prevOrigin) {
+    const delta = latLonToLocalMeters(latDeg, lonDeg, prevOrigin, { x: 0, z: 0 });
+    shiftMeters = { dx: delta.x, dz: delta.z };
+  }
   setActiveOrigin(latDeg, lonDeg, biomeId);
   activeRegionBiomeId = biomeId;
   const regionSeed = (round(latDeg * 20) * 97 + round(lonDeg * 20) * 31) | 0;
-  world.syncRegion(biomeId, regionSeed);
+  world.syncRegion(biomeId, regionSeed, shiftMeters);
   syncLocalFromCamState();
+}
+
+// ============================================================================
+// Live 5 km Surrounding Topographic & Bathymetric Minimap (Bottom-Right HUD)
+// Samples real planetary elevation/biomes over a 5 km radius (10 km x 10 km)
+// with smart offscreen raster caching and real-time heading/FOV cone overlay.
+// ============================================================================
+const miniMapWrap = $('miniMapWrap');
+const miniMapCanvas = $('miniMapCanvas');
+const mmHeadingEl = $('mmHeading');
+const mmElevEl = $('mmElev');
+if (miniMapWrap) {
+  miniMapWrap.onclick = () => toggleMapModal(true);
+}
+const MM_RADIUS_M = 5000.0; // Exact 5 km surrounding radius
+const MM_RASTER_RES = 96;
+const mmOffCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+if (mmOffCanvas) { mmOffCanvas.width = MM_RASTER_RES; mmOffCanvas.height = MM_RASTER_RES; }
+const mmOffCtx = mmOffCanvas ? mmOffCanvas.getContext('2d') : null;
+const mmImgData = mmOffCtx ? mmOffCtx.createImageData(MM_RASTER_RES, MM_RASTER_RES) : null;
+let mmCacheLat = 999, mmCacheLon = 999, mmLastDrawMs = 0;
+const _mmTmp = {};
+const _mmTmpN = {};
+const _mmPinLoc = {};
+
+function rebuildMiniMapTerrainRaster(centerLatDeg, centerLonDeg) {
+  if (!mmOffCtx || !mmImgData) return;
+  const data = mmImgData.data;
+  const cosLat = max(0.14, cos(centerLatDeg * DEG2RAD));
+  const degPerM_Lat = 1.0 / 111320.0;
+  const degPerM_Lon = 1.0 / (111320.0 * cosLat);
+  const stepM = (MM_RADIUS_M * 2.0) / MM_RASTER_RES;
+
+  for (let py = 0; py < MM_RASTER_RES; py++) {
+    const northM = MM_RADIUS_M - (py + 0.5) * stepM;
+    const lat = clamp(centerLatDeg + northM * degPerM_Lat, -89.9, 89.9);
+    for (let px = 0; px < MM_RASTER_RES; px++) {
+      const eastM = -MM_RADIUS_M + (px + 0.5) * stepM;
+      const lon = normAngle((centerLonDeg + eastM * degPerM_Lon) * DEG2RAD) * RAD2DEG;
+      samplePlanetAtLatLon(lat, lon, _mmTmp, 1);
+
+      // Fast directional hillshade via 1-step north-east elevation sample
+      const latN = clamp(lat + stepM * 0.7 * degPerM_Lat, -89.9, 89.9);
+      const lonE = normAngle((lon + stepM * 0.7 * degPerM_Lon) * DEG2RAD) * RAD2DEG;
+      samplePlanetAtLatLon(latN, lonE, _mmTmpN, 1);
+      const slopeShade = clamp(0.86 + (_mmTmp.h - _mmTmpN.h) * 0.012, 0.52, 1.32);
+
+      let r = 0, g = 0, b = 0;
+      const h = _mmTmp.h;
+      if (h < 0.0) {
+        // Bathymetric ocean relief (turquoise shelf -> deep abyssal trench)
+        const depthT = saturate(-h / 180.0);
+        const shallowT = smoothstep(-14.0, -0.2, h);
+        r = lerp(lerp(18, 6, depthT), 52, shallowT * 0.72);
+        g = lerp(lerp(66, 22, depthT), 146, shallowT * 0.72);
+        b = lerp(lerp(96, 48, depthT), 162, shallowT * 0.72);
+        // Subtle bathymetric depth contour every 25m
+        if (abs(((h % 25) + 25) % 25) < 1.8) { r += 8; g += 14; b += 18; }
+      } else {
+        r = _mmTmp.color[0] * 255 * slopeShade;
+        g = _mmTmp.color[1] * 255 * slopeShade;
+        b = _mmTmp.color[2] * 255 * slopeShade;
+        // Crisp bright coastline edge (0..2.2m elevation)
+        if (h < 2.2) {
+          r = lerp(r, 185, 0.55);
+          g = lerp(g, 212, 0.55);
+          b = lerp(b, 182, 0.55);
+        } else {
+          // Subtle topographic contour lines every 40m
+          const modC = h % 40.0;
+          if (modC < 2.2) { r *= 0.80; g *= 0.82; b *= 0.80; }
+        }
+      }
+      const idx = (py * MM_RASTER_RES + px) * 4;
+      data[idx] = clamp(round(r), 0, 255);
+      data[idx + 1] = clamp(round(g), 0, 255);
+      data[idx + 2] = clamp(round(b), 0, 255);
+      data[idx + 3] = 255;
+    }
+  }
+  mmOffCtx.putImageData(mmImgData, 0, 0);
+  mmCacheLat = centerLatDeg;
+  mmCacheLon = centerLonDeg;
+}
+
+function renderLiveMiniMap(nowMs) {
+  if (!miniMapCanvas || menu || cleanUi || photoMode || settings.showHud === false) return;
+  if (nowMs - mmLastDrawMs < 55) return; // Smooth ~18-20 Hz live radar refresh
+  mmLastDrawMs = nowMs;
+
+  const ctx = miniMapCanvas.getContext('2d');
+  if (!ctx) return;
+  const w = miniMapCanvas.width;
+  const h = miniMapCanvas.height;
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const pxPerM = (w * 0.5) / MM_RADIUS_M;
+
+  // Rebuild cached 5 km terrain raster only when player travels > 40 m
+  const movedM = mmCacheLat > 90
+    ? 99999
+    : greatCircleDistanceMeters(mmCacheLat, mmCacheLon, camState.latDeg, camState.lonDeg);
+  if (movedM > 40.0) {
+    rebuildMiniMapTerrainRaster(camState.latDeg, camState.lonDeg);
+  }
+
+  ctx.clearRect(0, 0, w, h);
+  if (mmOffCanvas) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(mmOffCanvas, 0, 0, w, h);
+  }
+
+  // Subtle dark architectural vignette around edges for legible ticks & rings
+  const vig = ctx.createRadialGradient(cx, cy, w * 0.34, cx, cy, w * 0.62);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(4,10,8,0.46)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, w, h);
+
+  // Concentric range rings: 1 km, 2.5 km, and 5 km boundary
+  ctx.save();
+  ctx.strokeStyle = 'rgba(242, 240, 230, 0.24)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  for (const rKm of [1.0, 2.5, 4.95]) {
+    const rPx = rKm * 1000.0 * pxPerM;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rPx, 0, TAU);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Subtle N-S / E-W crosshair grid
+  ctx.strokeStyle = 'rgba(242, 240, 230, 0.11)';
+  ctx.beginPath();
+  ctx.moveTo(cx, 0); ctx.lineTo(cx, h);
+  ctx.moveTo(0, cy); ctx.lineTo(w, cy);
+  ctx.stroke();
+
+  // Range ring labels (1km, 2.5km) & Cardinal markers (N, E, S, W)
+  ctx.font = '600 8.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = 'rgba(242, 240, 230, 0.68)';
+  ctx.textAlign = 'left';
+  ctx.fillText('1K', cx + 1000 * pxPerM + 2, cy - 3);
+  ctx.fillText('2.5K', cx + 2500 * pxPerM + 2, cy - 3);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e2b857';
+  ctx.fillText('N', cx, 11);
+  ctx.fillStyle = 'rgba(242, 240, 230, 0.55)';
+  ctx.fillText('S', cx, h - 4);
+  ctx.fillText('W', 8, cy + 3);
+  ctx.fillText('E', w - 8, cy + 3);
+
+  // Plot any curated biome landmark pins that fall inside the surrounding 5 km radius
+  const curOrigin = {
+    latDeg: camState.latDeg,
+    lonDeg: camState.lonDeg,
+    latRad: camState.latRad,
+    lonRad: camState.lonRad,
+    enu: localENUFrame(camState.latRad, camState.lonRad)
+  };
+  for (let i = 0; i < BIOME_CATALOG.length; i++) {
+    const b = BIOME_CATALOG[i];
+    const dM = greatCircleDistanceMeters(camState.latDeg, camState.lonDeg, b.latDeg, b.lonDeg);
+    if (dM <= MM_RADIUS_M * 0.96) {
+      latLonToLocalMeters(b.latDeg, b.lonDeg, curOrigin, _mmPinLoc);
+      const px = cx + _mmPinLoc.x * pxPerM;
+      const py = cy + _mmPinLoc.z * pxPerM; // +Z is South on ENU map, +Y is down on canvas
+      ctx.fillStyle = b.forbidden ? '#f87171' : '#e2b857';
+      ctx.fillRect(px - 3, py - 3, 6, 6);
+      ctx.strokeStyle = '#060d0a';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(px - 3, py - 3, 6, 6);
+    }
+  }
+
+  // Live Camera Heading / Field-of-View Cone (+X East, -Z North => canvas angle = yaw - PI/2)
+  const hdgRad = F[YAW];
+  const canvasDirAng = hdgRad - PI * 0.5;
+  const fovHalf = clamp((settings.fov || 54) * DEG2RAD * 0.55, 0.35, 0.85);
+  const coneR = 34;
+  const coneGrad = ctx.createRadialGradient(cx, cy, 2, cx, cy, coneR);
+  coneGrad.addColorStop(0, 'rgba(226, 184, 87, 0.52)');
+  coneGrad.addColorStop(1, 'rgba(226, 184, 87, 0.0)');
+  ctx.fillStyle = coneGrad;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, coneR, canvasDirAng - fovHalf, canvasDirAng + fovHalf);
+  ctx.closePath();
+  ctx.fill();
+
+  // Crisp heading ray
+  ctx.strokeStyle = 'rgba(226, 184, 87, 0.85)';
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + cos(canvasDirAng) * 16, cy + sin(canvasDirAng) * 16);
+  ctx.stroke();
+
+  // Live Player Location Marker (square architectural reticle)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(cx - 3, cy - 3, 6, 6);
+  ctx.strokeStyle = '#060d0a';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(cx - 3, cy - 3, 6, 6);
+  ctx.restore();
+
+  // Update footer heading & elevation readout
+  if (mmHeadingEl) {
+    const hdgDeg = ((round(hdgRad * RAD2DEG) % 360) + 360) % 360;
+    const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const card = dirs[round(hdgDeg / 45) % 8];
+    mmHeadingEl.textContent = `HDG ${String(hdgDeg).padStart(3, '0')}° ${card}`;
+  }
+  if (mmElevEl) {
+    const a = camState.altMeters;
+    mmElevEl.textContent = abs(a) >= 10000
+      ? `${(a / 1000).toFixed(1)}km`
+      : `${a >= 0 ? '+' : ''}${round(a)}m`;
+  }
 }
 
 function applyBiomePose(biomeIdx) {
@@ -2399,7 +2626,7 @@ function updateUniforms(dt) {
 function render(dt) {
   updateUniforms(dt);
 
-  const nearSurface = camState.altMeters < 1850;
+  const nearSurface = camState.altMeters < 1960;
   if (nearSurface) {
     const vegScale = clamp(settings.foliageDensity || 1.0, 0.25, 1.25);
     for (let i = 0; i < vegGpu.length; i++) {
@@ -2920,9 +3147,9 @@ function frame(now) {
         }
       }
 
-      // Floating-origin rebasing: seamlessly stream local flora/wildlife as player travels across Earth
-      if (camState.altMeters < 2200 && hypot(F[CX], F[CZ]) > 190) {
-        rebaseRegionalOrigin(camState.latDeg, camState.lonDeg, -1);
+      // Floating-origin rebasing: seamlessly stream Earth-anchored flora/wildlife with ZERO pop-in
+      if (camState.altMeters < 2200 && hypot(F[CX], F[CZ]) > 155) {
+        rebaseRegionalOrigin(camState.latDeg, camState.lonDeg, -1, true);
       }
     }
   }
@@ -2942,6 +3169,7 @@ function frame(now) {
   }
 
   render(dt);
+  renderLiveMiniMap(now);
 
   if (mapModal?.classList.contains('open') && !globeDragging) {
     renderPlanetaryMap();

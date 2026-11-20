@@ -665,6 +665,22 @@ fn sampleShadow(relP: vec3f) -> f32 {
     n = normalize(n + vec3f(dHx, 0.0, dHz));
   }
 
+  // Far-to-Mid Forest Canopy Rough-Outline LOD on Terrain (160m -> 14km)
+  // Gives distant wooded landscapes organic tree-crown silhouettes & dappled depth BEFORE 3D trees resolve!
+  let vegCover = smoothstep(0.35, 3.5, h) * (1.0 - rockMask) * smoothstep(0.08, 0.22, base.g - base.b * 0.55) * (1.0 - smoothstep(0.55, 0.78, base.r));
+  let canopyLodVis = smoothstep(140.0, 380.0, dist) * (1.0 - smoothstep(4500.0, 16000.0, max(dist, camAlt * 1.5))) * vegCover;
+  if (canopyLodVis > 0.01) {
+    let crownFine = n2(localXZ * 0.085);
+    let crownCluster = fbm(localXZ * 0.024 + vec2f(3.1, -5.4));
+    let crownHeight = crownFine * 0.58 + crownCluster * 0.42;
+    let crownShadow = mix(0.66, 1.18, smoothstep(0.28, 0.78, crownHeight));
+    let crownShade = mix(base * 0.62, base * vec3f(0.88, 1.06, 0.78), smoothstep(0.35, 0.80, crownHeight));
+    base = mix(base, crownShade * crownShadow, canopyLodVis * 0.78);
+    let cGradX = (n2((localXZ + vec2f(4.0, 0.0)) * 0.085) - crownFine) * 0.55 * canopyLodVis;
+    let cGradZ = (n2((localXZ + vec2f(0.0, 4.0)) * 0.085) - crownFine) * 0.55 * canopyLodVis;
+    n = normalize(n + vec3f(cGradX, 0.0, cGradZ));
+  }
+
   // Orbital planetary cloud shadows & swirling cloud cover painted coherently onto the real 3D globe from >18 km
   let orbitalCloudVis = smoothstep(18000.0, 95000.0, camAlt);
   if (orbitalCloudVis > 0.01) {
@@ -758,15 +774,35 @@ struct VSOut {
   @location(4) @interpolate(flat) vMeta: vec3f, // x = charAmt, y = seed, z = elevMeters
 };
 
+fn bayer4x4(p: vec2f) -> f32 {
+  let xi = u32(i32(floor(p.x)) & 3);
+  let yi = u32(i32(floor(p.y)) & 3);
+  let idx = yi * 4u + xi;
+  var m = array<f32, 16>(
+    0.03125, 0.53125, 0.15625, 0.65625,
+    0.78125, 0.28125, 0.90625, 0.40625,
+    0.21875, 0.71875, 0.09375, 0.59375,
+    0.96875, 0.46875, 0.84375, 0.34375
+  );
+  return m[idx];
+}
+
 fn displaceVegRel(inp: VSIn) -> vec3f {
   let c = cos(inp.iRotSeed.x);
   let s = sin(inp.iRotSeed.x);
-  var lp = inp.pos * inp.iPosScale.w;
+  let relBase = inp.iPosScale.xyz - U.camPos.xyz;
+  let rHoriz = length(relBase.xz);
+
+  // Progressive distance LOD: gently soften vertical scale in outer silhouette band (370m -> 500m)
+  // so distant trees emerge organically out of the terrain canopy cover rather than popping in abruptly
+  let distNear = 1.0 - smoothstep(110.0, 280.0, rHoriz);
+  let horizonSettle = 1.0 - smoothstep(370.0, 505.0, rHoriz) * 0.22;
+  let effScale = inp.iPosScale.w * horizonSettle;
+  var lp = inp.pos * effScale;
   var p = vec3f(lp.x * c - lp.z * s, lp.y, lp.x * s + lp.z * c);
 
   let t = U.camPos.w;
   let swayW = inp.uv.y;
-  let relBase = inp.iPosScale.xyz - U.camPos.xyz;
   let curveDrop = dot(relBase.xz, relBase.xz) / max(100000.0, 2.0 * P.enuUp.w);
   let wBase = vec3f(relBase.x, relBase.y - curveDrop, relBase.z);
 
@@ -775,10 +811,10 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
     let wavePhase = t * 1.75 - inp.pos.y * 0.92 + inp.iPosScale.x * 0.14 + inp.iRotSeed.y * 6.28;
     let surgeX = sin(wavePhase) * 0.46 + cos(t * 0.95 + inp.iPosScale.z * 0.16) * 0.25;
     let surgeZ = cos(wavePhase * 0.85) * 0.36 + sin(t * 1.15 + inp.iPosScale.x * 0.15) * 0.22;
-    let bladeFlutter = sin(t * 4.8 + inp.pos.y * 3.5 + inp.pos.x * 5.0) * 0.08 * swayW * swayW;
-    p.x += (surgeX * swayW + bladeFlutter) * inp.iPosScale.w * 0.42;
-    p.z += (surgeZ * swayW + bladeFlutter * 0.8) * inp.iPosScale.w * 0.42;
-    p.y -= abs(surgeX) * swayW * swayW * 0.06 * inp.iPosScale.w;
+    let bladeFlutter = sin(t * 4.8 + inp.pos.y * 3.5 + inp.pos.x * 5.0) * 0.08 * swayW * swayW * distNear;
+    p.x += (surgeX * swayW + bladeFlutter) * effScale * 0.42;
+    p.z += (surgeZ * swayW + bladeFlutter * 0.8) * effScale * 0.42;
+    p.y -= abs(surgeX) * swayW * swayW * 0.06 * effScale;
     let wakeVec = wBase.xz + p.xz;
     let wakeD = length(wakeVec);
     if (wakeD < 4.5 && abs(wBase.y + p.y) < 4.5) {
@@ -789,12 +825,12 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
     }
   } else {
     let gust = sin(t * 1.6 + inp.iRotSeed.y * 6.28 + inp.iPosScale.x * 0.06) * 0.6 + cos(t * 2.9 + inp.iPosScale.z * 0.08) * 0.4;
-    let windStr = U.wind.z * (0.5 + 0.5 * gust);
-    p.x += U.wind.x * windStr * swayW * 0.45 * inp.iPosScale.w;
-    p.z += U.wind.y * windStr * swayW * 0.45 * inp.iPosScale.w;
-    if (inp.uv.x > 0.5) {
-      let f = sin(t * 5.2 + inp.pos.x * 4.1 + inp.pos.z * 3.7 + inp.iRotSeed.y * 12.) * 0.06 * swayW;
-      p.y += f * inp.iPosScale.w;
+    let windStr = U.wind.z * (0.5 + 0.5 * gust) * (0.35 + 0.65 * distNear);
+    p.x += U.wind.x * windStr * swayW * 0.45 * effScale;
+    p.z += U.wind.y * windStr * swayW * 0.45 * effScale;
+    if (inp.uv.x > 0.5 && distNear > 0.02) {
+      let f = sin(t * 5.2 + inp.pos.x * 4.1 + inp.pos.z * 3.7 + inp.iRotSeed.y * 12.) * 0.06 * swayW * distNear;
+      p.y += f * effScale;
     }
   }
   return wBase + p;
@@ -823,9 +859,18 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
 @fragment fn fs(v: VSOut, @builtin(front_facing) ff: bool) -> @location(0) vec4f {
   let relPos = v.relPos;
   let rHoriz = length(relPos.xz);
-  if (rHoriz > 320.0 || P.enuEast.w > 2200.0) {
+
+  // Smooth Progressive Distance & Altitude Silhouette Crossfade (Bayer 4x4 Ordered Dither — ZERO hard pop!)
+  let distFade = 1.0 - smoothstep(320.0, 490.0, rHoriz);
+  let altFade = 1.0 - smoothstep(820.0, 1900.0, P.enuEast.w);
+  let lodAlpha = distFade * altFade;
+  if (lodAlpha <= 0.008 || lodAlpha < bayer4x4(v.pos.xy)) {
     discard;
   }
+
+  // Progressive Material Detail LOD:
+  // 0..120m = full crisp leaf cutouts, bark bump & specular; 120..320m = progressively smooths into cohesive canopy silhouette
+  let nearDetail = 1.0 - smoothstep(105.0, 315.0, rHoriz);
   var n = normalize(select(-v.norm, v.norm, ff));
   let isLeaf = v.uv.x > 0.5;
   let isGlow = v.uv.x > 1.5;
@@ -837,7 +882,7 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
   let suv = vec2f(sp.x * 0.5 + 0.5, 0.5 - sp.y * 0.5);
   let inBounds = suv.x > 0.01 && suv.x < 0.99 && suv.y > 0.01 && suv.y < 0.99 && sp.z > 0. && sp.z < 1.;
   let rawSh = textureSampleCompareLevel(shadowTex, shadowSmp, clamp(suv, vec2f(0.01), vec2f(0.99)), clamp(sp.z - 0.003, 0.0, 1.0));
-  let sh = select(1., rawSh, inBounds);
+  let sh = select(1., mix(1.0, rawSh, nearDetail), inBounds);
 
   let barkLayer = i32(floor(fract(v.vMeta.y * 7.13) * 3.0)) + 9;
   let leafLayer = i32(floor(fract(v.vMeta.y * 11.37) * 3.0)) + 13;
@@ -846,13 +891,14 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
 
   var albedo = v.col;
   if (isLeaf && !isGlow) {
-    albedo = mix(v.col, leafSample.rgb, 0.38);
-    if (leafSample.a < 0.12 && v.uv.y > 0.72) {
+    albedo = mix(v.col, leafSample.rgb, 0.38 * nearDetail);
+    // Close-up alpha-cutout leaf silhouette softens into solid cohesive crown outline at mid/far distance
+    if (nearDetail > 0.25 && leafSample.a < 0.12 * nearDetail && v.uv.y > 0.72) {
       discard;
     }
   } else if (!isLeaf) {
-    albedo = mix(v.col, barkSample.rgb, 0.42);
-    n = normalize(n + vec3f((barkSample.a - 0.5) * 0.25, 0., (barkSample.r - 0.5) * 0.25));
+    albedo = mix(v.col, barkSample.rgb, 0.42 * nearDetail);
+    n = normalize(n + vec3f((barkSample.a - 0.5) * 0.25, 0., (barkSample.r - 0.5) * 0.25) * nearDetail);
   }
 
   albedo = mix(albedo, vec3f(0.06, 0.05, 0.05), v.vMeta.x * 0.85);
@@ -865,9 +911,9 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
 
   if (isLeaf) {
     let backLit = pow(clamp(dot(V, -L + n * 0.35), 0., 1.), 3.0) * (0.4 + 0.6 * sh);
-    col += albedo * U.sunCol.rgb * backLit * 0.92 * U.sunDir.w;
+    col += albedo * U.sunCol.rgb * backLit * (0.35 + 0.57 * nearDetail) * U.sunDir.w;
     let H = normalize(V + L);
-    let spec = pow(max(dot(n, H), 0.), 28.) * 0.14 * sh;
+    let spec = pow(max(dot(n, H), 0.), 28.) * 0.14 * sh * nearDetail;
     col += U.sunCol.rgb * spec * U.sunDir.w;
   }
 
@@ -878,13 +924,17 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
 
   if (elev < -0.05) {
     let cVal = caus(regPos.xz * 0.09 + n.xz * 0.06, U.camPos.w * 0.65);
-    col += vec3f(0.22, 0.58, 0.72) * cVal * smoothstep(-18.0, -0.1, elev) * max(0.0, n.y + 0.35) * 0.55;
+    col += vec3f(0.22, 0.58, 0.72) * cVal * smoothstep(-18.0, -0.1, elev) * max(0.0, n.y + 0.35) * 0.55 * nearDetail;
   }
 
   if (v.vMeta.x > 0.25) {
     let ember = smoothstep(0.62, 0.88, n2(regPos.xy * 3.2 + vec2f(0., -U.camPos.w * 1.4))) * v.vMeta.x * U.fogCol.w;
     col += vec3f(2.4, 0.58, 0.08) * ember;
   }
+
+  // Gently blend distant silhouette color into aerial haze tint before dither exit
+  let silMist = smoothstep(260.0, 470.0, rHoriz);
+  col = mix(col, mix(col, U.skyHorizon.rgb * 0.72, 0.38), silMist);
 
   return vec4f(applyAtmosphere(col, relPos, elev), 1.);
 }

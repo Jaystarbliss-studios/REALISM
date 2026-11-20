@@ -111,6 +111,42 @@ body:not(.g) #bottomStrip, body.clean #bottomStrip { opacity: 0; }
   color: var(--muted); pointer-events: none;
 }
 
+/* Live 5 km Surrounding Topographic Map (Bottom-Right Corner) */
+#miniMapWrap {
+  position: fixed; bottom: 38px; right: 14px; z-index: 6;
+  width: 212px;
+  background: rgba(6, 13, 10, 0.84);
+  border: 1px solid var(--line-strong);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition: opacity 0.25s ease, border-color 0.18s ease;
+}
+#miniMapWrap:hover { border-color: var(--accent); }
+body:not(.g) #miniMapWrap, body.clean #miniMapWrap, body.photo #miniMapWrap {
+  opacity: 0; pointer-events: none;
+}
+.mm-head, .mm-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 8px;
+  font: 600 9.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.10em; text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+.mm-head {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+.mm-head strong { color: var(--accent); font-weight: 700; }
+.mm-foot {
+  border-top: 1px solid var(--line);
+  color: var(--text);
+}
+.mm-foot span:last-child { color: var(--cyan); }
+canvas#miniMapCanvas {
+  display: block; width: 210px; height: 210px;
+  background: #040d14;
+}
+
 /* Minimalist Welcome Overlay (#m) — Interactive Pixel-Matrix Title + Single Enter Button */
 #m {
   position: fixed; inset: 0; z-index: 10;
@@ -390,6 +426,19 @@ body.clean #photoBar { display: none; }
 </header>
 
 <div id="info"></div>
+
+<!-- Live 5 km Surrounding Topographic Map (Bottom-Right) -->
+<aside id="miniMapWrap" title="Live 5 km Surrounding Map — Click to open 3D Planetary Globe [M]" aria-label="Live 5 km Surrounding Map">
+  <div class="mm-head">
+    <span>Local Map</span>
+    <strong>5 KM Radius</strong>
+  </div>
+  <canvas id="miniMapCanvas" width="210" height="210"></canvas>
+  <div class="mm-foot">
+    <span id="mmHeading">HDG 000° N</span>
+    <span id="mmElev">+0m</span>
+  </div>
+</aside>
 
 <!-- Minimalist Optical Camera Strip ([P]) -->
 <div id="photoBar">

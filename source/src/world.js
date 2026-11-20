@@ -3,7 +3,7 @@
 // Continuous Point-to-Point Creature Anatomy, Zero-Slide IK & Survival FSM
 // ============================================================================
 import {
-  PI, TAU, sin, cos, abs, hypot, min, max, sqrt, floor, round, atan2, pow,
+  PI, TAU, DEG2RAD, sin, cos, abs, hypot, min, max, sqrt, floor, round, atan2, pow,
   clamp, saturate, lerp, smoothstep, smin, solveTwoBoneIK,
   normAngle, lerpAngle, yawToForward, velocityToYaw,
   WORLD_SEED, seedRng, rnd, rr, noise2, fbm2, MeshBuilder
@@ -14,11 +14,11 @@ import {
   CLEARING_POS, PLANTATION_POS, SAVANNA_POS, BAMBOO_POS, HIGHLAND_POS,
   BEACH_POS, REEF_POS, ABYSS_POS, ROOKERY_POS, POLAR_POS,
   FIRE_POS, VOLCANO_POS, FORGOTTEN_POS, DUNE_POS,
-  wrapDelta, terrainAt, evaluateHazardAt, getActiveOrigin
+  wrapDelta, terrainAt, evaluateHazardAt, getActiveOrigin, latLonToLocalMeters
 } from './biomes.js';
 import { THIN, MAX_PARTICLES_BUDGET } from './quality.js';
 
-const REGION_HALF = 320;
+const REGION_HALF = 540;
 
 const VEG_DENSITY_SCALE = 1 / THIN;
 const SIZE_VAR_MIN = 0.82;
@@ -1240,9 +1240,21 @@ function buildWorld() {
     }
   }
 
-  function populateRegionFlora(biomeId = 0, seedOffset = 0) {
+  // Deterministic Earth-Anchored Cell Flora Streamer (515 m radius, zero pop-in on floating-origin rebase)
+  const _llTmp = {};
+  const _lmTmp = {};
+  function cellRng(seedInt) {
+    let s = seedInt >>> 0;
+    return () => {
+      s = (s + 0x6D2B79F5) >>> 0;
+      let z = Math.imul(s ^ (s >>> 15), 1 | s);
+      z = (z + Math.imul(z ^ (z >>> 7), 61 | z)) ^ z;
+      return ((z ^ (z >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function populateRegionFlora(biomeId = 0, _seedOffset = 0) {
     activeRegionBiomeId = biomeId;
-    seedRng(WORLD_SEED + biomeId * 9973 + seedOffset * 131);
     clearColliders();
     const instances = [[], [], [], [], [], [], [], [], [], []];
 
@@ -1253,6 +1265,12 @@ function buildWorld() {
       }
     }
 
+    const origin = getActiveOrigin();
+    const CELL_M = 64.0;
+    const STREAM_RAD = 515.0;
+    const CELL_LAT_DEG = CELL_M / 111320.0;
+
+    // Anchor iconic landmarks (Abyssal Sunken Galleon, River Lagoon & Wildlife Clearing) to their true Earth coords
     const isMarineRegion = biomeId === 10 || biomeId === 11;
     const isBeachRegion = biomeId === 9;
     const isPolarRegion = biomeId === 12 || biomeId === 13;
@@ -1263,98 +1281,140 @@ function buildWorld() {
     const isAridRegion = biomeId === 17;
     const isVolcanicRegion = biomeId === 14 || biomeId === 15;
 
-    // Place the iconic Noniv/abyssal-garden Sunken Wooden Galleon in Abyssal Trench / Coral Reef
+    const riverCenter = latLonToLocalMeters(BIOME_CATALOG[0].latDeg, BIOME_CATALOG[0].lonDeg, origin, { x: 0, z: 0 });
+    const clearingCenter = latLonToLocalMeters(BIOME_CATALOG[4].latDeg, BIOME_CATALOG[4].lonDeg, origin, { x: 0, z: 0 });
+
     if (isMarineRegion) {
-      terrainAt(-6, -4, t);
-      pushInst(7, -6, min(-1.5, t.h) + 0.25, -4, 1.35, 0.42, 0.5, 0, 1.0, 3.2, 8.0);
-    }
-
-    // Underwater Kelp Forests, Fluorescent Anemones & Reef Corals wherever local seafloor is submerged
-    const reefCount = round((isMarineRegion ? 340 : 120) * VEG_DENSITY_SCALE);
-    for (let i = 0; i < reefCount; i++) {
-      const rSpan = isMarineRegion ? 175 : 220;
-      const cx = rr(-rSpan, rSpan), cz = rr(-rSpan, rSpan);
-      terrainAt(cx, cz, t);
-      if (t.h < -0.55 && t.h > -36.0 && t.polar < 0.7) {
-        pushInst(8, cx, t.h - 0.05, cz, rr(0.85, 1.75), rr(0, TAU), rnd(), 0, 1.0);
+      const bRef = BIOME_CATALOG[biomeId];
+      latLonToLocalMeters(bRef.latDeg, bRef.lonDeg, origin, _lmTmp);
+      const gx = _lmTmp.x - 6;
+      const gz = _lmTmp.z - 4;
+      if (hypot(gx, gz) < STREAM_RAD) {
+        terrainAt(gx, gz, t);
+        pushInst(7, gx, min(-1.5, t.h) + 0.25, gz, 1.35, 0.42, 0.5, 0, 1.0, 3.2, 8.0);
       }
     }
 
-    // Coastal Coconut Palms along beaches and warm shorelines
-    if (isBeachRegion || biomeId === 0 || biomeId === 3 || biomeId === 5) {
-      const palmCount = round((isBeachRegion ? 110 : 48) * VEG_DENSITY_SCALE);
-      for (let i = 0; i < palmCount; i++) {
-        const x = rr(-195, 195), z = rr(-195, 195);
-        terrainAt(x, z, t);
-        if (t.h > 0.2 && t.h < 6.0 && t.polar < 0.25 && t.dune < 0.55) {
-          pushInst(2, x, t.h, z, rr(0.95, 1.42), rr(0, TAU), rnd(), 0, t.wetness, 0.34, 9.0);
+    const latCellCenter = Math.floor(origin.latDeg / CELL_LAT_DEG);
+    const latRadiusCells = Math.ceil(STREAM_RAD / CELL_M) + 1;
+
+    // Per-64m-cell budgets tuned for rich forests out to 515m while keeping GPU draw count lean
+    const treesPerCell = max(2, round((isMarineRegion || isPolarRegion || isAridRegion ? 2 : 9) * VEG_DENSITY_SCALE));
+    const underPerCell = max(1, round((isMarineRegion || isPolarRegion || isAridRegion ? 1 : 9) * VEG_DENSITY_SCALE));
+    const rocksPerCell = max(1, round(3 * VEG_DENSITY_SCALE));
+    const reefPerCell = max(1, round((isMarineRegion ? 7 : 2) * VEG_DENSITY_SCALE));
+    const waterFloraPerCell = max(1, round(4 * VEG_DENSITY_SCALE));
+
+    for (let dLat = -latRadiusCells; dLat <= latRadiusCells; dLat++) {
+      const ciLat = latCellCenter + dLat;
+      const cellLatBase = ciLat * CELL_LAT_DEG;
+      const cellCosLat = max(0.14, cos((cellLatBase + CELL_LAT_DEG * 0.5) * DEG2RAD));
+      const cellLonDeg = CELL_M / (111320.0 * cellCosLat);
+      const lonCellCenter = Math.floor(origin.lonDeg / cellLonDeg);
+      const lonRadiusCells = Math.ceil(STREAM_RAD / CELL_M) + 1;
+
+      for (let dLon = -lonRadiusCells; dLon <= lonRadiusCells; dLon++) {
+        const ciLon = lonCellCenter + dLon;
+        const cLatMid = (ciLat + 0.5) * CELL_LAT_DEG;
+        const cLonMid = (ciLon + 0.5) * cellLonDeg;
+        latLonToLocalMeters(cLatMid, cLonMid, origin, _llTmp);
+        const cellDist = hypot(_llTmp.x, _llTmp.z);
+        if (cellDist > STREAM_RAD + CELL_M * 0.72) continue;
+
+        // Deterministic hash strictly from Earth cell indices (ciLat, ciLon) — NEVER depends on floating origin!
+        const hash = (Math.imul(ciLat | 0, 73856093) ^ Math.imul(ciLon | 0, 19349663) ^ WORLD_SEED) >>> 0;
+        const cRand = cellRng(hash);
+        const cRange = (a, b) => a + (b - a) * cRand();
+
+        const samplePosInCell = () => {
+          const latD = (ciLat + cRand()) * CELL_LAT_DEG;
+          const lonD = (ciLon + cRand()) * cellLonDeg;
+          latLonToLocalMeters(latD, lonD, origin, _llTmp);
+          return _llTmp;
+        };
+
+        // 1. Primary Canopy Trees & Biome Groves (Streamed seamlessly out to 515 m!)
+        for (let i = 0; i < treesPerCell; i++) {
+          const pos = samplePosInCell();
+          const x = pos.x, z = pos.z;
+          const rSeed = cRand(), rRot = cRand() * TAU, rScale = cRange(0.85, 1.42), rPick = cRand();
+          if (hypot(x, z) > STREAM_RAD) continue;
+          if (hypot(x - riverCenter.x, z - riverCenter.z) < 22) continue;
+          if (hypot(x - clearingCenter.x, z - clearingCenter.z) < 42 && rPick < 0.84) continue;
+          terrainAt(x, z, t);
+          if (t.h < -0.55 || t.polar > 0.45 || t.dune > 0.55 || t.volcano > 0.55) continue;
+          if ((isSavannaRegion || t.savanna > 0.48) && rPick < 0.65) continue;
+          const charAmt = saturate(t.fire * (0.6 + rSeed * 0.65));
+
+          if (isBeachRegion && t.h > 0.2 && t.h < 6.5 && t.polar < 0.25) {
+            pushInst(2, x, t.h, z, rScale, rRot, rSeed, charAmt, t.wetness, 0.34, 9.0);
+          } else if (t.mangrove > 0.32 || biomeId === 3 || (t.h < 0.18 && t.river > 0.25)) {
+            pushInst(3, x, max(-0.28, t.h), z, rScale * 0.94, rRot, rSeed, charAmt, t.wetness, 0.55, 5.2);
+          } else if (t.swamp > 0.28 || biomeId === 1 || (t.wetness > 0.52 && rPick < 0.52)) {
+            pushInst(0, x, max(-0.22, t.h), z, rScale, rRot, rSeed, charAmt, t.wetness, 0.72, 13.5);
+          } else if (isSavannaRegion || isBambooRegion || isPlantationRegion || t.savanna > 0.42 || t.bamboo > 0.32) {
+            const mIdx = isPlantationRegion && rPick < 0.32 ? 2 : 9;
+            pushInst(mIdx, x, t.h, z, rScale, rRot, rSeed, charAmt, t.wetness, 0.55, 10.0);
+          } else if (isHighlandRegion || t.amazon > 0.25 || t.highland > 0.25 || rPick < 0.55) {
+            pushInst(1, x, t.h, z, rScale, rRot, rSeed, charAmt, t.wetness, 0.92, 19.5);
+          } else {
+            pushInst(2, x, t.h, z, rScale * 0.96, rRot, rSeed, charAmt, t.wetness, 0.34, 9.0);
+          }
         }
-      }
-    }
 
-    // Savanna Acacias, Bamboo Groves, Heritage Plantation & Highland Cloud Trees
-    if (isSavannaRegion || isBambooRegion || isPlantationRegion || isHighlandRegion) {
-      const groveCount = round(260 * VEG_DENSITY_SCALE);
-      for (let i = 0; i < groveCount; i++) {
-        const x = rr(-210, 210), z = rr(-210, 210);
-        terrainAt(x, z, t);
-        if (t.h > 0.35 && t.polar < 0.3) {
-          const mIdx = isPlantationRegion && i % 3 === 0 ? 2 : isHighlandRegion && i % 2 === 0 ? 1 : 9;
-          pushInst(mIdx, x, t.h, z, rr(0.88, 1.48), rr(0, TAU), rnd(), 0, t.wetness, 0.55, 10.0);
+        // 2. Underwater Kelp Forests, Fluorescent Anemones & Reef Corals (within 340 m)
+        if (cellDist < 340) {
+          for (let i = 0; i < reefPerCell; i++) {
+            const pos = samplePosInCell();
+            const x = pos.x, z = pos.z;
+            const rScale = cRange(0.85, 1.75), rRot = cRand() * TAU, rSeed = cRand();
+            if (hypot(x, z) > 335) continue;
+            terrainAt(x, z, t);
+            if (t.h < -0.55 && t.h > -36.0 && t.polar < 0.7) {
+              pushInst(8, x, t.h - 0.05, z, rScale, rRot, rSeed, 0, 1.0);
+            }
+          }
         }
-      }
-    }
 
-    // Primary Biome Canopy Trees (Cypress, Kapok, Palm, Mangrove, Acacia adapted to real local climate)
-    const treeCount = round((isMarineRegion || isPolarRegion || isAridRegion ? 90 : 480) * VEG_DENSITY_SCALE);
-    for (let i = 0; i < treeCount; i++) {
-      const x = rr(-240, 240), z = rr(-240, 240);
-      if (biomeId === 0 && hypot(x, z) < 22) continue; // Keep central River Lagoon open
-      terrainAt(x, z, t);
-      if (t.h < -0.55 || t.polar > 0.45 || t.dune > 0.55 || t.volcano > 0.55) continue;
-      if (isSavannaRegion && rnd() < 0.72) continue;
-      if (biomeId === 4 && hypot(x, z) < 42 && rnd() < 0.84) continue; // Sunlit Wildlife Clearing
-      const rot = rr(0, TAU), seed = rnd(), charAmt = saturate(t.fire * rr(0.6, 1.25));
-      if (t.mangrove > 0.32 || biomeId === 3 || (t.h < 0.18 && t.river > 0.25)) {
-        pushInst(3, x, max(-0.28, t.h), z, rr(0.85, 1.32), rot, seed, charAmt, t.wetness, 0.55, 5.2);
-      } else if (t.swamp > 0.28 || biomeId === 1 || (t.wetness > 0.52 && rnd() < 0.55)) {
-        pushInst(0, x, max(-0.22, t.h), z, rr(0.88, 1.38), rot, seed, charAmt, t.wetness, 0.72, 13.5);
-      } else if (t.savanna > 0.45 || t.bamboo > 0.35) {
-        pushInst(9, x, t.h, z, rr(0.88, 1.42), rot, seed, charAmt, t.wetness, 0.55, 10.0);
-      } else if (t.amazon > 0.25 || t.highland > 0.25 || rnd() < 0.52) {
-        pushInst(1, x, t.h, z, rr(0.85, 1.40), rot, seed, charAmt, t.wetness, 0.92, 19.5);
-      } else {
-        pushInst(2, x, t.h, z, rr(0.85, 1.35), rot, seed, charAmt, t.wetness, 0.34, 9.0);
-      }
-    }
+        // 3. Boulders, Kopjes, Obsidian Rocks & Polar Glacial Ice Blocks (within 420 m)
+        if (cellDist < 420) {
+          for (let i = 0; i < rocksPerCell; i++) {
+            const pos = samplePosInCell();
+            const x = pos.x, z = pos.z;
+            const rScale = (isPolarRegion || isVolcanicRegion) ? cRange(1.1, 2.3) : cRange(0.75, 1.8);
+            const rRot = cRand() * TAU, rSeed = cRand();
+            if (hypot(x, z) > 410) continue;
+            terrainAt(x, z, t);
+            if (t.h < -1.5 && !isMarineRegion && !isPolarRegion) continue;
+            pushInst(5, x, t.h - 0.08, z, rScale, rRot, rSeed, saturate(t.fire), t.wetness, 0.78, 0.95);
+          }
+        }
 
-    // Lush Understory (Ferns, Monstera, Heliconia, Grasses)
-    const underCount = round((isMarineRegion || isPolarRegion || isAridRegion ? 80 : 720) * VEG_DENSITY_SCALE);
-    for (let i = 0; i < underCount; i++) {
-      const x = rr(-220, 220), z = rr(-220, 220);
-      terrainAt(x, z, t);
-      if (t.h < 0.02 || t.dune > 0.55 || t.volcano > 0.55 || t.polar > 0.38) continue;
-      pushInst(4, x, t.h, z, rr(0.75, 1.55), rr(0, TAU), rnd(), saturate(t.fire * 1.1), t.wetness);
-    }
+        // 4. Close-to-Mid Understory Ferns & Grasses (within 270 m — blends softly in shader)
+        if (cellDist < 275) {
+          for (let i = 0; i < underPerCell; i++) {
+            const pos = samplePosInCell();
+            const x = pos.x, z = pos.z;
+            const rScale = cRange(0.75, 1.55), rRot = cRand() * TAU, rSeed = cRand();
+            if (hypot(x, z) > 265) continue;
+            terrainAt(x, z, t);
+            if (t.h < 0.02 || t.dune > 0.55 || t.volcano > 0.55 || t.polar > 0.38) continue;
+            pushInst(4, x, t.h, z, rScale, rRot, rSeed, saturate(t.fire * 1.1), t.wetness);
+          }
+        }
 
-    // Boulders, Kopjes, Obsidian Rocks & Polar Glacial Ice Blocks
-    const rockCount = round(300 * VEG_DENSITY_SCALE);
-    for (let i = 0; i < rockCount; i++) {
-      const x = rr(-245, 245), z = rr(-245, 245);
-      terrainAt(x, z, t);
-      if (t.h < -1.5 && !isMarineRegion && !isPolarRegion) continue;
-      const sc = isPolarRegion || isVolcanicRegion ? rr(1.1, 2.3) : rr(0.75, 1.8);
-      pushInst(5, x, t.h - 0.08, z, sc, rr(0, TAU), rnd(), saturate(t.fire), t.wetness, 0.78, 0.95);
-    }
-
-    // Water Lilies, Sawgrass & Cattails in warm freshwater/estuary shallows
-    if (!isPolarRegion && !isMarineRegion && !isAridRegion) {
-      const waterFloraCount = round(340 * VEG_DENSITY_SCALE);
-      for (let i = 0; i < waterFloraCount; i++) {
-        const x = rr(-210, 210), z = rr(-210, 210);
-        terrainAt(x, z, t);
-        if (t.h > -1.4 && t.h < 0.28 && t.polar < 0.15) {
-          pushInst(6, x, 0.01, z, rr(0.75, 1.45), rr(0, TAU), rnd(), saturate(t.fire * 0.8), 1.0);
+        // 5. Water Lilies, Sawgrass & Cattails in warm freshwater shallows (within 260 m)
+        if (!isPolarRegion && !isMarineRegion && !isAridRegion && cellDist < 265) {
+          for (let i = 0; i < waterFloraPerCell; i++) {
+            const pos = samplePosInCell();
+            const x = pos.x, z = pos.z;
+            const rScale = cRange(0.75, 1.45), rRot = cRand() * TAU, rSeed = cRand();
+            if (hypot(x, z) > 255) continue;
+            terrainAt(x, z, t);
+            if (t.h > -1.4 && t.h < 0.28 && t.polar < 0.15) {
+              pushInst(6, x, 0.01, z, rScale, rRot, rSeed, saturate(t.fire * 0.8), 1.0);
+            }
+          }
         }
       }
     }
@@ -1848,7 +1908,8 @@ function buildWorld() {
   };
 
   // Relocate native & non-native cohorts cleanly onto valid local terrain/water when changing regions
-  function syncRegion(biomeId = 0, seedOffset = 0) {
+  // When shiftMeters = { dx, dz } is supplied (continuous walking/flying rebase), preserve nearby animal positions seamlessly!
+  function syncRegion(biomeId = 0, seedOffset = 0, shiftMeters = null) {
     populateRegionFlora(biomeId, seedOffset);
     seedRng(WORLD_SEED + biomeId * 4129 + seedOffset * 71);
     const st = {};
@@ -1866,12 +1927,28 @@ function buildWorld() {
           it.inactiveInRegion = true;
           continue;
         }
+        // Continuous floating-origin shift: keep nearby visible animals locked in place on Earth (zero pop!)
+        if (shiftMeters && !it.inactiveInRegion) {
+          const sx = it.x - shiftMeters.dx;
+          const sz = it.z - shiftMeters.dz;
+          if (hypot(sx, sz) < 285) {
+            it.x = sx;
+            it.prevX -= shiftMeters.dx;
+            it.homeX -= shiftMeters.dx;
+            it.goalX -= shiftMeters.dx;
+            it.z = sz;
+            it.prevZ -= shiftMeters.dz;
+            it.homeZ -= shiftMeters.dz;
+            it.goalZ -= shiftMeters.dz;
+            continue;
+          }
+        }
         it.inactiveInRegion = false;
         let placed = false;
         for (let tries = 0; tries < 22; tries++) {
-          const rMax = grp.domain === 'water' ? 125 : 110;
-          const px = rr(-rMax, rMax);
-          const pz = rr(-rMax, rMax);
+          const rMax = grp.domain === 'water' ? 145 : 135;
+          const px = shiftMeters ? rr(120, 265) * (rnd() < 0.5 ? 1 : -1) : rr(-rMax, rMax);
+          const pz = shiftMeters ? rr(120, 265) * (rnd() < 0.5 ? 1 : -1) : rr(-rMax, rMax);
           terrainAt(px, pz, st);
           if (grp.domain === 'water') {
             const minNeed = (grp.speciesId === 31 || grp.speciesId === 32) ? -4.5 : grp.speciesId === 33 ? -3.2 : -0.6;
