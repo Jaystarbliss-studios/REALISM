@@ -2,13 +2,13 @@
 // REALISM — Dynamic Quality Tiers, Persistent Settings & Hardware Budgets
 // ============================================================================
 
-export const SHADOW_SIZE = 2048;
-export const AA_SAMPLES = 4;
-export const TARGET_GPU_MS = 14.5;
-export const RES_SCALE_MIN = 0.55;
+export const SHADOW_SIZE = 1024;
+export const AA_SAMPLES = 1;
+export const TARGET_GPU_MS = 10.5;
+export const RES_SCALE_MIN = 0.50;
 export const RES_SCALE_MAX = 1.25;
 export const THIN = 1.0;
-export const MAX_PARTICLES_BUDGET = 4200;
+export const MAX_PARTICLES_BUDGET = 1800;
 
 export const keep = (key, val) => {
   try {
@@ -28,9 +28,9 @@ export const QUALITY_TIERS = [
   {
     name: 'Ultra',
     scale: 1.0,
-    shadowSize: 2048,
-    reflSize: 512,
-    raySteps: 28,
+    shadowSize: 1024,
+    reflSize: 384,
+    raySteps: 16,
     vegRatio: 1.0,
     animalRatio: 1.0,
     particleRatio: 1.0,
@@ -39,39 +39,39 @@ export const QUALITY_TIERS = [
   },
   {
     name: 'High',
-    scale: 0.92,
-    shadowSize: 2048,
-    reflSize: 384,
-    raySteps: 20,
-    vegRatio: 0.90,
+    scale: 0.85,
+    shadowSize: 1024,
+    reflSize: 256,
+    raySteps: 12,
+    vegRatio: 0.85,
     animalRatio: 1.0,
-    particleRatio: 0.85,
-    bloomRatio: 0.5,
-    terrainLodBias: 0.9
+    particleRatio: 0.80,
+    bloomRatio: 0.4,
+    terrainLodBias: 0.88
   },
   {
     name: 'Balanced',
-    scale: 0.80,
-    shadowSize: 1024,
-    reflSize: 256,
-    raySteps: 14,
-    vegRatio: 0.75,
-    animalRatio: 0.9,
-    particleRatio: 0.65,
-    bloomRatio: 0.35,
-    terrainLodBias: 0.8
-  },
-  {
-    name: 'Performance',
-    scale: 0.65,
+    scale: 0.72,
     shadowSize: 1024,
     reflSize: 256,
     raySteps: 10,
-    vegRatio: 0.55,
-    animalRatio: 0.75,
-    particleRatio: 0.45,
-    bloomRatio: 0.25,
-    terrainLodBias: 0.65
+    vegRatio: 0.70,
+    animalRatio: 0.85,
+    particleRatio: 0.60,
+    bloomRatio: 0.3,
+    terrainLodBias: 0.76
+  },
+  {
+    name: 'Performance',
+    scale: 0.58,
+    shadowSize: 1024,
+    reflSize: 192,
+    raySteps: 8,
+    vegRatio: 0.50,
+    animalRatio: 0.70,
+    particleRatio: 0.40,
+    bloomRatio: 0.2,
+    terrainLodBias: 0.62
   }
 ];
 
@@ -79,7 +79,7 @@ export const DEFAULT_SETTINGS = {
   // 1. Graphics
   qualityTier: 1, // 0=Ultra, 1=High, 2=Balanced, 3=Performance
   autoQuality: true,
-  resolutionScale: 1.0,
+  resolutionScale: 0.85,
   viewDistance: 1.0,
   foliageDensity: 1.0,
   animalDetail: 1.0,

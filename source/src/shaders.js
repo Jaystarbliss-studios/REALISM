@@ -77,6 +77,18 @@ fn fbm(p_in: vec2f) -> f32 {
   }
   return v;
 }
+fn fbm3(p_in: vec2f) -> f32 {
+  var p = p_in;
+  var v = 0.;
+  var a = 0.5;
+  let m = mat2x2f(1.6, -1.2, 1.2, 1.6);
+  for (var i = 0; i < 3; i++) {
+    v += a * n2(p);
+    p = m * p + vec2f(11.3, 7.7);
+    a *= 0.5;
+  }
+  return v;
+}
 fn voronoi(x: vec2f) -> vec2f {
   let n = floor(x);
   let f = fract(x);
@@ -97,37 +109,35 @@ fn voronoi(x: vec2f) -> vec2f {
   return vec2f(sqrt(md), id);
 }
 
-// Exact Noniv/abyssal-garden 5-iteration trigonometric phase-warped caustic solver
+// Fast 3-iteration trigonometric phase-warped caustic solver (Noniv/abyssal-garden look, 40% faster)
 fn caus(uv: vec2f, t: f32) -> f32 {
   let p = (uv - floor(uv)) * 6.2831853 - 250.0;
   var i = p;
   var c = 1.0;
-  for (var n = 1; n <= 5; n++) {
+  for (var n = 1; n <= 3; n++) {
     let tt = t * (1.0 - 3.5 / f32(n));
     i = p + vec2f(cos(tt - i.x) + sin(tt + i.y), sin(tt - i.y) + cos(tt + i.x));
     let s = sin(i.x + tt);
     let k = cos(i.y + tt);
     c += abs(s * k) / (1.25 * sqrt(s * s + k * k) + 1e-4);
   }
-  c = 1.17 - pow(c / 5.0, 1.4);
-  let v = pow(abs(c), 8.0);
+  c = 1.17 - pow(c / 3.0, 1.38);
+  let v = pow(abs(c), 7.5);
   return clamp(v * smoothstep(0.08, 0.72, v), 0.0, 1.85);
 }
 
-// Exact Noniv/abyssal-garden procedural rock detail, dual cracks, Worley pits & coralline fluorescence
+// Procedural seabed rock detail, cracks, Worley pits & coralline fluorescence (fast close-range)
 fn abyssalRockDetail(wp: vec3f, n: vec3f) -> vec4f {
   let uv = wp.xz * 0.18 + vec2f(wp.y * 0.11);
-  let w = vec2f(fbm(uv * 1.4), fbm(uv * 1.4 + vec2f(5.2, 1.3)));
+  let w = vec2f(fbm3(uv * 1.4), fbm3(uv * 1.4 + vec2f(5.2, 1.3)));
   let duv = uv + (w - 0.5) * 0.45;
-  let baseFbm = fbm(duv * 2.2);
+  let baseFbm = fbm3(duv * 2.2);
   let ridged = 1.0 - abs(n2(duv * 4.5) * 2.0 - 1.0);
   let vor1 = voronoi(duv * 3.8);
-  let vor2 = voronoi(duv * 7.5 + vec2f(3.7, 9.1));
   let cr = smoothstep(0.02, 0.14, vor1.x);
-  let cr2 = smoothstep(0.03, 0.18, vor2.x);
-  let pits = smoothstep(0.12, 0.36, vor2.x);
-  let rockH = clamp((baseFbm * 0.55 + ridged * 0.45) * cr * cr2 * (0.7 + 0.3 * pits), 0.0, 1.0);
-  let mottle = fbm(duv * 6.0 + vec2f(13.1, 4.7));
+  let pits = smoothstep(0.12, 0.36, vor1.x);
+  let rockH = clamp((baseFbm * 0.55 + ridged * 0.45) * cr * (0.7 + 0.3 * pits), 0.0, 1.0);
+  let mottle = fbm3(duv * 6.0 + vec2f(13.1, 4.7));
   let flu = smoothstep(0.25, 0.85, n.y) * smoothstep(0.54, 0.76, mottle) * smoothstep(-18.0, -0.8, wp.y);
   return vec4f(w.x - 0.5, w.y - 0.5, rockH, flu);
 }
@@ -138,25 +148,25 @@ fn evalAurora(dir: vec3f, t: f32) -> vec3f {
   if (dir.y <= 0.01) { return vec3f(0.0); }
   let skyDomeUV = dir.xz / (dir.y + 0.22);
   var col = vec3f(0.0);
-  for (var i = 0; i < 3; i++) {
+  for (var i = 0; i < 2; i++) {
     let fi = f32(i);
-    let scale = 0.55 + fi * 0.28;
-    let drift = vec2f(t * (0.014 + fi * 0.005), -t * 0.009 + fi * 2.3);
+    let scale = 0.55 + fi * 0.34;
+    let drift = vec2f(t * (0.014 + fi * 0.006), -t * 0.009 + fi * 2.3);
     let p = skyDomeUV * scale + drift;
     let flow = vec2f(
-      fbm(p * 1.15 + vec2f(0.0, t * 0.03)),
-      fbm(p * 1.15 + vec2f(4.7, -t * 0.025))
+      fbm3(p * 1.15 + vec2f(0.0, t * 0.03)),
+      fbm3(p * 1.15 + vec2f(4.7, -t * 0.025))
     );
-    let veilA = fbm(p * 1.45 + flow * 1.65);
-    let veilB = fbm(p * 2.35 - flow * 1.15 + vec2f(t * 0.02));
+    let veilA = fbm3(p * 1.45 + flow * 1.65);
+    let veilB = fbm3(p * 2.35 - flow * 1.15 + vec2f(t * 0.02));
     let blendGlow = smoothstep(0.42, 0.82, veilA * 0.65 + veilB * 0.35);
     let vertFade = smoothstep(0.02, 0.24, dir.y) * (1.0 - smoothstep(0.52, 0.96, dir.y));
     let emerald = vec3f(0.08, 0.88, 0.54);
     let teal    = vec3f(0.06, 0.68, 0.86);
     let violet  = vec3f(0.48, 0.16, 0.82);
     let hueMix1 = mix(emerald, teal, smoothstep(0.3, 0.75, flow.x));
-    let hueMix2 = mix(hueMix1, violet, smoothstep(0.45, 0.88, veilB + fi * 0.22));
-    col += hueMix2 * blendGlow * vertFade * (0.52 - fi * 0.11);
+    let hueMix2 = mix(hueMix1, violet, smoothstep(0.45, 0.88, veilB + fi * 0.26));
+    col += hueMix2 * blendGlow * vertFade * (0.62 - fi * 0.16);
   }
   return col;
 }
@@ -369,6 +379,24 @@ fn fresnelSchlick(cosT: f32, F0: vec3f) -> vec3f {
   return F0 + (1. - F0) * pow(clamp(1. - cosT, 0., 1.), 5.);
 }
 
+// Ultra-fast atmospheric sky reflection helper for water surfaces (avoids per-water-pixel volumetric clouds & 9-planet loop!)
+fn evalSkyFast(dir: vec3f) -> vec3f {
+  let camAlt = P.enuEast.w;
+  let atmoDensity = clamp(P.geo.z, 0.0, 1.0);
+  let interplanetary = S.helios.w;
+  let stratoShift = smoothstep(8500.0, 48000.0, camAlt);
+  let y = clamp(dir.y, 0.0, 1.0);
+  let horizTight = mix(0.48, 0.24, stratoShift);
+  let baseHoriz = mix(U.skyHorizon.rgb, vec3f(0.24, 0.54, 0.90), stratoShift * 0.78);
+  let baseZen = mix(U.skyZenith.rgb, vec3f(0.015, 0.055, 0.17), stratoShift * 0.88);
+  let skyAtten = atmoDensity * (1.0 - interplanetary);
+  var col = mix(baseHoriz, baseZen, pow(y, horizTight)) * skyAtten;
+  let sd = max(dot(dir, U.sunDir.xyz), 0.0);
+  let mie = pow(sd, 10.0) * 0.34 * skyAtten + pow(sd, 64.0) * 1.15 * skyAtten;
+  col += U.sunCol.rgb * mie * max(U.sunDir.w, 0.05);
+  return col;
+}
+
 fn evalSky(dir: vec3f) -> vec3f {
   let t = U.camPos.w;
   let camAlt = P.enuEast.w;
@@ -422,9 +450,9 @@ fn evalSky(dir: vec3f) -> vec3f {
     if ((dCumulus > 0.0 && dir.y > 0.015) || (dCumulus < 0.0 && dir.y < -0.015 && camAlt < 34000.0)) {
       let tCloud = clamp(abs(dCumulus) / max(0.05, abs(dir.y)), 0.0, 95000.0);
       let cPos = vec2f(lonDeg * 18.0, latDeg * 18.0) + dir.xz * (tCloud * 0.00055) + U.wind.xy * (t * 0.032);
-      let c1 = fbm(cPos * 0.62);
-      let c2 = fbm(cPos * 1.75 - vec2f(t * 0.015, 0.0));
-      let cMask = smoothstep(0.46 - U.skyZenith.w * 0.14, 0.78, c1 * 0.68 + c2 * 0.32) *
+      let c1 = fbm3(cPos * 0.62);
+      let c2 = n2(cPos * 1.85 - vec2f(t * 0.015, 0.0));
+      let cMask = smoothstep(0.46 - U.skyZenith.w * 0.14, 0.78, c1 * 0.72 + c2 * 0.28) *
                   smoothstep(0.015, 0.16, abs(dir.y)) *
                   (1.0 - smoothstep(16000.0, 34000.0, camAlt));
       let topSun = select(0.55, 0.95, dCumulus < 0.0);
@@ -436,8 +464,8 @@ fn evalSky(dir: vec3f) -> vec3f {
     if ((dCirrus > 0.0 && dir.y > 0.015) || (dCirrus < 0.0 && dir.y < -0.015 && camAlt < 46000.0)) {
       let tCir = clamp(abs(dCirrus) / max(0.05, abs(dir.y)), 0.0, 140000.0);
       let cirPos = vec2f(lonDeg * 11.0, latDeg * 11.0) + dir.xz * (tCir * 0.00035) - U.wind.xy * (t * 0.025);
-      let warp = fbm(cirPos * 0.5);
-      let streak = fbm(vec2f(cirPos.x * 1.2 + warp * 2.0, cirPos.y * 0.38));
+      let warp = n2(cirPos * 0.55);
+      let streak = fbm3(vec2f(cirPos.x * 1.2 + warp * 2.0, cirPos.y * 0.38));
       let cirMask = smoothstep(0.54, 0.82, streak) * smoothstep(0.015, 0.14, abs(dir.y)) * (1.0 - smoothstep(22000.0, 46000.0, camAlt));
       let cirCol = mix(vec3f(0.64, 0.78, 0.94), U.sunCol.rgb * 1.18 + vec3f(0.42), 0.62 * U.sunDir.w);
       col = mix(col, cirCol, cirMask * 0.44 * skyAtten);
@@ -515,12 +543,16 @@ fn evalSky(dir: vec3f) -> vec3f {
 
     // Real Solar System bodies (Sun + 8 physical-scale planets from SolarU)
     let bodyVis = clamp(spaceFactor + interplanetary + trueNightFactor * smoothstep(0.05, 0.32, dir.y) * 0.80, 0.0, 1.0);
-    col += evalSolarSystem(dir, t, bodyVis);
+    if (bodyVis > 0.02) {
+      col += evalSolarSystem(dir, t, bodyVis);
+    }
 
     // Occasional meteors in upper mesosphere / dark sky
-    col += evalMeteorites(dir, t) * clamp(trueNightFactor * 0.75 + spaceFactor * 0.35, 0.0, 0.85) * (1.0 - interplanetary);
+    if ((camAlt > 12000.0 || trueNightFactor > 0.22) && interplanetary < 0.95) {
+      col += evalMeteorites(dir, t) * clamp(trueNightFactor * 0.75 + spaceFactor * 0.35, 0.0, 0.85) * (1.0 - interplanetary);
+    }
 
-    if (dir.y > 0.01 && auroraWeight > 0.01) {
+    if (dir.y > 0.01 && auroraWeight > 0.02) {
       col += evalAurora(dir, t) * auroraWeight;
     }
   }
@@ -695,21 +727,20 @@ struct VSOut {
 }
 
 fn sampleShadow(relP: vec3f) -> f32 {
-  if (P.enuEast.w > 1600.0) { return 1.0; }
+  if (P.enuEast.w > 450.0) { return 1.0; }
   let sc = U.sunVp * vec4f(relP, 1.0);
   let p = sc.xyz / sc.w;
   let uv = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
   let inBounds = uv.x >= 0.01 && uv.x <= 0.99 && uv.y >= 0.01 && uv.y <= 0.99 && p.z >= 0. && p.z <= 1.;
+  if (!inBounds) { return 1.0; }
   let cuv = clamp(uv, vec2f(0.01), vec2f(0.99));
-  let cz = clamp(p.z - 0.0025, 0.0, 1.0);
-  var s = 0.;
-  let texelStep = 1. / 2048.;
-  for (var y = -1; y <= 1; y++) {
-    for (var x = -1; x <= 1; x++) {
-      s += textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f(f32(x), f32(y)) * texelStep, cz);
-    }
-  }
-  return select(1., s / 9., inBounds);
+  let cz = clamp(p.z - 0.0028, 0.0, 1.0);
+  let ts = 0.75 / 1024.;
+  let s = textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f(-ts, -ts), cz)
+        + textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f( ts, -ts), cz)
+        + textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f(-ts,  ts), cz)
+        + textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f( ts,  ts), cz);
+  return s * 0.25;
 }
 
 @fragment fn fs(v: VSOut) -> @location(0) vec4f {
@@ -720,39 +751,38 @@ fn sampleShadow(relP: vec3f) -> f32 {
   let wetness = clamp(v.tInfo.y + smoothstep(-0.35, 0.65, -h) * 0.6, 0.0, 1.0);
   let lavaGlow = v.tInfo.w;
 
-  // Regional meter coordinates for crisp close-up triplanar / material atlas detail
   let localXZ = U.camPos.xz + relPos.xz;
-  let uvA = localXZ * 0.24;
-  let uvB = localXZ * 0.065 + vec2f(0.37, 0.71);
-  let sSoil  = mix(textureSample(matTex, matSmp, uvA, 0), textureSample(matTex, matSmp, uvB, 0), 0.42);
-  let sGrass = mix(textureSample(matTex, matSmp, uvA, 4), textureSample(matTex, matSmp, uvB, 4), 0.45);
-  let sSand  = mix(textureSample(matTex, matSmp, uvA, 2), textureSample(matTex, matSmp, uvB, 2), 0.38);
-  let sRock  = mix(textureSample(matTex, matSmp, uvA * 0.6, 7), textureSample(matTex, matSmp, uvB * 0.55, 8), 0.5);
-
   var n = normalize(v.norm);
   // Radial local up on the curved Earth sphere
   let pCenter = vec3f(0.0, -(P.enuUp.w + camAlt), 0.0);
   let radUp = normalize(relPos - pCenter);
   let slope = 1.0 - clamp(dot(n, radUp), 0.0, 1.0);
 
-  // Smooth transition from close-up procedural micro-detail (<2 km) to unified planetary biome albedo (orbital)
-  let detailFade = 1.0 - smoothstep(260.0, 4800.0, max(dist, camAlt * 1.4));
+  // Smooth transition from close-up procedural micro-detail (<1.8 km) to unified planetary biome albedo (orbital)
+  let detailFade = 1.0 - smoothstep(240.0, 2600.0, max(dist, camAlt * 1.4));
   let rockMask = smoothstep(0.22, 0.54, slope);
 
   var base = v.tileCol;
   if (detailFade > 0.01) {
+    let uvA = localXZ * 0.24;
+    let uvB = localXZ * 0.065 + vec2f(0.37, 0.71);
+    let sSoil  = mix(textureSampleLevel(matTex, matSmp, uvA, 0, 0.0), textureSampleLevel(matTex, matSmp, uvB, 0, 0.0), 0.42);
+    let sGrass = mix(textureSampleLevel(matTex, matSmp, uvA, 4, 0.0), textureSampleLevel(matTex, matSmp, uvB, 4, 0.0), 0.45);
+    let sSand  = textureSampleLevel(matTex, matSmp, uvA, 2, 0.0);
+    let sRock  = mix(textureSampleLevel(matTex, matSmp, uvA * 0.6, 7, 0.0), textureSampleLevel(matTex, matSmp, uvB * 0.55, 8, 0.0), 0.5);
+
     let microTex = mix(mix(sSoil.rgb, sGrass.rgb, smoothstep(0.5, 4.0, h) * (1.0 - rockMask)), sRock.rgb, rockMask);
     let sandBand = smoothstep(-2.5, 0.6, h) * (1.0 - smoothstep(0.6, 3.2, h));
     let texMod = mix(microTex, sSand.rgb, sandBand * 0.65);
-    // Modulate unified planetary albedo with local material grain so close-up and orbital colors are 100% consistent
     base = mix(base, base * (0.58 + texMod * 0.92), detailFade * 0.85);
 
-    // Noniv/abyssal-garden seabed rock detail, cracks & coralline fluorescence
-    if (h < 0.25) {
+    // Seabed rock detail, cracks & coralline fluorescence (only when close to seabed)
+    if (h < 0.25 && dist < 72.0) {
+      let nearBed = 1.0 - smoothstep(32.0, 72.0, dist);
       let abDet = abyssalRockDetail(vec3f(localXZ.x, h, localXZ.y), n);
-      n = normalize(n + vec3f(abDet.x * 0.32, 0.0, abDet.y * 0.32) * detailFade);
+      n = normalize(n + vec3f(abDet.x * 0.32, 0.0, abDet.y * 0.32) * nearBed);
       let coralline = mix(vec3f(0.75, 0.14, 0.52), vec3f(0.45, 0.16, 0.82), sin(localXZ.x * 0.4 + localXZ.y * 0.3) * 0.5 + 0.5);
-      base = mix(base, coralline, abDet.w * 0.62 * detailFade);
+      base = mix(base, coralline, abDet.w * 0.62 * nearBed);
     }
 
     let dHx = ((sSoil.a - 0.5) * 0.24 + (sRock.a - 0.5) * rockMask * 0.32) * detailFade;
@@ -761,12 +791,11 @@ fn sampleShadow(relP: vec3f) -> f32 {
   }
 
   // Far-to-Mid Forest Canopy Rough-Outline LOD on Terrain (160m -> 14km)
-  // Gives distant wooded landscapes organic tree-crown silhouettes & dappled depth BEFORE 3D trees resolve!
   let vegCover = smoothstep(0.35, 3.5, h) * (1.0 - rockMask) * smoothstep(0.08, 0.22, base.g - base.b * 0.55) * (1.0 - smoothstep(0.55, 0.78, base.r));
   let canopyLodVis = smoothstep(140.0, 380.0, dist) * (1.0 - smoothstep(4500.0, 16000.0, max(dist, camAlt * 1.5))) * vegCover;
   if (canopyLodVis > 0.01) {
     let crownFine = n2(localXZ * 0.085);
-    let crownCluster = fbm(localXZ * 0.024 + vec2f(3.1, -5.4));
+    let crownCluster = fbm3(localXZ * 0.024 + vec2f(3.1, -5.4));
     let crownHeight = crownFine * 0.58 + crownCluster * 0.42;
     let crownShadow = mix(0.66, 1.18, smoothstep(0.28, 0.78, crownHeight));
     let crownShade = mix(base * 0.62, base * vec3f(0.88, 1.06, 0.78), smoothstep(0.35, 0.80, crownHeight));
@@ -785,7 +814,7 @@ fn sampleShadow(relP: vec3f) -> f32 {
       P.enuSouth.xyz * radUp.z
     );
     let cUv = vec2f(atan2(ecefDir.z, ecefDir.x) * 2.2 + U.camPos.w * 0.003, ecefDir.y * 3.8);
-    let cFbm = fbm(cUv * 2.2) * 0.65 + fbm(cUv * 5.2 + vec2f(4.1, -2.3)) * 0.35;
+    let cFbm = fbm3(cUv * 2.2) * 0.68 + n2(cUv * 5.4 + vec2f(4.1, -2.3)) * 0.32;
     let cMask = smoothstep(0.49, 0.74, cFbm) * orbitalCloudVis * 0.72;
     base = mix(base, vec3f(0.94, 0.96, 1.0), cMask);
   }
@@ -801,7 +830,10 @@ fn sampleShadow(relP: vec3f) -> f32 {
   let NdotH = max(dot(n, H), 0.0);
   let VdotH = max(dot(V, H), 0.0);
 
-  let sh = mix(1.0, sampleShadow(relPos + n * 0.18), detailFade);
+  var sh = 1.0;
+  if (detailFade > 0.02 && NdotL > 0.005 && dist < 175.0 && camAlt < 450.0) {
+    sh = mix(1.0, sampleShadow(relPos + n * 0.18), detailFade);
+  }
   let D = distributionGGX(NdotH, rough);
   let G = geometrySmith(NdotV, NdotL, rough);
   let F = fresnelSchlick(VdotH, vec3f(mix(0.03, 0.05, wetness)));
@@ -814,20 +846,18 @@ fn sampleShadow(relP: vec3f) -> f32 {
 
   // Volcanic lava veins & active magma glow
   if (lavaGlow > 0.02) {
-    let lf = fbm(localXZ * 0.25 - vec2f(U.camPos.w * 0.18, U.camPos.w * 0.10));
+    let lf = fbm3(localXZ * 0.25 - vec2f(U.camPos.w * 0.18, U.camPos.w * 0.10));
     let lAmt = smoothstep(0.35, 0.72, lf + lavaGlow * 0.45) * lavaGlow;
     col += mix(vec3f(2.6, 0.30, 0.02), vec3f(4.4, 1.75, 0.22), lAmt) * lAmt * 1.4;
   }
 
-  // Noniv/abyssal-garden chromatic underwater caustics on submerged seabeds
-  if (h < 0.05 && detailFade > 0.05) {
+  // Underwater caustics on submerged seabeds (single-tap optimized solver)
+  if (h < 0.05 && detailFade > 0.05 && dist < 130.0) {
     let t = U.camPos.w * 0.65;
     let cuv = localXZ * 0.085 + n.xz * 0.08;
-    let cR = caus(cuv + vec2f(0.006, 0.0), t);
-    let cG = caus(cuv, t);
-    let cB = caus(cuv - vec2f(0.006, 0.0), t);
+    let cVal = caus(cuv, t);
     let depthAtten = smoothstep(-28.0, -0.1, h) * smoothstep(-0.15, 0.08, -h);
-    col += vec3f(cR * 0.9, cG * 1.15, cB * 1.35) * depthAtten * max(0.25, U.sunDir.w) * 0.62 * detailFade;
+    col += vec3f(0.88, 1.14, 1.34) * cVal * depthAtten * max(0.25, U.sunDir.w) * 0.62 * detailFade;
   }
 
   // Night-side planetary polar aurora subtly illuminating polar ice from orbital altitude
@@ -972,28 +1002,33 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
   let elev = v.vMeta.z;
   let regPos = relPos + U.camPos.xyz;
 
-  let sc = U.sunVp * vec4f(relPos + n * 0.15, 1.);
-  let sp = sc.xyz / sc.w;
-  let suv = vec2f(sp.x * 0.5 + 0.5, 0.5 - sp.y * 0.5);
-  let inBounds = suv.x > 0.01 && suv.x < 0.99 && suv.y > 0.01 && suv.y < 0.99 && sp.z > 0. && sp.z < 1.;
-  let rawSh = textureSampleCompareLevel(shadowTex, shadowSmp, clamp(suv, vec2f(0.01), vec2f(0.99)), clamp(sp.z - 0.003, 0.0, 1.0));
-  let sh = select(1., mix(1.0, rawSh, nearDetail), inBounds);
-
-  let barkLayer = i32(floor(fract(v.vMeta.y * 7.13) * 3.0)) + 9;
-  let leafLayer = i32(floor(fract(v.vMeta.y * 11.37) * 3.0)) + 13;
-  let barkSample = textureSampleLevel(matTex, matSmp, vec2f(atan2(n.x, n.z) * 0.8, elev * 0.45), barkLayer, 0.0);
-  let leafSample = textureSampleLevel(matTex, matSmp, regPos.xz * 0.75 + vec2f(v.uv.y), leafLayer, 0.0);
+  var sh = 1.0;
+  if (nearDetail > 0.05 && rHoriz < 175.0 && P.enuEast.w < 450.0) {
+    let sc = U.sunVp * vec4f(relPos + n * 0.15, 1.);
+    let sp = sc.xyz / sc.w;
+    let suv = vec2f(sp.x * 0.5 + 0.5, 0.5 - sp.y * 0.5);
+    let inBounds = suv.x > 0.01 && suv.x < 0.99 && suv.y > 0.01 && suv.y < 0.99 && sp.z > 0. && sp.z < 1.;
+    if (inBounds) {
+      let rawSh = textureSampleCompareLevel(shadowTex, shadowSmp, suv, clamp(sp.z - 0.003, 0.0, 1.0));
+      sh = mix(1.0, rawSh, nearDetail);
+    }
+  }
 
   var albedo = v.col;
-  if (isLeaf && !isGlow) {
-    albedo = mix(v.col, leafSample.rgb, 0.38 * nearDetail);
-    // Close-up alpha-cutout leaf silhouette softens into solid cohesive crown outline at mid/far distance
-    if (nearDetail > 0.25 && leafSample.a < 0.12 * nearDetail && v.uv.y > 0.72) {
-      discard;
+  if (nearDetail > 0.02) {
+    if (isLeaf && !isGlow) {
+      let leafLayer = i32(floor(fract(v.vMeta.y * 11.37) * 3.0)) + 13;
+      let leafSample = textureSampleLevel(matTex, matSmp, regPos.xz * 0.75 + vec2f(v.uv.y), leafLayer, 0.0);
+      albedo = mix(v.col, leafSample.rgb, 0.38 * nearDetail);
+      if (nearDetail > 0.25 && leafSample.a < 0.12 * nearDetail && v.uv.y > 0.72) {
+        discard;
+      }
+    } else if (!isLeaf) {
+      let barkLayer = i32(floor(fract(v.vMeta.y * 7.13) * 3.0)) + 9;
+      let barkSample = textureSampleLevel(matTex, matSmp, vec2f(atan2(n.x, n.z) * 0.8, elev * 0.45), barkLayer, 0.0);
+      albedo = mix(v.col, barkSample.rgb, 0.42 * nearDetail);
+      n = normalize(n + vec3f((barkSample.a - 0.5) * 0.25, 0., (barkSample.r - 0.5) * 0.25) * nearDetail);
     }
-  } else if (!isLeaf) {
-    albedo = mix(v.col, barkSample.rgb, 0.42 * nearDetail);
-    n = normalize(n + vec3f((barkSample.a - 0.5) * 0.25, 0., (barkSample.r - 0.5) * 0.25) * nearDetail);
   }
 
   albedo = mix(albedo, vec3f(0.06, 0.05, 0.05), v.vMeta.x * 0.85);
@@ -1007,9 +1042,11 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
   if (isLeaf) {
     let backLit = pow(clamp(dot(V, -L + n * 0.35), 0., 1.), 3.0) * (0.4 + 0.6 * sh);
     col += albedo * U.sunCol.rgb * backLit * (0.35 + 0.57 * nearDetail) * U.sunDir.w;
-    let H = normalize(V + L);
-    let spec = pow(max(dot(n, H), 0.), 28.) * 0.14 * sh * nearDetail;
-    col += U.sunCol.rgb * spec * U.sunDir.w;
+    if (nearDetail > 0.05) {
+      let H = normalize(V + L);
+      let spec = pow(max(dot(n, H), 0.), 28.) * 0.14 * sh * nearDetail;
+      col += U.sunCol.rgb * spec * U.sunDir.w;
+    }
   }
 
   if (isGlow) {
@@ -1017,7 +1054,7 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
     col += v.col * 0.85 * pulse;
   }
 
-  if (elev < -0.05) {
+  if (elev < -0.05 && nearDetail > 0.05) {
     let cVal = caus(regPos.xz * 0.09 + n.xz * 0.06, U.camPos.w * 0.65);
     col += vec3f(0.22, 0.58, 0.72) * cVal * smoothstep(-18.0, -0.1, elev) * max(0.0, n.y + 0.35) * 0.55 * nearDetail;
   }
@@ -1644,7 +1681,7 @@ fn waveH(p: vec2f, t: f32) -> f32 {
     let k = 1.0 - 1.769 * (1.0 - ci * ci);
     let tir = 1.0 - smoothstep(-0.04, 0.12, k);
     let refrDir = normalize(vec3f(-V.x * 1.33 + n.x * 0.25, sqrt(max(0.01, k)), -V.z * 1.33 + n.z * 0.25));
-    let skyAbove = evalSky(refrDir);
+    let skyAbove = evalSkyFast(refrDir);
     let abyssMirror = mix(vec3f(0.015, 0.11, 0.17), vec3f(0.04, 0.28, 0.36), ci);
     let snellC = caus(regXZ * 0.12, t * 0.65) * 0.35;
     let uwSurf = mix(skyAbove + vec3f(0.15, 0.45, 0.55) * snellC, abyssMirror, tir * 0.88);
@@ -1664,17 +1701,15 @@ fn waveH(p: vec2f, t: f32) -> f32 {
   let abyssMix = smoothstep(80.0, 1800.0, depth);
   var waterBody = mix(mix(shallowCol, midOcean, shelfMix), deepCol, abyssMix) * (NdotL * 0.95 * sunPower + 0.12);
 
-  // Close-up chromatic underwater caustics shining through shallow turquoise water
-  if (detailFade > 0.02) {
+  // Close-up underwater caustics shining through shallow turquoise water (single-tap optimized)
+  if (detailFade > 0.02 && dist < 140.0 && depth < 14.0) {
     let cUv = regXZ * 0.12 + n.xz * 0.35;
-    let cR = caus(cUv + vec2f(0.005, 0.0), t * 0.65);
-    let cG = caus(cUv, t * 0.65);
-    let cB = caus(cUv - vec2f(0.005, 0.0), t * 0.65);
+    let cVal = caus(cUv, t * 0.65);
     let causticVis = (1.0 - shelfMix) * smoothstep(0.02, 0.25, depth);
-    waterBody += vec3f(cR * 0.85, cG * 1.05, cB * 1.25) * U.sunCol.rgb * causticVis * 0.42 * sunPower * detailFade;
+    waterBody += vec3f(0.86, 1.06, 1.24) * cVal * U.sunCol.rgb * causticVis * 0.42 * sunPower * detailFade;
   }
 
-  let reflCol = evalSky(R) * mix(0.28, 1.0, detailFade);
+  let reflCol = evalSkyFast(R) * mix(0.28, 1.0, detailFade);
   let H = normalize(V + L);
   let specPow = mix(48.0, 300.0, detailFade);
   let specGain = mix(0.85, 3.6, detailFade);
@@ -1690,7 +1725,7 @@ fn waveH(p: vec2f, t: f32) -> f32 {
     let radUp = normalize(v.radUp);
     let ecefDir = normalize(P.enuEast.xyz * radUp.x + P.enuUp.xyz * radUp.y + P.enuSouth.xyz * radUp.z);
     let cUv = vec2f(atan2(ecefDir.z, ecefDir.x) * 2.2 + t * 0.003, ecefDir.y * 3.8);
-    let cFbm = fbm(cUv * 2.2) * 0.65 + fbm(cUv * 5.2 + vec2f(4.1, -2.3)) * 0.35;
+    let cFbm = fbm3(cUv * 2.2) * 0.68 + n2(cUv * 5.4 + vec2f(4.1, -2.3)) * 0.32;
     let cMask = smoothstep(0.49, 0.74, cFbm) * orbitalCloudVis * 0.76;
     col = mix(col, vec3f(0.94, 0.96, 1.0) * (NdotL * 1.15 * sunPower + 0.06), cMask);
   }
@@ -1795,17 +1830,21 @@ struct VSOut {
 }
 
 @fragment fn fs(v: VSOut) -> @location(0) vec4f {
+  let sunFacingRaw = max(dot(U.camFwd.xyz, U.sunDir.xyz), 0.);
+  if (sunFacingRaw <= 0.04 || P.enuEast.w > 18000.0) {
+    return vec4f(0.);
+  }
   let sunClip = U.vp * vec4f(U.sunDir.xyz * 500., 1.);
   if (sunClip.w <= 0.) {
     return vec4f(0.);
   }
   let sunUv = vec2f(sunClip.x / sunClip.w * 0.5 + 0.5, 0.5 - sunClip.y / sunClip.w * 0.5);
-  let delta = (sunUv - v.uv) / 20. * 0.82;
+  let delta = (sunUv - v.uv) / 12. * 0.84;
   var tc = v.uv;
   var acc = 0.;
   var w = 1.;
   let dims = vec2f(textureDimensions(depthTex));
-  for (var i = 0; i < 20; i++) {
+  for (var i = 0; i < 12; i++) {
     tc += delta;
     if (tc.x >= 0. && tc.x <= 1. && tc.y >= 0. && tc.y <= 1.) {
       let px = clamp(vec2i(tc * dims), vec2i(0), vec2i(dims) - vec2i(1));
@@ -1814,11 +1853,11 @@ struct VSOut {
         acc += w;
       }
     }
-    w *= 0.92;
+    w *= 0.88;
   }
-  let sunFacing = pow(max(dot(U.camFwd.xyz, U.sunDir.xyz), 0.), 2.);
+  let sunFacing = sunFacingRaw * sunFacingRaw;
   let rayCol = select(U.sunCol.rgb, vec3f(0.12, 0.62, 0.78), P.enuEast.w < -0.05);
-  let rayAmt = (acc / 20.) * sunFacing * U.sunDir.w * 0.42 * max(P.geo.z, select(0.0, 1.0, P.enuEast.w < -0.05));
+  let rayAmt = (acc / 12.) * sunFacing * U.sunDir.w * 0.42 * max(P.geo.z, select(0.0, 1.0, P.enuEast.w < -0.05));
   return vec4f(rayCol * rayAmt, 1.);
 }
 `;
@@ -1889,20 +1928,19 @@ fn filmicTone(x: vec3f) -> vec3f {
   }
   uv = clamp(uv, vec2f(0.001), vec2f(0.999));
 
-  let ca = select(0.0032, 0.0, isLookdev) * r2;
-  let uvR = clamp(uv - centered * ca, vec2f(0.001), vec2f(0.999));
-  let uvB = clamp(uv + centered * ca, vec2f(0.001), vec2f(0.999));
+  var hdr = textureSampleLevel(hdrTex, postSmp, uv, 0.).rgb;
+  if (!isLookdev && r2 > 0.06) {
+    let ca = 0.0032 * r2;
+    let uvR = clamp(uv - centered * ca, vec2f(0.001), vec2f(0.999));
+    let uvB = clamp(uv + centered * ca, vec2f(0.001), vec2f(0.999));
+    hdr.r = textureSampleLevel(hdrTex, postSmp, uvR, 0.).r;
+    hdr.b = textureSampleLevel(hdrTex, postSmp, uvB, 0.).b;
+  }
 
-  var hdr = vec3f(
-    textureSampleLevel(hdrTex, postSmp, uvR, 0.).r,
-    textureSampleLevel(hdrTex, postSmp, uv, 0.).g,
-    textureSampleLevel(hdrTex, postSmp, uvB, 0.).b
-  );
-
-  let dSz = vec2i(textureDimensions(depthTex));
-  let dPx = clamp(vec2i(uv * vec2f(dSz)), vec2i(0), dSz - vec2i(1));
-  let dz = textureLoad(depthTex, dPx, 0);
   if (isPhoto) {
+    let dSz = vec2i(textureDimensions(depthTex));
+    let dPx = clamp(vec2i(uv * vec2f(dSz)), vec2i(0), dSz - vec2i(1));
+    let dz = textureLoad(depthTex, dPx, 0);
     let ndc = vec2f(uv.x * 2. - 1., 1. - uv.y * 2.);
     let wp4 = U.invVp * vec4f(ndc, dz, 1.);
     let sceneD = length(wp4.xyz / max(0.0001, wp4.w));
@@ -1919,25 +1957,16 @@ fn filmicTone(x: vec3f) -> vec3f {
     }
   }
 
-  let ts = 1.6 / vec2f(textureDimensions(rayTex));
-  let rays = (
-    textureSampleLevel(rayTex, postSmp, uv, 0.).rgb * 2. +
-    textureSampleLevel(rayTex, postSmp, uv + vec2f(-ts.x, 0.), 0.).rgb +
-    textureSampleLevel(rayTex, postSmp, uv + vec2f( ts.x, 0.), 0.).rgb +
-    textureSampleLevel(rayTex, postSmp, uv + vec2f(0., -ts.y), 0.).rgb +
-    textureSampleLevel(rayTex, postSmp, uv + vec2f(0.,  ts.y), 0.).rgb
-  ) / 6.;
+  // Single hardware-bilinear fetch of low-res god-ray buffer (5x faster than 5-tap blur)
+  let rays = textureSampleLevel(rayTex, postSmp, uv, 0.).rgb;
 
-  let hts = 3.5 / vec2f(textureDimensions(hdrTex));
+  // Dual-purpose 2-tap diagonal bloom + crisp CAS micro-sharpening (cuts 6 taps -> 2 taps)
+  let hts = 2.6 / vec2f(textureDimensions(hdrTex));
   let b0 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f(-hts.x, -hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let b1 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f( hts.x, -hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let b2 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f(-hts.x,  hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let b3 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f( hts.x,  hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let bloom = max(vec3f(0.), (b0 + b1 + b2 + b3) * 0.25 - vec3f(0.95)) * 0.22;
-
-  let cUp = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f(0., 1. / f32(dSz.y)), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let cDn = textureSampleLevel(hdrTex, postSmp, clamp(uv - vec2f(0., 1. / f32(dSz.y)), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let cas = hdr + (hdr - (cUp + cDn) * 0.5) * 0.16;
+  let b1 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f( hts.x,  hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
+  let avgNb = (b0 + b1) * 0.5;
+  let bloom = max(vec3f(0.), avgNb - vec3f(0.92)) * 0.22;
+  let cas = hdr + (hdr - avgNb) * 0.14;
 
   let exposureScale = max(0.25, U.wind.w);
   var col = (cas + rays * 0.78 + bloom) * exposureScale;

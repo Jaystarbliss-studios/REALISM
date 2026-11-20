@@ -1814,7 +1814,7 @@ function buildWorld() {
   //   inst1: yaw, phase, emoAndSpeed, packedMode
   //   inst2: pitch, roll, ikFrontFlex, ikHindFlex
   // ==========================================================================
-  const SIM_HZ = 120;
+  const SIM_HZ = 60;
   const SIM_DT = 1 / SIM_HZ;
   const ANIMAL_INST_FLOATS = 12;
   const wildlifeGroups = [];

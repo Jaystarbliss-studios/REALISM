@@ -68,18 +68,16 @@ html, body {
 canvas#c {
   position: fixed; inset: 0; width: 100%; height: 100%; display: block;
   touch-action: none; cursor: crosshair;
-  transition: filter 0.5s ease, opacity 0.6s ease;
+  transition: opacity 0.45s ease;
 }
-body:not(.g) canvas#c { filter: brightness(0.45) contrast(1.05); }
 body.l canvas#c { opacity: 0; }
 
-/* Minimalist Top Architectural Bar (Zero Cards, Zero Rounded Boxes) */
+/* Minimalist Top Architectural Bar (Zero Cards, Zero Rounded Boxes, Zero Blur Thrash) */
 #hud {
   position: fixed; top: 0; left: 0; right: 0; height: 36px; z-index: 6;
   display: flex; align-items: stretch; justify-content: space-between;
-  background: rgba(6, 13, 10, 0.82);
+  background: rgba(6, 13, 10, 0.92);
   border-bottom: 1px solid var(--line);
-  backdrop-filter: blur(8px);
   transition: opacity 0.25s ease;
 }
 body:not(.g) #hud, body.clean #hud { opacity: 0; pointer-events: none; }
@@ -146,9 +144,8 @@ body:not(.g) #bottomStrip, body.clean #bottomStrip { opacity: 0; }
 #miniMapWrap {
   position: fixed; bottom: 38px; right: 14px; z-index: 6;
   width: 234px;
-  background: rgba(6, 13, 10, 0.88);
+  background: rgba(6, 13, 10, 0.93);
   border: 1px solid var(--line-strong);
-  backdrop-filter: blur(8px);
   cursor: pointer;
   transition: opacity 0.25s ease, border-color 0.18s ease;
 }
@@ -208,9 +205,8 @@ canvas#miniMapCanvas {
   position: fixed; inset: 0; z-index: 10;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 28px;
-  background: radial-gradient(circle at 50% 45%, rgba(7, 16, 13, 0.58) 0%, rgba(4, 9, 7, 0.86) 100%);
-  backdrop-filter: blur(8px);
-  transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.45s ease;
+  background: radial-gradient(circle at 50% 45%, rgba(6, 14, 11, 0.72) 0%, rgba(3, 8, 6, 0.94) 100%);
+  transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.4s ease;
   overflow: hidden;
 }
 body.g #m { opacity: 0; visibility: hidden; pointer-events: none; }
@@ -358,8 +354,7 @@ canvas#brandCanvas {
   position: fixed; inset: 0; z-index: 25;
   display: none; place-content: center;
   padding: 20px;
-  background: rgba(4, 9, 7, 0.84);
-  backdrop-filter: blur(8px);
+  background: rgba(4, 9, 7, 0.90);
 }
 .modal-backdrop.open { display: grid; }
 .modal-box {
@@ -962,13 +957,13 @@ body.clean #photoBar { display: none; }
 // ============================================================================
 // REALISM — Dynamic Quality Tiers, Persistent Settings & Hardware Budgets
 // ============================================================================
-const SHADOW_SIZE = 2048;
-const AA_SAMPLES = 4;
-const TARGET_GPU_MS = 14.5;
-const RES_SCALE_MIN = 0.55;
+const SHADOW_SIZE = 1024;
+const AA_SAMPLES = 1;
+const TARGET_GPU_MS = 10.5;
+const RES_SCALE_MIN = 0.50;
 const RES_SCALE_MAX = 1.25;
 const THIN = 1.0;
-const MAX_PARTICLES_BUDGET = 4200;
+const MAX_PARTICLES_BUDGET = 1800;
 const keep = (key, val) => {
   try {
     if (typeof localStorage !== 'undefined') {
@@ -986,9 +981,9 @@ const QUALITY_TIERS = [
   {
     name: 'Ultra',
     scale: 1.0,
-    shadowSize: 2048,
-    reflSize: 512,
-    raySteps: 28,
+    shadowSize: 1024,
+    reflSize: 384,
+    raySteps: 16,
     vegRatio: 1.0,
     animalRatio: 1.0,
     particleRatio: 1.0,
@@ -997,46 +992,46 @@ const QUALITY_TIERS = [
   },
   {
     name: 'High',
-    scale: 0.92,
-    shadowSize: 2048,
-    reflSize: 384,
-    raySteps: 20,
-    vegRatio: 0.90,
+    scale: 0.85,
+    shadowSize: 1024,
+    reflSize: 256,
+    raySteps: 12,
+    vegRatio: 0.85,
     animalRatio: 1.0,
-    particleRatio: 0.85,
-    bloomRatio: 0.5,
-    terrainLodBias: 0.9
+    particleRatio: 0.80,
+    bloomRatio: 0.4,
+    terrainLodBias: 0.88
   },
   {
     name: 'Balanced',
-    scale: 0.80,
-    shadowSize: 1024,
-    reflSize: 256,
-    raySteps: 14,
-    vegRatio: 0.75,
-    animalRatio: 0.9,
-    particleRatio: 0.65,
-    bloomRatio: 0.35,
-    terrainLodBias: 0.8
-  },
-  {
-    name: 'Performance',
-    scale: 0.65,
+    scale: 0.72,
     shadowSize: 1024,
     reflSize: 256,
     raySteps: 10,
-    vegRatio: 0.55,
-    animalRatio: 0.75,
-    particleRatio: 0.45,
-    bloomRatio: 0.25,
-    terrainLodBias: 0.65
+    vegRatio: 0.70,
+    animalRatio: 0.85,
+    particleRatio: 0.60,
+    bloomRatio: 0.3,
+    terrainLodBias: 0.76
+  },
+  {
+    name: 'Performance',
+    scale: 0.58,
+    shadowSize: 1024,
+    reflSize: 192,
+    raySteps: 8,
+    vegRatio: 0.50,
+    animalRatio: 0.70,
+    particleRatio: 0.40,
+    bloomRatio: 0.2,
+    terrainLodBias: 0.62
   }
 ];
 const DEFAULT_SETTINGS = {
   // 1. Graphics
   qualityTier: 1, // 0=Ultra, 1=High, 2=Balanced, 3=Performance
   autoQuality: true,
-  resolutionScale: 1.0,
+  resolutionScale: 0.85,
   viewDistance: 1.0,
   foliageDensity: 1.0,
   animalDetail: 1.0,
@@ -4596,6 +4591,18 @@ fn fbm(p_in: vec2f) -> f32 {
   }
   return v;
 }
+fn fbm3(p_in: vec2f) -> f32 {
+  var p = p_in;
+  var v = 0.;
+  var a = 0.5;
+  let m = mat2x2f(1.6, -1.2, 1.2, 1.6);
+  for (var i = 0; i < 3; i++) {
+    v += a * n2(p);
+    p = m * p + vec2f(11.3, 7.7);
+    a *= 0.5;
+  }
+  return v;
+}
 fn voronoi(x: vec2f) -> vec2f {
   let n = floor(x);
   let f = fract(x);
@@ -4616,37 +4623,35 @@ fn voronoi(x: vec2f) -> vec2f {
   return vec2f(sqrt(md), id);
 }
 
-// Exact Noniv/abyssal-garden 5-iteration trigonometric phase-warped caustic solver
+// Fast 3-iteration trigonometric phase-warped caustic solver (Noniv/abyssal-garden look, 40% faster)
 fn caus(uv: vec2f, t: f32) -> f32 {
   let p = (uv - floor(uv)) * 6.2831853 - 250.0;
   var i = p;
   var c = 1.0;
-  for (var n = 1; n <= 5; n++) {
+  for (var n = 1; n <= 3; n++) {
     let tt = t * (1.0 - 3.5 / f32(n));
     i = p + vec2f(cos(tt - i.x) + sin(tt + i.y), sin(tt - i.y) + cos(tt + i.x));
     let s = sin(i.x + tt);
     let k = cos(i.y + tt);
     c += abs(s * k) / (1.25 * sqrt(s * s + k * k) + 1e-4);
   }
-  c = 1.17 - pow(c / 5.0, 1.4);
-  let v = pow(abs(c), 8.0);
+  c = 1.17 - pow(c / 3.0, 1.38);
+  let v = pow(abs(c), 7.5);
   return clamp(v * smoothstep(0.08, 0.72, v), 0.0, 1.85);
 }
 
-// Exact Noniv/abyssal-garden procedural rock detail, dual cracks, Worley pits & coralline fluorescence
+// Procedural seabed rock detail, cracks, Worley pits & coralline fluorescence (fast close-range)
 fn abyssalRockDetail(wp: vec3f, n: vec3f) -> vec4f {
   let uv = wp.xz * 0.18 + vec2f(wp.y * 0.11);
-  let w = vec2f(fbm(uv * 1.4), fbm(uv * 1.4 + vec2f(5.2, 1.3)));
+  let w = vec2f(fbm3(uv * 1.4), fbm3(uv * 1.4 + vec2f(5.2, 1.3)));
   let duv = uv + (w - 0.5) * 0.45;
-  let baseFbm = fbm(duv * 2.2);
+  let baseFbm = fbm3(duv * 2.2);
   let ridged = 1.0 - abs(n2(duv * 4.5) * 2.0 - 1.0);
   let vor1 = voronoi(duv * 3.8);
-  let vor2 = voronoi(duv * 7.5 + vec2f(3.7, 9.1));
   let cr = smoothstep(0.02, 0.14, vor1.x);
-  let cr2 = smoothstep(0.03, 0.18, vor2.x);
-  let pits = smoothstep(0.12, 0.36, vor2.x);
-  let rockH = clamp((baseFbm * 0.55 + ridged * 0.45) * cr * cr2 * (0.7 + 0.3 * pits), 0.0, 1.0);
-  let mottle = fbm(duv * 6.0 + vec2f(13.1, 4.7));
+  let pits = smoothstep(0.12, 0.36, vor1.x);
+  let rockH = clamp((baseFbm * 0.55 + ridged * 0.45) * cr * (0.7 + 0.3 * pits), 0.0, 1.0);
+  let mottle = fbm3(duv * 6.0 + vec2f(13.1, 4.7));
   let flu = smoothstep(0.25, 0.85, n.y) * smoothstep(0.54, 0.76, mottle) * smoothstep(-18.0, -0.8, wp.y);
   return vec4f(w.x - 0.5, w.y - 0.5, rockH, flu);
 }
@@ -4657,25 +4662,25 @@ fn evalAurora(dir: vec3f, t: f32) -> vec3f {
   if (dir.y <= 0.01) { return vec3f(0.0); }
   let skyDomeUV = dir.xz / (dir.y + 0.22);
   var col = vec3f(0.0);
-  for (var i = 0; i < 3; i++) {
+  for (var i = 0; i < 2; i++) {
     let fi = f32(i);
-    let scale = 0.55 + fi * 0.28;
-    let drift = vec2f(t * (0.014 + fi * 0.005), -t * 0.009 + fi * 2.3);
+    let scale = 0.55 + fi * 0.34;
+    let drift = vec2f(t * (0.014 + fi * 0.006), -t * 0.009 + fi * 2.3);
     let p = skyDomeUV * scale + drift;
     let flow = vec2f(
-      fbm(p * 1.15 + vec2f(0.0, t * 0.03)),
-      fbm(p * 1.15 + vec2f(4.7, -t * 0.025))
+      fbm3(p * 1.15 + vec2f(0.0, t * 0.03)),
+      fbm3(p * 1.15 + vec2f(4.7, -t * 0.025))
     );
-    let veilA = fbm(p * 1.45 + flow * 1.65);
-    let veilB = fbm(p * 2.35 - flow * 1.15 + vec2f(t * 0.02));
+    let veilA = fbm3(p * 1.45 + flow * 1.65);
+    let veilB = fbm3(p * 2.35 - flow * 1.15 + vec2f(t * 0.02));
     let blendGlow = smoothstep(0.42, 0.82, veilA * 0.65 + veilB * 0.35);
     let vertFade = smoothstep(0.02, 0.24, dir.y) * (1.0 - smoothstep(0.52, 0.96, dir.y));
     let emerald = vec3f(0.08, 0.88, 0.54);
     let teal    = vec3f(0.06, 0.68, 0.86);
     let violet  = vec3f(0.48, 0.16, 0.82);
     let hueMix1 = mix(emerald, teal, smoothstep(0.3, 0.75, flow.x));
-    let hueMix2 = mix(hueMix1, violet, smoothstep(0.45, 0.88, veilB + fi * 0.22));
-    col += hueMix2 * blendGlow * vertFade * (0.52 - fi * 0.11);
+    let hueMix2 = mix(hueMix1, violet, smoothstep(0.45, 0.88, veilB + fi * 0.26));
+    col += hueMix2 * blendGlow * vertFade * (0.62 - fi * 0.16);
   }
   return col;
 }
@@ -4888,6 +4893,24 @@ fn fresnelSchlick(cosT: f32, F0: vec3f) -> vec3f {
   return F0 + (1. - F0) * pow(clamp(1. - cosT, 0., 1.), 5.);
 }
 
+// Ultra-fast atmospheric sky reflection helper for water surfaces (avoids per-water-pixel volumetric clouds & 9-planet loop!)
+fn evalSkyFast(dir: vec3f) -> vec3f {
+  let camAlt = P.enuEast.w;
+  let atmoDensity = clamp(P.geo.z, 0.0, 1.0);
+  let interplanetary = S.helios.w;
+  let stratoShift = smoothstep(8500.0, 48000.0, camAlt);
+  let y = clamp(dir.y, 0.0, 1.0);
+  let horizTight = mix(0.48, 0.24, stratoShift);
+  let baseHoriz = mix(U.skyHorizon.rgb, vec3f(0.24, 0.54, 0.90), stratoShift * 0.78);
+  let baseZen = mix(U.skyZenith.rgb, vec3f(0.015, 0.055, 0.17), stratoShift * 0.88);
+  let skyAtten = atmoDensity * (1.0 - interplanetary);
+  var col = mix(baseHoriz, baseZen, pow(y, horizTight)) * skyAtten;
+  let sd = max(dot(dir, U.sunDir.xyz), 0.0);
+  let mie = pow(sd, 10.0) * 0.34 * skyAtten + pow(sd, 64.0) * 1.15 * skyAtten;
+  col += U.sunCol.rgb * mie * max(U.sunDir.w, 0.05);
+  return col;
+}
+
 fn evalSky(dir: vec3f) -> vec3f {
   let t = U.camPos.w;
   let camAlt = P.enuEast.w;
@@ -4941,9 +4964,9 @@ fn evalSky(dir: vec3f) -> vec3f {
     if ((dCumulus > 0.0 && dir.y > 0.015) || (dCumulus < 0.0 && dir.y < -0.015 && camAlt < 34000.0)) {
       let tCloud = clamp(abs(dCumulus) / max(0.05, abs(dir.y)), 0.0, 95000.0);
       let cPos = vec2f(lonDeg * 18.0, latDeg * 18.0) + dir.xz * (tCloud * 0.00055) + U.wind.xy * (t * 0.032);
-      let c1 = fbm(cPos * 0.62);
-      let c2 = fbm(cPos * 1.75 - vec2f(t * 0.015, 0.0));
-      let cMask = smoothstep(0.46 - U.skyZenith.w * 0.14, 0.78, c1 * 0.68 + c2 * 0.32) *
+      let c1 = fbm3(cPos * 0.62);
+      let c2 = n2(cPos * 1.85 - vec2f(t * 0.015, 0.0));
+      let cMask = smoothstep(0.46 - U.skyZenith.w * 0.14, 0.78, c1 * 0.72 + c2 * 0.28) *
                   smoothstep(0.015, 0.16, abs(dir.y)) *
                   (1.0 - smoothstep(16000.0, 34000.0, camAlt));
       let topSun = select(0.55, 0.95, dCumulus < 0.0);
@@ -4955,8 +4978,8 @@ fn evalSky(dir: vec3f) -> vec3f {
     if ((dCirrus > 0.0 && dir.y > 0.015) || (dCirrus < 0.0 && dir.y < -0.015 && camAlt < 46000.0)) {
       let tCir = clamp(abs(dCirrus) / max(0.05, abs(dir.y)), 0.0, 140000.0);
       let cirPos = vec2f(lonDeg * 11.0, latDeg * 11.0) + dir.xz * (tCir * 0.00035) - U.wind.xy * (t * 0.025);
-      let warp = fbm(cirPos * 0.5);
-      let streak = fbm(vec2f(cirPos.x * 1.2 + warp * 2.0, cirPos.y * 0.38));
+      let warp = n2(cirPos * 0.55);
+      let streak = fbm3(vec2f(cirPos.x * 1.2 + warp * 2.0, cirPos.y * 0.38));
       let cirMask = smoothstep(0.54, 0.82, streak) * smoothstep(0.015, 0.14, abs(dir.y)) * (1.0 - smoothstep(22000.0, 46000.0, camAlt));
       let cirCol = mix(vec3f(0.64, 0.78, 0.94), U.sunCol.rgb * 1.18 + vec3f(0.42), 0.62 * U.sunDir.w);
       col = mix(col, cirCol, cirMask * 0.44 * skyAtten);
@@ -5034,12 +5057,16 @@ fn evalSky(dir: vec3f) -> vec3f {
 
     // Real Solar System bodies (Sun + 8 physical-scale planets from SolarU)
     let bodyVis = clamp(spaceFactor + interplanetary + trueNightFactor * smoothstep(0.05, 0.32, dir.y) * 0.80, 0.0, 1.0);
-    col += evalSolarSystem(dir, t, bodyVis);
+    if (bodyVis > 0.02) {
+      col += evalSolarSystem(dir, t, bodyVis);
+    }
 
     // Occasional meteors in upper mesosphere / dark sky
-    col += evalMeteorites(dir, t) * clamp(trueNightFactor * 0.75 + spaceFactor * 0.35, 0.0, 0.85) * (1.0 - interplanetary);
+    if ((camAlt > 12000.0 || trueNightFactor > 0.22) && interplanetary < 0.95) {
+      col += evalMeteorites(dir, t) * clamp(trueNightFactor * 0.75 + spaceFactor * 0.35, 0.0, 0.85) * (1.0 - interplanetary);
+    }
 
-    if (dir.y > 0.01 && auroraWeight > 0.01) {
+    if (dir.y > 0.01 && auroraWeight > 0.02) {
       col += evalAurora(dir, t) * auroraWeight;
     }
   }
@@ -5214,21 +5241,20 @@ struct VSOut {
 }
 
 fn sampleShadow(relP: vec3f) -> f32 {
-  if (P.enuEast.w > 1600.0) { return 1.0; }
+  if (P.enuEast.w > 450.0) { return 1.0; }
   let sc = U.sunVp * vec4f(relP, 1.0);
   let p = sc.xyz / sc.w;
   let uv = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
   let inBounds = uv.x >= 0.01 && uv.x <= 0.99 && uv.y >= 0.01 && uv.y <= 0.99 && p.z >= 0. && p.z <= 1.;
+  if (!inBounds) { return 1.0; }
   let cuv = clamp(uv, vec2f(0.01), vec2f(0.99));
-  let cz = clamp(p.z - 0.0025, 0.0, 1.0);
-  var s = 0.;
-  let texelStep = 1. / 2048.;
-  for (var y = -1; y <= 1; y++) {
-    for (var x = -1; x <= 1; x++) {
-      s += textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f(f32(x), f32(y)) * texelStep, cz);
-    }
-  }
-  return select(1., s / 9., inBounds);
+  let cz = clamp(p.z - 0.0028, 0.0, 1.0);
+  let ts = 0.75 / 1024.;
+  let s = textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f(-ts, -ts), cz)
+        + textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f( ts, -ts), cz)
+        + textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f(-ts,  ts), cz)
+        + textureSampleCompareLevel(shadowTex, shadowSmp, cuv + vec2f( ts,  ts), cz);
+  return s * 0.25;
 }
 
 @fragment fn fs(v: VSOut) -> @location(0) vec4f {
@@ -5239,39 +5265,38 @@ fn sampleShadow(relP: vec3f) -> f32 {
   let wetness = clamp(v.tInfo.y + smoothstep(-0.35, 0.65, -h) * 0.6, 0.0, 1.0);
   let lavaGlow = v.tInfo.w;
 
-  // Regional meter coordinates for crisp close-up triplanar / material atlas detail
   let localXZ = U.camPos.xz + relPos.xz;
-  let uvA = localXZ * 0.24;
-  let uvB = localXZ * 0.065 + vec2f(0.37, 0.71);
-  let sSoil  = mix(textureSample(matTex, matSmp, uvA, 0), textureSample(matTex, matSmp, uvB, 0), 0.42);
-  let sGrass = mix(textureSample(matTex, matSmp, uvA, 4), textureSample(matTex, matSmp, uvB, 4), 0.45);
-  let sSand  = mix(textureSample(matTex, matSmp, uvA, 2), textureSample(matTex, matSmp, uvB, 2), 0.38);
-  let sRock  = mix(textureSample(matTex, matSmp, uvA * 0.6, 7), textureSample(matTex, matSmp, uvB * 0.55, 8), 0.5);
-
   var n = normalize(v.norm);
   // Radial local up on the curved Earth sphere
   let pCenter = vec3f(0.0, -(P.enuUp.w + camAlt), 0.0);
   let radUp = normalize(relPos - pCenter);
   let slope = 1.0 - clamp(dot(n, radUp), 0.0, 1.0);
 
-  // Smooth transition from close-up procedural micro-detail (<2 km) to unified planetary biome albedo (orbital)
-  let detailFade = 1.0 - smoothstep(260.0, 4800.0, max(dist, camAlt * 1.4));
+  // Smooth transition from close-up procedural micro-detail (<1.8 km) to unified planetary biome albedo (orbital)
+  let detailFade = 1.0 - smoothstep(240.0, 2600.0, max(dist, camAlt * 1.4));
   let rockMask = smoothstep(0.22, 0.54, slope);
 
   var base = v.tileCol;
   if (detailFade > 0.01) {
+    let uvA = localXZ * 0.24;
+    let uvB = localXZ * 0.065 + vec2f(0.37, 0.71);
+    let sSoil  = mix(textureSampleLevel(matTex, matSmp, uvA, 0, 0.0), textureSampleLevel(matTex, matSmp, uvB, 0, 0.0), 0.42);
+    let sGrass = mix(textureSampleLevel(matTex, matSmp, uvA, 4, 0.0), textureSampleLevel(matTex, matSmp, uvB, 4, 0.0), 0.45);
+    let sSand  = textureSampleLevel(matTex, matSmp, uvA, 2, 0.0);
+    let sRock  = mix(textureSampleLevel(matTex, matSmp, uvA * 0.6, 7, 0.0), textureSampleLevel(matTex, matSmp, uvB * 0.55, 8, 0.0), 0.5);
+
     let microTex = mix(mix(sSoil.rgb, sGrass.rgb, smoothstep(0.5, 4.0, h) * (1.0 - rockMask)), sRock.rgb, rockMask);
     let sandBand = smoothstep(-2.5, 0.6, h) * (1.0 - smoothstep(0.6, 3.2, h));
     let texMod = mix(microTex, sSand.rgb, sandBand * 0.65);
-    // Modulate unified planetary albedo with local material grain so close-up and orbital colors are 100% consistent
     base = mix(base, base * (0.58 + texMod * 0.92), detailFade * 0.85);
 
-    // Noniv/abyssal-garden seabed rock detail, cracks & coralline fluorescence
-    if (h < 0.25) {
+    // Seabed rock detail, cracks & coralline fluorescence (only when close to seabed)
+    if (h < 0.25 && dist < 72.0) {
+      let nearBed = 1.0 - smoothstep(32.0, 72.0, dist);
       let abDet = abyssalRockDetail(vec3f(localXZ.x, h, localXZ.y), n);
-      n = normalize(n + vec3f(abDet.x * 0.32, 0.0, abDet.y * 0.32) * detailFade);
+      n = normalize(n + vec3f(abDet.x * 0.32, 0.0, abDet.y * 0.32) * nearBed);
       let coralline = mix(vec3f(0.75, 0.14, 0.52), vec3f(0.45, 0.16, 0.82), sin(localXZ.x * 0.4 + localXZ.y * 0.3) * 0.5 + 0.5);
-      base = mix(base, coralline, abDet.w * 0.62 * detailFade);
+      base = mix(base, coralline, abDet.w * 0.62 * nearBed);
     }
 
     let dHx = ((sSoil.a - 0.5) * 0.24 + (sRock.a - 0.5) * rockMask * 0.32) * detailFade;
@@ -5280,12 +5305,11 @@ fn sampleShadow(relP: vec3f) -> f32 {
   }
 
   // Far-to-Mid Forest Canopy Rough-Outline LOD on Terrain (160m -> 14km)
-  // Gives distant wooded landscapes organic tree-crown silhouettes & dappled depth BEFORE 3D trees resolve!
   let vegCover = smoothstep(0.35, 3.5, h) * (1.0 - rockMask) * smoothstep(0.08, 0.22, base.g - base.b * 0.55) * (1.0 - smoothstep(0.55, 0.78, base.r));
   let canopyLodVis = smoothstep(140.0, 380.0, dist) * (1.0 - smoothstep(4500.0, 16000.0, max(dist, camAlt * 1.5))) * vegCover;
   if (canopyLodVis > 0.01) {
     let crownFine = n2(localXZ * 0.085);
-    let crownCluster = fbm(localXZ * 0.024 + vec2f(3.1, -5.4));
+    let crownCluster = fbm3(localXZ * 0.024 + vec2f(3.1, -5.4));
     let crownHeight = crownFine * 0.58 + crownCluster * 0.42;
     let crownShadow = mix(0.66, 1.18, smoothstep(0.28, 0.78, crownHeight));
     let crownShade = mix(base * 0.62, base * vec3f(0.88, 1.06, 0.78), smoothstep(0.35, 0.80, crownHeight));
@@ -5304,7 +5328,7 @@ fn sampleShadow(relP: vec3f) -> f32 {
       P.enuSouth.xyz * radUp.z
     );
     let cUv = vec2f(atan2(ecefDir.z, ecefDir.x) * 2.2 + U.camPos.w * 0.003, ecefDir.y * 3.8);
-    let cFbm = fbm(cUv * 2.2) * 0.65 + fbm(cUv * 5.2 + vec2f(4.1, -2.3)) * 0.35;
+    let cFbm = fbm3(cUv * 2.2) * 0.68 + n2(cUv * 5.4 + vec2f(4.1, -2.3)) * 0.32;
     let cMask = smoothstep(0.49, 0.74, cFbm) * orbitalCloudVis * 0.72;
     base = mix(base, vec3f(0.94, 0.96, 1.0), cMask);
   }
@@ -5320,7 +5344,10 @@ fn sampleShadow(relP: vec3f) -> f32 {
   let NdotH = max(dot(n, H), 0.0);
   let VdotH = max(dot(V, H), 0.0);
 
-  let sh = mix(1.0, sampleShadow(relPos + n * 0.18), detailFade);
+  var sh = 1.0;
+  if (detailFade > 0.02 && NdotL > 0.005 && dist < 175.0 && camAlt < 450.0) {
+    sh = mix(1.0, sampleShadow(relPos + n * 0.18), detailFade);
+  }
   let D = distributionGGX(NdotH, rough);
   let G = geometrySmith(NdotV, NdotL, rough);
   let F = fresnelSchlick(VdotH, vec3f(mix(0.03, 0.05, wetness)));
@@ -5333,20 +5360,18 @@ fn sampleShadow(relP: vec3f) -> f32 {
 
   // Volcanic lava veins & active magma glow
   if (lavaGlow > 0.02) {
-    let lf = fbm(localXZ * 0.25 - vec2f(U.camPos.w * 0.18, U.camPos.w * 0.10));
+    let lf = fbm3(localXZ * 0.25 - vec2f(U.camPos.w * 0.18, U.camPos.w * 0.10));
     let lAmt = smoothstep(0.35, 0.72, lf + lavaGlow * 0.45) * lavaGlow;
     col += mix(vec3f(2.6, 0.30, 0.02), vec3f(4.4, 1.75, 0.22), lAmt) * lAmt * 1.4;
   }
 
-  // Noniv/abyssal-garden chromatic underwater caustics on submerged seabeds
-  if (h < 0.05 && detailFade > 0.05) {
+  // Underwater caustics on submerged seabeds (single-tap optimized solver)
+  if (h < 0.05 && detailFade > 0.05 && dist < 130.0) {
     let t = U.camPos.w * 0.65;
     let cuv = localXZ * 0.085 + n.xz * 0.08;
-    let cR = caus(cuv + vec2f(0.006, 0.0), t);
-    let cG = caus(cuv, t);
-    let cB = caus(cuv - vec2f(0.006, 0.0), t);
+    let cVal = caus(cuv, t);
     let depthAtten = smoothstep(-28.0, -0.1, h) * smoothstep(-0.15, 0.08, -h);
-    col += vec3f(cR * 0.9, cG * 1.15, cB * 1.35) * depthAtten * max(0.25, U.sunDir.w) * 0.62 * detailFade;
+    col += vec3f(0.88, 1.14, 1.34) * cVal * depthAtten * max(0.25, U.sunDir.w) * 0.62 * detailFade;
   }
 
   // Night-side planetary polar aurora subtly illuminating polar ice from orbital altitude
@@ -5491,28 +5516,33 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
   let elev = v.vMeta.z;
   let regPos = relPos + U.camPos.xyz;
 
-  let sc = U.sunVp * vec4f(relPos + n * 0.15, 1.);
-  let sp = sc.xyz / sc.w;
-  let suv = vec2f(sp.x * 0.5 + 0.5, 0.5 - sp.y * 0.5);
-  let inBounds = suv.x > 0.01 && suv.x < 0.99 && suv.y > 0.01 && suv.y < 0.99 && sp.z > 0. && sp.z < 1.;
-  let rawSh = textureSampleCompareLevel(shadowTex, shadowSmp, clamp(suv, vec2f(0.01), vec2f(0.99)), clamp(sp.z - 0.003, 0.0, 1.0));
-  let sh = select(1., mix(1.0, rawSh, nearDetail), inBounds);
-
-  let barkLayer = i32(floor(fract(v.vMeta.y * 7.13) * 3.0)) + 9;
-  let leafLayer = i32(floor(fract(v.vMeta.y * 11.37) * 3.0)) + 13;
-  let barkSample = textureSampleLevel(matTex, matSmp, vec2f(atan2(n.x, n.z) * 0.8, elev * 0.45), barkLayer, 0.0);
-  let leafSample = textureSampleLevel(matTex, matSmp, regPos.xz * 0.75 + vec2f(v.uv.y), leafLayer, 0.0);
+  var sh = 1.0;
+  if (nearDetail > 0.05 && rHoriz < 175.0 && P.enuEast.w < 450.0) {
+    let sc = U.sunVp * vec4f(relPos + n * 0.15, 1.);
+    let sp = sc.xyz / sc.w;
+    let suv = vec2f(sp.x * 0.5 + 0.5, 0.5 - sp.y * 0.5);
+    let inBounds = suv.x > 0.01 && suv.x < 0.99 && suv.y > 0.01 && suv.y < 0.99 && sp.z > 0. && sp.z < 1.;
+    if (inBounds) {
+      let rawSh = textureSampleCompareLevel(shadowTex, shadowSmp, suv, clamp(sp.z - 0.003, 0.0, 1.0));
+      sh = mix(1.0, rawSh, nearDetail);
+    }
+  }
 
   var albedo = v.col;
-  if (isLeaf && !isGlow) {
-    albedo = mix(v.col, leafSample.rgb, 0.38 * nearDetail);
-    // Close-up alpha-cutout leaf silhouette softens into solid cohesive crown outline at mid/far distance
-    if (nearDetail > 0.25 && leafSample.a < 0.12 * nearDetail && v.uv.y > 0.72) {
-      discard;
+  if (nearDetail > 0.02) {
+    if (isLeaf && !isGlow) {
+      let leafLayer = i32(floor(fract(v.vMeta.y * 11.37) * 3.0)) + 13;
+      let leafSample = textureSampleLevel(matTex, matSmp, regPos.xz * 0.75 + vec2f(v.uv.y), leafLayer, 0.0);
+      albedo = mix(v.col, leafSample.rgb, 0.38 * nearDetail);
+      if (nearDetail > 0.25 && leafSample.a < 0.12 * nearDetail && v.uv.y > 0.72) {
+        discard;
+      }
+    } else if (!isLeaf) {
+      let barkLayer = i32(floor(fract(v.vMeta.y * 7.13) * 3.0)) + 9;
+      let barkSample = textureSampleLevel(matTex, matSmp, vec2f(atan2(n.x, n.z) * 0.8, elev * 0.45), barkLayer, 0.0);
+      albedo = mix(v.col, barkSample.rgb, 0.42 * nearDetail);
+      n = normalize(n + vec3f((barkSample.a - 0.5) * 0.25, 0., (barkSample.r - 0.5) * 0.25) * nearDetail);
     }
-  } else if (!isLeaf) {
-    albedo = mix(v.col, barkSample.rgb, 0.42 * nearDetail);
-    n = normalize(n + vec3f((barkSample.a - 0.5) * 0.25, 0., (barkSample.r - 0.5) * 0.25) * nearDetail);
   }
 
   albedo = mix(albedo, vec3f(0.06, 0.05, 0.05), v.vMeta.x * 0.85);
@@ -5526,9 +5556,11 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
   if (isLeaf) {
     let backLit = pow(clamp(dot(V, -L + n * 0.35), 0., 1.), 3.0) * (0.4 + 0.6 * sh);
     col += albedo * U.sunCol.rgb * backLit * (0.35 + 0.57 * nearDetail) * U.sunDir.w;
-    let H = normalize(V + L);
-    let spec = pow(max(dot(n, H), 0.), 28.) * 0.14 * sh * nearDetail;
-    col += U.sunCol.rgb * spec * U.sunDir.w;
+    if (nearDetail > 0.05) {
+      let H = normalize(V + L);
+      let spec = pow(max(dot(n, H), 0.), 28.) * 0.14 * sh * nearDetail;
+      col += U.sunCol.rgb * spec * U.sunDir.w;
+    }
   }
 
   if (isGlow) {
@@ -5536,7 +5568,7 @@ fn displaceVegRel(inp: VSIn) -> vec3f {
     col += v.col * 0.85 * pulse;
   }
 
-  if (elev < -0.05) {
+  if (elev < -0.05 && nearDetail > 0.05) {
     let cVal = caus(regPos.xz * 0.09 + n.xz * 0.06, U.camPos.w * 0.65);
     col += vec3f(0.22, 0.58, 0.72) * cVal * smoothstep(-18.0, -0.1, elev) * max(0.0, n.y + 0.35) * 0.55 * nearDetail;
   }
@@ -6163,7 +6195,7 @@ fn waveH(p: vec2f, t: f32) -> f32 {
     let k = 1.0 - 1.769 * (1.0 - ci * ci);
     let tir = 1.0 - smoothstep(-0.04, 0.12, k);
     let refrDir = normalize(vec3f(-V.x * 1.33 + n.x * 0.25, sqrt(max(0.01, k)), -V.z * 1.33 + n.z * 0.25));
-    let skyAbove = evalSky(refrDir);
+    let skyAbove = evalSkyFast(refrDir);
     let abyssMirror = mix(vec3f(0.015, 0.11, 0.17), vec3f(0.04, 0.28, 0.36), ci);
     let snellC = caus(regXZ * 0.12, t * 0.65) * 0.35;
     let uwSurf = mix(skyAbove + vec3f(0.15, 0.45, 0.55) * snellC, abyssMirror, tir * 0.88);
@@ -6183,17 +6215,15 @@ fn waveH(p: vec2f, t: f32) -> f32 {
   let abyssMix = smoothstep(80.0, 1800.0, depth);
   var waterBody = mix(mix(shallowCol, midOcean, shelfMix), deepCol, abyssMix) * (NdotL * 0.95 * sunPower + 0.12);
 
-  // Close-up chromatic underwater caustics shining through shallow turquoise water
-  if (detailFade > 0.02) {
+  // Close-up underwater caustics shining through shallow turquoise water (single-tap optimized)
+  if (detailFade > 0.02 && dist < 140.0 && depth < 14.0) {
     let cUv = regXZ * 0.12 + n.xz * 0.35;
-    let cR = caus(cUv + vec2f(0.005, 0.0), t * 0.65);
-    let cG = caus(cUv, t * 0.65);
-    let cB = caus(cUv - vec2f(0.005, 0.0), t * 0.65);
+    let cVal = caus(cUv, t * 0.65);
     let causticVis = (1.0 - shelfMix) * smoothstep(0.02, 0.25, depth);
-    waterBody += vec3f(cR * 0.85, cG * 1.05, cB * 1.25) * U.sunCol.rgb * causticVis * 0.42 * sunPower * detailFade;
+    waterBody += vec3f(0.86, 1.06, 1.24) * cVal * U.sunCol.rgb * causticVis * 0.42 * sunPower * detailFade;
   }
 
-  let reflCol = evalSky(R) * mix(0.28, 1.0, detailFade);
+  let reflCol = evalSkyFast(R) * mix(0.28, 1.0, detailFade);
   let H = normalize(V + L);
   let specPow = mix(48.0, 300.0, detailFade);
   let specGain = mix(0.85, 3.6, detailFade);
@@ -6209,7 +6239,7 @@ fn waveH(p: vec2f, t: f32) -> f32 {
     let radUp = normalize(v.radUp);
     let ecefDir = normalize(P.enuEast.xyz * radUp.x + P.enuUp.xyz * radUp.y + P.enuSouth.xyz * radUp.z);
     let cUv = vec2f(atan2(ecefDir.z, ecefDir.x) * 2.2 + t * 0.003, ecefDir.y * 3.8);
-    let cFbm = fbm(cUv * 2.2) * 0.65 + fbm(cUv * 5.2 + vec2f(4.1, -2.3)) * 0.35;
+    let cFbm = fbm3(cUv * 2.2) * 0.68 + n2(cUv * 5.4 + vec2f(4.1, -2.3)) * 0.32;
     let cMask = smoothstep(0.49, 0.74, cFbm) * orbitalCloudVis * 0.76;
     col = mix(col, vec3f(0.94, 0.96, 1.0) * (NdotL * 1.15 * sunPower + 0.06), cMask);
   }
@@ -6314,17 +6344,21 @@ struct VSOut {
 }
 
 @fragment fn fs(v: VSOut) -> @location(0) vec4f {
+  let sunFacingRaw = max(dot(U.camFwd.xyz, U.sunDir.xyz), 0.);
+  if (sunFacingRaw <= 0.04 || P.enuEast.w > 18000.0) {
+    return vec4f(0.);
+  }
   let sunClip = U.vp * vec4f(U.sunDir.xyz * 500., 1.);
   if (sunClip.w <= 0.) {
     return vec4f(0.);
   }
   let sunUv = vec2f(sunClip.x / sunClip.w * 0.5 + 0.5, 0.5 - sunClip.y / sunClip.w * 0.5);
-  let delta = (sunUv - v.uv) / 20. * 0.82;
+  let delta = (sunUv - v.uv) / 12. * 0.84;
   var tc = v.uv;
   var acc = 0.;
   var w = 1.;
   let dims = vec2f(textureDimensions(depthTex));
-  for (var i = 0; i < 20; i++) {
+  for (var i = 0; i < 12; i++) {
     tc += delta;
     if (tc.x >= 0. && tc.x <= 1. && tc.y >= 0. && tc.y <= 1.) {
       let px = clamp(vec2i(tc * dims), vec2i(0), vec2i(dims) - vec2i(1));
@@ -6333,11 +6367,11 @@ struct VSOut {
         acc += w;
       }
     }
-    w *= 0.92;
+    w *= 0.88;
   }
-  let sunFacing = pow(max(dot(U.camFwd.xyz, U.sunDir.xyz), 0.), 2.);
+  let sunFacing = sunFacingRaw * sunFacingRaw;
   let rayCol = select(U.sunCol.rgb, vec3f(0.12, 0.62, 0.78), P.enuEast.w < -0.05);
-  let rayAmt = (acc / 20.) * sunFacing * U.sunDir.w * 0.42 * max(P.geo.z, select(0.0, 1.0, P.enuEast.w < -0.05));
+  let rayAmt = (acc / 12.) * sunFacing * U.sunDir.w * 0.42 * max(P.geo.z, select(0.0, 1.0, P.enuEast.w < -0.05));
   return vec4f(rayCol * rayAmt, 1.);
 }
 `;
@@ -6408,20 +6442,19 @@ fn filmicTone(x: vec3f) -> vec3f {
   }
   uv = clamp(uv, vec2f(0.001), vec2f(0.999));
 
-  let ca = select(0.0032, 0.0, isLookdev) * r2;
-  let uvR = clamp(uv - centered * ca, vec2f(0.001), vec2f(0.999));
-  let uvB = clamp(uv + centered * ca, vec2f(0.001), vec2f(0.999));
+  var hdr = textureSampleLevel(hdrTex, postSmp, uv, 0.).rgb;
+  if (!isLookdev && r2 > 0.06) {
+    let ca = 0.0032 * r2;
+    let uvR = clamp(uv - centered * ca, vec2f(0.001), vec2f(0.999));
+    let uvB = clamp(uv + centered * ca, vec2f(0.001), vec2f(0.999));
+    hdr.r = textureSampleLevel(hdrTex, postSmp, uvR, 0.).r;
+    hdr.b = textureSampleLevel(hdrTex, postSmp, uvB, 0.).b;
+  }
 
-  var hdr = vec3f(
-    textureSampleLevel(hdrTex, postSmp, uvR, 0.).r,
-    textureSampleLevel(hdrTex, postSmp, uv, 0.).g,
-    textureSampleLevel(hdrTex, postSmp, uvB, 0.).b
-  );
-
-  let dSz = vec2i(textureDimensions(depthTex));
-  let dPx = clamp(vec2i(uv * vec2f(dSz)), vec2i(0), dSz - vec2i(1));
-  let dz = textureLoad(depthTex, dPx, 0);
   if (isPhoto) {
+    let dSz = vec2i(textureDimensions(depthTex));
+    let dPx = clamp(vec2i(uv * vec2f(dSz)), vec2i(0), dSz - vec2i(1));
+    let dz = textureLoad(depthTex, dPx, 0);
     let ndc = vec2f(uv.x * 2. - 1., 1. - uv.y * 2.);
     let wp4 = U.invVp * vec4f(ndc, dz, 1.);
     let sceneD = length(wp4.xyz / max(0.0001, wp4.w));
@@ -6438,25 +6471,16 @@ fn filmicTone(x: vec3f) -> vec3f {
     }
   }
 
-  let ts = 1.6 / vec2f(textureDimensions(rayTex));
-  let rays = (
-    textureSampleLevel(rayTex, postSmp, uv, 0.).rgb * 2. +
-    textureSampleLevel(rayTex, postSmp, uv + vec2f(-ts.x, 0.), 0.).rgb +
-    textureSampleLevel(rayTex, postSmp, uv + vec2f( ts.x, 0.), 0.).rgb +
-    textureSampleLevel(rayTex, postSmp, uv + vec2f(0., -ts.y), 0.).rgb +
-    textureSampleLevel(rayTex, postSmp, uv + vec2f(0.,  ts.y), 0.).rgb
-  ) / 6.;
+  // Single hardware-bilinear fetch of low-res god-ray buffer (5x faster than 5-tap blur)
+  let rays = textureSampleLevel(rayTex, postSmp, uv, 0.).rgb;
 
-  let hts = 3.5 / vec2f(textureDimensions(hdrTex));
+  // Dual-purpose 2-tap diagonal bloom + crisp CAS micro-sharpening (cuts 6 taps -> 2 taps)
+  let hts = 2.6 / vec2f(textureDimensions(hdrTex));
   let b0 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f(-hts.x, -hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let b1 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f( hts.x, -hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let b2 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f(-hts.x,  hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let b3 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f( hts.x,  hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let bloom = max(vec3f(0.), (b0 + b1 + b2 + b3) * 0.25 - vec3f(0.95)) * 0.22;
-
-  let cUp = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f(0., 1. / f32(dSz.y)), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let cDn = textureSampleLevel(hdrTex, postSmp, clamp(uv - vec2f(0., 1. / f32(dSz.y)), vec2f(0.001), vec2f(0.999)), 0.).rgb;
-  let cas = hdr + (hdr - (cUp + cDn) * 0.5) * 0.16;
+  let b1 = textureSampleLevel(hdrTex, postSmp, clamp(uv + vec2f( hts.x,  hts.y), vec2f(0.001), vec2f(0.999)), 0.).rgb;
+  let avgNb = (b0 + b1) * 0.5;
+  let bloom = max(vec3f(0.), avgNb - vec3f(0.92)) * 0.22;
+  let cas = hdr + (hdr - avgNb) * 0.14;
 
   let exposureScale = max(0.25, U.wind.w);
   var col = (cas + rays * 0.78 + bloom) * exposureScale;
@@ -8290,7 +8314,7 @@ function buildWorld() {
   //   inst1: yaw, phase, emoAndSpeed, packedMode
   //   inst2: pitch, roll, ikFrontFlex, ikHindFlex
   // ==========================================================================
-  const SIM_HZ = 120;
+  const SIM_HZ = 60;
   const SIM_DT = 1 / SIM_HZ;
   const ANIMAL_INST_FLOATS = 12;
   const wildlifeGroups = [];
@@ -10317,9 +10341,9 @@ const updateAudio = (camX, camY, camZ, weatherIdx = 0, fireStr = 0, windStr = 0.
 // Playable Animal Embodiment (1st & 3rd Person Orbit POV) & Settings Panel
 // ============================================================================
 
-const DPR_CAP = 2.0;
+const DPR_CAP = 1.25;
 const SHADOW_RES = SHADOW_SIZE;
-const RAY_SCALE = 0.5;
+const RAY_SCALE = 0.35;
 const MSAA_SAMPLES = AA_SAMPLES;
 
 
@@ -10470,10 +10494,17 @@ function syncBodyClasses() {
   if (settings.showMiniMap === false) document.body.classList.add('hide-minimap');
   if (photoMode) document.body.classList.add('photo');
 }
+let menuNeedsBackdrop = false;
 function setMenu(open) {
   menu = open;
   syncBodyClasses();
-  if (open) wakeBrandWordmark();
+  if (open) {
+    wakeBrandWordmark();
+  } else {
+    F[LAST] = performance.now();
+    forceSyncTiles = true;
+    simAcc = 0;
+  }
 }
 function noteUserActivity() {
   lastActivityAt = performance.now();
@@ -10636,9 +10667,34 @@ function noteUserActivity() {
     colCursor += cols + LETTER_GAP;
   }
 
+  // Precomputed quantized palette (zero per-pixel string allocations per frame!)
+  const GLOW_STEPS = 16;
+  const PHASE_STEPS = 4;
+  const PALETTE = [];
+  const ECHO_PALETTE = [];
+  for (let ph = 0; ph < PHASE_STEPS; ph++) {
+    const cyanT = (ph / (PHASE_STEPS - 1)) * 0.45;
+    const crestR = lerp(226, 92, cyanT);
+    const crestG = lerp(184, 200, cyanT);
+    const crestB = lerp(87, 242, cyanT);
+    const row = [];
+    for (let g = 0; g < GLOW_STEPS; g++) {
+      const gw = (g / (GLOW_STEPS - 1)) * 0.88;
+      const rCol = round(lerp(236, crestR, gw));
+      const gCol = round(lerp(234, crestG, gw));
+      const bCol = round(lerp(224, crestB, gw));
+      row.push(`rgb(${rCol},${gCol},${bCol})`);
+    }
+    PALETTE.push(row);
+  }
+  for (let g = 0; g < GLOW_STEPS; g++) {
+    const gw = g / (GLOW_STEPS - 1);
+    ECHO_PALETTE.push(`rgba(218,196,132,${(gw * 0.24).toFixed(2)})`);
+  }
+
   let dpr = 1;
   function resizeCanvas() {
-    dpr = clamp(window.devicePixelRatio || 1, 1, 2);
+    dpr = clamp(window.devicePixelRatio || 1, 1, 1.5);
     bc.width = Math.round(LOGICAL_W * dpr);
     bc.height = Math.round(LOGICAL_H * dpr);
   }
@@ -10661,7 +10717,7 @@ function noteUserActivity() {
   function pushRipple(x, y, strength = 1.0, speed = 260) {
     if (reducedMotion) return;
     ripples.push({ x, y, born: performance.now() * 0.001, strength, speed });
-    if (ripples.length > 10) ripples.shift();
+    if (ripples.length > 6) ripples.shift();
   }
 
   const menuEl = $('m');
@@ -10680,7 +10736,7 @@ function noteUserActivity() {
 
       const now = performance.now();
       const speed = hypot(dx, dy);
-      if (speed > 3.5 && now - pointer.lastRippleAt > 65 && pt.y > -40 && pt.y < LOGICAL_H + 40) {
+      if (speed > 4.0 && now - pointer.lastRippleAt > 75 && pt.y > -40 && pt.y < LOGICAL_H + 40) {
         pushRipple(pt.x, pt.y, clamp(0.45 + speed * 0.035, 0.5, 1.35), 255);
         pointer.lastRippleAt = now;
       }
@@ -10701,13 +10757,23 @@ function noteUserActivity() {
 
   let rafId = 0;
   let lastT = performance.now() * 0.001;
+  let lastDrawMs = 0;
 
   function renderFrame() {
     rafId = 0;
-    if (document.body.classList.contains('g')) return; // 0% overhead while playing
+    if (document.body.classList.contains('g') || document.hidden) return; // 0% overhead while playing or hidden
 
-    const now = performance.now() * 0.001;
-    const dt = clamp(now - lastT, 0.004, 0.033);
+    const nowMs = performance.now();
+    // Ultra-light 30 Hz idle breathing when cursor isn't hovering; instant 60+ Hz when interactive
+    const isInteractive = pointer.active || ripples.length > 0;
+    if (!isInteractive && nowMs - lastDrawMs < 32) {
+      rafId = requestAnimationFrame(renderFrame);
+      return;
+    }
+    lastDrawMs = nowMs;
+
+    const now = nowMs * 0.001;
+    const dt = clamp(now - lastT, 0.004, 0.04);
     lastT = now;
     const stepScale = dt * 60;
 
@@ -10726,7 +10792,9 @@ function noteUserActivity() {
     const damp = Math.pow(0.79, stepScale);
     const hoverRad = 128;
     const hoverRadSq = hoverRad * hoverRad;
+    const ripLen = ripples.length;
 
+    let lastFill = '';
     for (let i = 0; i < pixels.length; i++) {
       const p = pixels[i];
       let targetWaveY = 0;
@@ -10734,11 +10802,9 @@ function noteUserActivity() {
       let waveEnergy = 0;
 
       if (!reducedMotion) {
-        // Gentle oceanic ambient breathing wave along the pixel grid
         const idleWave = sin(p.normX * 7.2 - now * 1.95 + p.normY * 1.6) * 1.65;
         targetWaveY += idleWave;
 
-        // Live tactile cursor wave field when mouse approaches or touches REALISM
         if (pointer.active) {
           const dx = p.hx - pointer.x;
           const dy = p.hy - pointer.y;
@@ -10747,34 +10813,32 @@ function noteUserActivity() {
             const dist = sqrt(d2) + 0.001;
             const falloff = 1.0 - dist / hoverRad;
             const f2 = falloff * falloff;
-            // Traveling sine wave radiating through touched pixels
             const crest = sin(dist * 0.095 - now * 11.5);
-            const lift = crest * 18.0 * f2;
-            targetWaveY += lift + pointer.vy * 0.55 * f2;
+            targetWaveY += crest * 18.0 * f2 + pointer.vy * 0.55 * f2;
             targetWaveX += (dx / dist) * (crest * 7.5 + 8.5) * f2 + pointer.vx * 0.45 * f2;
             waveEnergy = max(waveEnergy, f2 * (0.65 + abs(crest) * 0.55));
           }
         }
 
-        // Expanding ring shockwaves emitted along mouse trail and clicks
-        for (let r = 0; r < ripples.length; r++) {
+        for (let r = 0; r < ripLen; r++) {
           const rp = ripples[r];
           const age = now - rp.born;
           const radius = age * rp.speed;
           const dx = p.hx - rp.x;
           const dy = p.hy - rp.y;
-          const dist = hypot(dx, dy) + 0.001;
+          const d2 = dx * dx + dy * dy;
+          const maxR = radius + 76;
+          const minR = max(0, radius - 76);
+          if (d2 > maxR * maxR || d2 < minR * minR) continue;
+          const dist = sqrt(d2) + 0.001;
           const delta = dist - radius;
-          if (abs(delta) < 76) {
-            const env = exp(-(delta * delta) / 920) * (1.0 - age / 1.85) * rp.strength;
-            const osc = sin(delta * 0.14);
-            targetWaveY += osc * 16.5 * env;
-            targetWaveX += (dx / dist) * osc * 9.0 * env;
-            waveEnergy = max(waveEnergy, abs(osc) * env * 1.15);
-          }
+          const env = exp(-(delta * delta) / 920) * (1.0 - age / 1.85) * rp.strength;
+          const osc = sin(delta * 0.14);
+          targetWaveY += osc * 16.5 * env;
+          targetWaveX += (dx / dist) * osc * 9.0 * env;
+          waveEnergy = max(waveEnergy, abs(osc) * env * 1.15);
         }
 
-        // Spring-damper integration back to exact home pixel coordinates
         const tx = p.hx + targetWaveX;
         const ty = p.hy + targetWaveY;
         p.vx = (p.vx + (tx - p.x) * springK) * damp;
@@ -10788,30 +10852,32 @@ function noteUserActivity() {
         p.z = 0;
       }
 
-      const disp = hypot(p.x - p.hx, p.y - p.hy);
+      const dpx = p.x - p.hx;
+      const dpy = p.y - p.hy;
+      const disp = sqrt(dpx * dpx + dpy * dpy);
       const glow = clamp(p.z + disp * 0.032, 0, 1);
-
-      // Architectural ivory base -> champagne-gold & atmospheric cyan wave crest illumination
-      const cyanPhase = 0.5 + 0.5 * sin(p.phase - now * 4.2 + (p.y - p.hy) * 0.12);
-      const crestR = lerp(226, 92, cyanPhase * 0.45);
-      const crestG = lerp(184, 200, cyanPhase * 0.45);
-      const crestB = lerp(87, 242, cyanPhase * 0.45);
-
-      const baseShade = 1.0 - p.normY * 0.12;
-      const rCol = round(lerp(242 * baseShade, crestR, glow * 0.88));
-      const gCol = round(lerp(240 * baseShade, crestG, glow * 0.88));
-      const bCol = round(lerp(230 * baseShade, crestB, glow * 0.88));
 
       const sz = pixelDrawSize * (1.0 + glow * 0.16);
       const half = sz * 0.5;
+      const gIdx = min(GLOW_STEPS - 1, floor(glow * GLOW_STEPS));
 
-      // Subtle trailing pixel echo on active wave crests
-      if (glow > 0.22) {
-        ctx.fillStyle = `rgba(${rCol},${gCol},${bCol},${(glow * 0.24).toFixed(3)})`;
+      if (glow > 0.30) {
+        const echoFill = ECHO_PALETTE[gIdx];
+        if (echoFill !== lastFill) {
+          ctx.fillStyle = echoFill;
+          lastFill = echoFill;
+        }
         ctx.fillRect(p.hx - half * 0.85, p.hy - half * 0.85, sz * 0.85, sz * 0.85);
       }
 
-      ctx.fillStyle = `rgb(${rCol},${gCol},${bCol})`;
+      const phIdx = gIdx > 0
+        ? min(PHASE_STEPS - 1, floor((0.5 + 0.5 * sin(p.phase - now * 4.2 + dpy * 0.12)) * PHASE_STEPS))
+        : 0;
+      const fill = PALETTE[phIdx][gIdx];
+      if (fill !== lastFill) {
+        ctx.fillStyle = fill;
+        lastFill = fill;
+      }
       ctx.fillRect(p.x - half, p.y - half, sz, sz);
     }
 
@@ -10819,11 +10885,14 @@ function noteUserActivity() {
   }
 
   wakeBrandWordmark = () => {
-    if (!rafId && !document.body.classList.contains('g')) {
+    if (!rafId && !document.body.classList.contains('g') && !document.hidden) {
       lastT = performance.now() * 0.001;
       rafId = requestAnimationFrame(renderFrame);
     }
   };
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !document.body.classList.contains('g')) wakeBrandWordmark();
+  });
   wakeBrandWordmark();
 })();
 
@@ -10872,9 +10941,9 @@ setActiveOrigin(startBiome.latDeg, startBiome.lonDeg, startBiome.id);
 const world = buildWorld();
 const planetQuadtree = new CubeSphereQuadtree({
   maxLod: 16,
-  maxCachedTiles: 320,
-  maxTilesPerFrame: 18,
-  maxActiveTiles: 220
+  maxCachedTiles: 220,
+  maxTilesPerFrame: 12,
+  maxActiveTiles: 144
 });
 
 let activeRegionBiomeId = startBiome.id;
@@ -10980,7 +11049,7 @@ if (miniMapWrap) {
 }
 
 const MM_RADIUS_M = 5000.0; // Exact 5 km surrounding radius
-const MM_RASTER_RES = 112;
+const MM_RASTER_RES = 84;
 const mmOffCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
 if (mmOffCanvas) { mmOffCanvas.width = MM_RASTER_RES; mmOffCanvas.height = MM_RASTER_RES; }
 const mmOffCtx = mmOffCanvas ? mmOffCanvas.getContext('2d') : null;
@@ -11053,7 +11122,7 @@ function rebuildMiniMapTerrainRaster(centerLatDeg, centerLonDeg) {
 
 function renderLiveMiniMap(nowMs) {
   if (!miniMapCanvas || menu || photoMode || settings.showMiniMap === false) return;
-  if (nowMs - mmLastDrawMs < 55) return; // Smooth ~18 Hz live GPS refresh
+  if (nowMs - mmLastDrawMs < 80) return; // Smooth ~12.5 Hz live GPS refresh
   mmLastDrawMs = nowMs;
 
   const ctx = miniMapCanvas.getContext('2d');
@@ -13242,15 +13311,24 @@ const pipePost = device.createRenderPipeline({
 // ============================================================================
 // Dynamic Resolution Render Targets & Timestamp Query Setup
 // ============================================================================
-let W = 0, H = 0, resScale = clamp(settings.resolutionScale || 1.0, RES_SCALE_MIN, RES_SCALE_MAX);
+let W = 0, H = 0, resScale = clamp(settings.resolutionScale || 0.85, RES_SCALE_MIN, RES_SCALE_MAX);
 let hdrTex = null, hdrMsaaTex = null, depthTex = null, rayTex = null;
 let hdrView = null, hdrMsaaView = null, depthView = null, rayView = null;
 let bgRays = null, bgPost = null;
+let rayTexDirty = true;
 
 function rebuildTargets() {
   const dpr = min(window.devicePixelRatio || 1, DPR_CAP) * resScale;
-  const nw = max(64, floor(window.innerWidth * dpr));
-  const nh = max(64, floor(window.innerHeight * dpr));
+  let nw = max(64, floor(window.innerWidth * dpr));
+  let nh = max(64, floor(window.innerHeight * dpr));
+  // Cap internal pixel budget so 4K/Retina screens stay silky 60 FPS
+  const maxW = floor(1920 * max(1.0, resScale));
+  const maxH = floor(1080 * max(1.0, resScale));
+  if (nw > maxW || nh > maxH) {
+    const k = min(maxW / nw, maxH / nh);
+    nw = max(64, floor(nw * k));
+    nh = max(64, floor(nh * k));
+  }
   if (nw === W && nh === H && hdrTex) return;
   W = nw; H = nh;
   canvas.width = W;
@@ -13295,6 +13373,7 @@ function rebuildTargets() {
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
   });
   rayView = rayTex.createView();
+  rayTexDirty = true;
 
   bgRays = device.createBindGroup({
     layout: bglRays,
@@ -13309,6 +13388,7 @@ function rebuildTargets() {
       { binding: 3, resource: depthView }
     ]
   });
+  if (menu) menuNeedsBackdrop = true;
 }
 rebuildTargets();
 window.addEventListener('resize', rebuildTargets);
@@ -13512,9 +13592,19 @@ function updateUniforms(dt) {
   Q.writeBuffer(sBuf, 0, SB);
 
   // Genuine 6-Face Cube-Sphere Quadtree Tile Selection & Bounded GPU Pool Upload
-  const sseThreshold = 15.5 / clamp(settings.viewDistance || 1.0, 0.5, 2.0);
-  activeTiles = planetQuadtree.selectTiles(camEcef, camState.altMeters, fov, max(360, H), sseThreshold, forceSyncTiles);
-  forceSyncTiles = false;
+  const sseThreshold = 19.5 / clamp(settings.viewDistance || 1.0, 0.5, 2.0);
+  const camMovedEcef = hypot(
+    camEcef[0] - lastTileCamEcef[0],
+    camEcef[1] - lastTileCamEcef[1],
+    camEcef[2] - lastTileCamEcef[2]
+  );
+  if (forceSyncTiles || activeTiles.length === 0 || camMovedEcef > 0.35) {
+    activeTiles = planetQuadtree.selectTiles(camEcef, camState.altMeters, fov, max(360, H), sseThreshold, forceSyncTiles);
+    forceSyncTiles = false;
+    lastTileCamEcef[0] = camEcef[0];
+    lastTileCamEcef[1] = camEcef[1];
+    lastTileCamEcef[2] = camEcef[2];
+  }
 
   const E = enuFrame.east, Uv = enuFrame.up, S = enuFrame.south;
   for (let i = 0; i < activeTiles.length; i++) {
@@ -13545,10 +13635,13 @@ function updateUniforms(dt) {
   updateAudio(F[CX], camState.altMeters, F[CZ], activeWeatherIdx, fireStr, windLevel, activeRegionBiomeId, camState.reentryHeat || 0);
 }
 
+const lastTileCamEcef = [NaN, NaN, NaN];
+
 function render(dt) {
   updateUniforms(dt);
 
-  const nearSurface = camState.altMeters < 1960;
+  const nearSurface = camState.altMeters < 1800;
+  const doShadows = camState.altMeters < 420;
   if (nearSurface) {
     const vegScale = clamp(settings.foliageDensity || 1.0, 0.25, 1.25);
     for (let i = 0; i < vegGpu.length; i++) {
@@ -13559,8 +13652,11 @@ function render(dt) {
     const faunaScale = clamp(settings.animalDetail || 1.0, 0.25, 1.25);
     for (let i = 0; i < animalGpu.length; i++) {
       const baseCount = world.wildlifeGroups[i].instCount;
-      animalGpu[i].instCount = baseCount > 0 ? max(1, round(baseCount * min(1.0, faunaScale))) : 0;
-      Q.writeBuffer(animalGpu[i].instBuf, 0, world.wildlifeGroups[i].instData);
+      const cnt = baseCount > 0 ? max(1, round(baseCount * min(1.0, faunaScale))) : 0;
+      animalGpu[i].instCount = cnt;
+      if (cnt > 0) {
+        Q.writeBuffer(animalGpu[i].instBuf, 0, world.wildlifeGroups[i].instData.subarray(0, cnt * 12));
+      }
     }
 
     const pRanges = world.particleRanges;
@@ -13576,8 +13672,8 @@ function render(dt) {
 
   const enc = device.createCommandEncoder();
 
-  // 1. Directional Sun Shadow Pass (only near surface where crisp flora/creature shadows are visible)
-  if (nearSurface) {
+  // 1. Directional Sun Shadow Pass (only when low enough for local directional shadows to be visible)
+  if (doShadows) {
     const sp = enc.beginRenderPass({
       colorAttachments: [],
       depthStencilAttachment: {
@@ -13594,7 +13690,7 @@ function render(dt) {
     sp.setIndexBuffer(terTileIBuf, 'uint32');
     for (let i = 0; i < activeTiles.length; i++) {
       const tile = activeTiles[i];
-      if (tile.lod >= 10) {
+      if (tile.lod >= 11) {
         sp.drawIndexed(terTileIdxCount, 1, 0, tile.gpuSlot * TILE_TOTAL_VERTS, i);
       }
     }
@@ -13728,15 +13824,26 @@ function render(dt) {
   }
   mp.end();
 
-  // 3. Half-Resolution Crepuscular God-Ray / Underwater Volumetric Shaft Pass
-  const rp = enc.beginRenderPass({
-    colorAttachments: [{ view: rayView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
-  });
-  rp.setPipeline(pipeRay);
-  rp.setBindGroup(0, bgFrame);
-  rp.setBindGroup(1, bgRays);
-  rp.draw(3);
-  rp.end();
+  // 3. Crepuscular God-Ray / Underwater Volumetric Shaft Pass (skipped when sun is behind camera or in space)
+  const sunFacing = UB[52] * UB[64] + UB[53] * UB[65] + UB[54] * UB[66];
+  const doRays = settings.volumetrics !== false && camState.altMeters <= 18000 && sunFacing > 0.03;
+  if (doRays) {
+    const rp = enc.beginRenderPass({
+      colorAttachments: [{ view: rayView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
+    });
+    rp.setPipeline(pipeRay);
+    rp.setBindGroup(0, bgFrame);
+    rp.setBindGroup(1, bgRays);
+    rp.draw(3);
+    rp.end();
+    rayTexDirty = true;
+  } else if (rayTexDirty) {
+    const rp = enc.beginRenderPass({
+      colorAttachments: [{ view: rayView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
+    });
+    rp.end();
+    rayTexDirty = false;
+  }
 
   // 4. Final Composite & Tone-Mapping Pass
   const pp = enc.beginRenderPass({
@@ -13777,8 +13884,22 @@ const reentryInput = { thrustE: 0, thrustN: 0, thrustU: 0, gravityScale: 0, allo
 
 function frame(now) {
   requestAnimationFrame(frame);
+  if (document.hidden) {
+    F[LAST] = now;
+    return;
+  }
   const dtr = now - F[LAST];
   F[LAST] = now;
+
+  // ZERO-LAG HOMESCREEN: Pause 3D WebGPU engine & 120 Hz wildlife physics while welcome overlay is active
+  if (menu && typeof window.__flyOverride === 'undefined') {
+    if (menuNeedsBackdrop) {
+      menuNeedsBackdrop = false;
+      render(0.016);
+    }
+    return;
+  }
+
   const dt = clamp(dtr / 1000, 0.001, 0.05);
   const timeScale = clamp(settings.timeSpeedMult ?? 1.0, 0.0, 10.0);
   F[TIME] += dt * max(0.05, timeScale);
@@ -13786,12 +13907,12 @@ function frame(now) {
   if (!photoMode && dtr < 500 && dynT >= 0 && settings.autoQuality) {
     dynT += dtr; dynN++;
     if (gpuMs > 0) { dynG += gpuMs; dynGN++; }
-    if (dynT > 1500) {
+    if (dynT > 850) {
       const avgG = dynGN ? dynG / dynGN : 0;
       const avgF = dynT / dynN;
       let newScale = resScale;
-      if (avgG > TARGET_GPU_MS || (!avgG && avgF > 18.0)) newScale = max(RES_SCALE_MIN, resScale * 0.88);
-      else if (avgG > 0 && avgG < TARGET_GPU_MS * 0.68 && resScale < RES_SCALE_MAX) newScale = min(RES_SCALE_MAX, resScale * 1.08);
+      if (avgG > TARGET_GPU_MS || (!avgG && avgF > 18.5)) newScale = max(RES_SCALE_MIN, resScale * 0.86);
+      else if (avgG > 0 && avgG < TARGET_GPU_MS * 0.65 && avgF < 16.0 && resScale < RES_SCALE_MAX) newScale = min(RES_SCALE_MAX, resScale * 1.06);
       if (abs(newScale - resScale) > 0.03) {
         resScale = newScale;
         rebuildTargets();
@@ -13800,10 +13921,7 @@ function frame(now) {
     }
   }
 
-  if (menu && typeof window.__flyOverride === 'undefined') {
-    flyAt(F[TIME] * 0.35);
-    noteUserActivity();
-  } else if (!menu && flyActive && typeof window.__flyOverride === 'undefined') {
+  if (!menu && flyActive && typeof window.__flyOverride === 'undefined') {
     F[FLT] += dt;
     flyAt(F[FLT]);
     if (F[FLT] >= FLY_DURATION) flyActive = false;
@@ -14152,9 +14270,9 @@ function frame(now) {
   audioState.camY = camState.altMeters;
   audioState.camZ = F[CZ];
 
-  // Step 120 Hz local ecosystem & wildlife simulation only when within regional distance
-  if (camState.altMeters < 2400) {
-    simAcc = min(simAcc + dt, FIXED_DT * 4);
+  // Step local ecosystem & wildlife simulation only when within regional distance (capped to max 2 substeps)
+  if (camState.altMeters < 1600) {
+    simAcc = min(simAcc + dt, FIXED_DT * 2);
     while (simAcc >= FIXED_DT) {
       world.stepSim(FIXED_DT, F[CX], F[CY], F[CZ], rainLevel, windLevel);
       simAcc -= FIXED_DT;
@@ -14257,6 +14375,7 @@ applyBiomePose(0);
 world.updateDynamic(0, 0.016, F[CX], F[CY], F[CZ], 0, 0.45);
 device.pushErrorScope('validation');
 render(0.016);
+menuNeedsBackdrop = false;
 const firstFrameErr = await device.popErrorScope();
 if (firstFrameErr || gpuValidationErr) {
   throw new Error('WebGPU render pass error: ' + (firstFrameErr?.message || gpuValidationErr));

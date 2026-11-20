@@ -8,9 +8,9 @@ import {
   QUALITY_TIERS, loadSettings, saveSettings, resetSettings, createQualityController
 } from './quality.js';
 
-const DPR_CAP = 2.0;
+const DPR_CAP = 1.25;
 const SHADOW_RES = SHADOW_SIZE;
-const RAY_SCALE = 0.5;
+const RAY_SCALE = 0.35;
 const MSAA_SAMPLES = AA_SAMPLES;
 import {
   PI, TAU, DEG2RAD, RAD2DEG, sin, cos, tan, abs, hypot, min, max, sqrt, floor, round, atan2, exp, pow,
@@ -189,10 +189,17 @@ function syncBodyClasses() {
   if (settings.showMiniMap === false) document.body.classList.add('hide-minimap');
   if (photoMode) document.body.classList.add('photo');
 }
+let menuNeedsBackdrop = false;
 function setMenu(open) {
   menu = open;
   syncBodyClasses();
-  if (open) wakeBrandWordmark();
+  if (open) {
+    wakeBrandWordmark();
+  } else {
+    F[LAST] = performance.now();
+    forceSyncTiles = true;
+    simAcc = 0;
+  }
 }
 function noteUserActivity() {
   lastActivityAt = performance.now();
@@ -355,9 +362,34 @@ function noteUserActivity() {
     colCursor += cols + LETTER_GAP;
   }
 
+  // Precomputed quantized palette (zero per-pixel string allocations per frame!)
+  const GLOW_STEPS = 16;
+  const PHASE_STEPS = 4;
+  const PALETTE = [];
+  const ECHO_PALETTE = [];
+  for (let ph = 0; ph < PHASE_STEPS; ph++) {
+    const cyanT = (ph / (PHASE_STEPS - 1)) * 0.45;
+    const crestR = lerp(226, 92, cyanT);
+    const crestG = lerp(184, 200, cyanT);
+    const crestB = lerp(87, 242, cyanT);
+    const row = [];
+    for (let g = 0; g < GLOW_STEPS; g++) {
+      const gw = (g / (GLOW_STEPS - 1)) * 0.88;
+      const rCol = round(lerp(236, crestR, gw));
+      const gCol = round(lerp(234, crestG, gw));
+      const bCol = round(lerp(224, crestB, gw));
+      row.push(`rgb(${rCol},${gCol},${bCol})`);
+    }
+    PALETTE.push(row);
+  }
+  for (let g = 0; g < GLOW_STEPS; g++) {
+    const gw = g / (GLOW_STEPS - 1);
+    ECHO_PALETTE.push(`rgba(218,196,132,${(gw * 0.24).toFixed(2)})`);
+  }
+
   let dpr = 1;
   function resizeCanvas() {
-    dpr = clamp(window.devicePixelRatio || 1, 1, 2);
+    dpr = clamp(window.devicePixelRatio || 1, 1, 1.5);
     bc.width = Math.round(LOGICAL_W * dpr);
     bc.height = Math.round(LOGICAL_H * dpr);
   }
@@ -380,7 +412,7 @@ function noteUserActivity() {
   function pushRipple(x, y, strength = 1.0, speed = 260) {
     if (reducedMotion) return;
     ripples.push({ x, y, born: performance.now() * 0.001, strength, speed });
-    if (ripples.length > 10) ripples.shift();
+    if (ripples.length > 6) ripples.shift();
   }
 
   const menuEl = $('m');
@@ -399,7 +431,7 @@ function noteUserActivity() {
 
       const now = performance.now();
       const speed = hypot(dx, dy);
-      if (speed > 3.5 && now - pointer.lastRippleAt > 65 && pt.y > -40 && pt.y < LOGICAL_H + 40) {
+      if (speed > 4.0 && now - pointer.lastRippleAt > 75 && pt.y > -40 && pt.y < LOGICAL_H + 40) {
         pushRipple(pt.x, pt.y, clamp(0.45 + speed * 0.035, 0.5, 1.35), 255);
         pointer.lastRippleAt = now;
       }
@@ -420,13 +452,23 @@ function noteUserActivity() {
 
   let rafId = 0;
   let lastT = performance.now() * 0.001;
+  let lastDrawMs = 0;
 
   function renderFrame() {
     rafId = 0;
-    if (document.body.classList.contains('g')) return; // 0% overhead while playing
+    if (document.body.classList.contains('g') || document.hidden) return; // 0% overhead while playing or hidden
 
-    const now = performance.now() * 0.001;
-    const dt = clamp(now - lastT, 0.004, 0.033);
+    const nowMs = performance.now();
+    // Ultra-light 30 Hz idle breathing when cursor isn't hovering; instant 60+ Hz when interactive
+    const isInteractive = pointer.active || ripples.length > 0;
+    if (!isInteractive && nowMs - lastDrawMs < 32) {
+      rafId = requestAnimationFrame(renderFrame);
+      return;
+    }
+    lastDrawMs = nowMs;
+
+    const now = nowMs * 0.001;
+    const dt = clamp(now - lastT, 0.004, 0.04);
     lastT = now;
     const stepScale = dt * 60;
 
@@ -445,7 +487,9 @@ function noteUserActivity() {
     const damp = Math.pow(0.79, stepScale);
     const hoverRad = 128;
     const hoverRadSq = hoverRad * hoverRad;
+    const ripLen = ripples.length;
 
+    let lastFill = '';
     for (let i = 0; i < pixels.length; i++) {
       const p = pixels[i];
       let targetWaveY = 0;
@@ -453,11 +497,9 @@ function noteUserActivity() {
       let waveEnergy = 0;
 
       if (!reducedMotion) {
-        // Gentle oceanic ambient breathing wave along the pixel grid
         const idleWave = sin(p.normX * 7.2 - now * 1.95 + p.normY * 1.6) * 1.65;
         targetWaveY += idleWave;
 
-        // Live tactile cursor wave field when mouse approaches or touches REALISM
         if (pointer.active) {
           const dx = p.hx - pointer.x;
           const dy = p.hy - pointer.y;
@@ -466,34 +508,32 @@ function noteUserActivity() {
             const dist = sqrt(d2) + 0.001;
             const falloff = 1.0 - dist / hoverRad;
             const f2 = falloff * falloff;
-            // Traveling sine wave radiating through touched pixels
             const crest = sin(dist * 0.095 - now * 11.5);
-            const lift = crest * 18.0 * f2;
-            targetWaveY += lift + pointer.vy * 0.55 * f2;
+            targetWaveY += crest * 18.0 * f2 + pointer.vy * 0.55 * f2;
             targetWaveX += (dx / dist) * (crest * 7.5 + 8.5) * f2 + pointer.vx * 0.45 * f2;
             waveEnergy = max(waveEnergy, f2 * (0.65 + abs(crest) * 0.55));
           }
         }
 
-        // Expanding ring shockwaves emitted along mouse trail and clicks
-        for (let r = 0; r < ripples.length; r++) {
+        for (let r = 0; r < ripLen; r++) {
           const rp = ripples[r];
           const age = now - rp.born;
           const radius = age * rp.speed;
           const dx = p.hx - rp.x;
           const dy = p.hy - rp.y;
-          const dist = hypot(dx, dy) + 0.001;
+          const d2 = dx * dx + dy * dy;
+          const maxR = radius + 76;
+          const minR = max(0, radius - 76);
+          if (d2 > maxR * maxR || d2 < minR * minR) continue;
+          const dist = sqrt(d2) + 0.001;
           const delta = dist - radius;
-          if (abs(delta) < 76) {
-            const env = exp(-(delta * delta) / 920) * (1.0 - age / 1.85) * rp.strength;
-            const osc = sin(delta * 0.14);
-            targetWaveY += osc * 16.5 * env;
-            targetWaveX += (dx / dist) * osc * 9.0 * env;
-            waveEnergy = max(waveEnergy, abs(osc) * env * 1.15);
-          }
+          const env = exp(-(delta * delta) / 920) * (1.0 - age / 1.85) * rp.strength;
+          const osc = sin(delta * 0.14);
+          targetWaveY += osc * 16.5 * env;
+          targetWaveX += (dx / dist) * osc * 9.0 * env;
+          waveEnergy = max(waveEnergy, abs(osc) * env * 1.15);
         }
 
-        // Spring-damper integration back to exact home pixel coordinates
         const tx = p.hx + targetWaveX;
         const ty = p.hy + targetWaveY;
         p.vx = (p.vx + (tx - p.x) * springK) * damp;
@@ -507,30 +547,32 @@ function noteUserActivity() {
         p.z = 0;
       }
 
-      const disp = hypot(p.x - p.hx, p.y - p.hy);
+      const dpx = p.x - p.hx;
+      const dpy = p.y - p.hy;
+      const disp = sqrt(dpx * dpx + dpy * dpy);
       const glow = clamp(p.z + disp * 0.032, 0, 1);
-
-      // Architectural ivory base -> champagne-gold & atmospheric cyan wave crest illumination
-      const cyanPhase = 0.5 + 0.5 * sin(p.phase - now * 4.2 + (p.y - p.hy) * 0.12);
-      const crestR = lerp(226, 92, cyanPhase * 0.45);
-      const crestG = lerp(184, 200, cyanPhase * 0.45);
-      const crestB = lerp(87, 242, cyanPhase * 0.45);
-
-      const baseShade = 1.0 - p.normY * 0.12;
-      const rCol = round(lerp(242 * baseShade, crestR, glow * 0.88));
-      const gCol = round(lerp(240 * baseShade, crestG, glow * 0.88));
-      const bCol = round(lerp(230 * baseShade, crestB, glow * 0.88));
 
       const sz = pixelDrawSize * (1.0 + glow * 0.16);
       const half = sz * 0.5;
+      const gIdx = min(GLOW_STEPS - 1, floor(glow * GLOW_STEPS));
 
-      // Subtle trailing pixel echo on active wave crests
-      if (glow > 0.22) {
-        ctx.fillStyle = `rgba(${rCol},${gCol},${bCol},${(glow * 0.24).toFixed(3)})`;
+      if (glow > 0.30) {
+        const echoFill = ECHO_PALETTE[gIdx];
+        if (echoFill !== lastFill) {
+          ctx.fillStyle = echoFill;
+          lastFill = echoFill;
+        }
         ctx.fillRect(p.hx - half * 0.85, p.hy - half * 0.85, sz * 0.85, sz * 0.85);
       }
 
-      ctx.fillStyle = `rgb(${rCol},${gCol},${bCol})`;
+      const phIdx = gIdx > 0
+        ? min(PHASE_STEPS - 1, floor((0.5 + 0.5 * sin(p.phase - now * 4.2 + dpy * 0.12)) * PHASE_STEPS))
+        : 0;
+      const fill = PALETTE[phIdx][gIdx];
+      if (fill !== lastFill) {
+        ctx.fillStyle = fill;
+        lastFill = fill;
+      }
       ctx.fillRect(p.x - half, p.y - half, sz, sz);
     }
 
@@ -538,11 +580,14 @@ function noteUserActivity() {
   }
 
   wakeBrandWordmark = () => {
-    if (!rafId && !document.body.classList.contains('g')) {
+    if (!rafId && !document.body.classList.contains('g') && !document.hidden) {
       lastT = performance.now() * 0.001;
       rafId = requestAnimationFrame(renderFrame);
     }
   };
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !document.body.classList.contains('g')) wakeBrandWordmark();
+  });
   wakeBrandWordmark();
 })();
 
@@ -591,9 +636,9 @@ setActiveOrigin(startBiome.latDeg, startBiome.lonDeg, startBiome.id);
 const world = buildWorld();
 const planetQuadtree = new CubeSphereQuadtree({
   maxLod: 16,
-  maxCachedTiles: 320,
-  maxTilesPerFrame: 18,
-  maxActiveTiles: 220
+  maxCachedTiles: 220,
+  maxTilesPerFrame: 12,
+  maxActiveTiles: 144
 });
 
 let activeRegionBiomeId = startBiome.id;
@@ -699,7 +744,7 @@ if (miniMapWrap) {
 }
 
 const MM_RADIUS_M = 5000.0; // Exact 5 km surrounding radius
-const MM_RASTER_RES = 112;
+const MM_RASTER_RES = 84;
 const mmOffCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
 if (mmOffCanvas) { mmOffCanvas.width = MM_RASTER_RES; mmOffCanvas.height = MM_RASTER_RES; }
 const mmOffCtx = mmOffCanvas ? mmOffCanvas.getContext('2d') : null;
@@ -772,7 +817,7 @@ function rebuildMiniMapTerrainRaster(centerLatDeg, centerLonDeg) {
 
 function renderLiveMiniMap(nowMs) {
   if (!miniMapCanvas || menu || photoMode || settings.showMiniMap === false) return;
-  if (nowMs - mmLastDrawMs < 55) return; // Smooth ~18 Hz live GPS refresh
+  if (nowMs - mmLastDrawMs < 80) return; // Smooth ~12.5 Hz live GPS refresh
   mmLastDrawMs = nowMs;
 
   const ctx = miniMapCanvas.getContext('2d');
@@ -2961,15 +3006,24 @@ const pipePost = device.createRenderPipeline({
 // ============================================================================
 // Dynamic Resolution Render Targets & Timestamp Query Setup
 // ============================================================================
-let W = 0, H = 0, resScale = clamp(settings.resolutionScale || 1.0, RES_SCALE_MIN, RES_SCALE_MAX);
+let W = 0, H = 0, resScale = clamp(settings.resolutionScale || 0.85, RES_SCALE_MIN, RES_SCALE_MAX);
 let hdrTex = null, hdrMsaaTex = null, depthTex = null, rayTex = null;
 let hdrView = null, hdrMsaaView = null, depthView = null, rayView = null;
 let bgRays = null, bgPost = null;
+let rayTexDirty = true;
 
 function rebuildTargets() {
   const dpr = min(window.devicePixelRatio || 1, DPR_CAP) * resScale;
-  const nw = max(64, floor(window.innerWidth * dpr));
-  const nh = max(64, floor(window.innerHeight * dpr));
+  let nw = max(64, floor(window.innerWidth * dpr));
+  let nh = max(64, floor(window.innerHeight * dpr));
+  // Cap internal pixel budget so 4K/Retina screens stay silky 60 FPS
+  const maxW = floor(1920 * max(1.0, resScale));
+  const maxH = floor(1080 * max(1.0, resScale));
+  if (nw > maxW || nh > maxH) {
+    const k = min(maxW / nw, maxH / nh);
+    nw = max(64, floor(nw * k));
+    nh = max(64, floor(nh * k));
+  }
   if (nw === W && nh === H && hdrTex) return;
   W = nw; H = nh;
   canvas.width = W;
@@ -3014,6 +3068,7 @@ function rebuildTargets() {
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
   });
   rayView = rayTex.createView();
+  rayTexDirty = true;
 
   bgRays = device.createBindGroup({
     layout: bglRays,
@@ -3028,6 +3083,7 @@ function rebuildTargets() {
       { binding: 3, resource: depthView }
     ]
   });
+  if (menu) menuNeedsBackdrop = true;
 }
 rebuildTargets();
 window.addEventListener('resize', rebuildTargets);
@@ -3231,9 +3287,19 @@ function updateUniforms(dt) {
   Q.writeBuffer(sBuf, 0, SB);
 
   // Genuine 6-Face Cube-Sphere Quadtree Tile Selection & Bounded GPU Pool Upload
-  const sseThreshold = 15.5 / clamp(settings.viewDistance || 1.0, 0.5, 2.0);
-  activeTiles = planetQuadtree.selectTiles(camEcef, camState.altMeters, fov, max(360, H), sseThreshold, forceSyncTiles);
-  forceSyncTiles = false;
+  const sseThreshold = 19.5 / clamp(settings.viewDistance || 1.0, 0.5, 2.0);
+  const camMovedEcef = hypot(
+    camEcef[0] - lastTileCamEcef[0],
+    camEcef[1] - lastTileCamEcef[1],
+    camEcef[2] - lastTileCamEcef[2]
+  );
+  if (forceSyncTiles || activeTiles.length === 0 || camMovedEcef > 0.35) {
+    activeTiles = planetQuadtree.selectTiles(camEcef, camState.altMeters, fov, max(360, H), sseThreshold, forceSyncTiles);
+    forceSyncTiles = false;
+    lastTileCamEcef[0] = camEcef[0];
+    lastTileCamEcef[1] = camEcef[1];
+    lastTileCamEcef[2] = camEcef[2];
+  }
 
   const E = enuFrame.east, Uv = enuFrame.up, S = enuFrame.south;
   for (let i = 0; i < activeTiles.length; i++) {
@@ -3264,10 +3330,13 @@ function updateUniforms(dt) {
   updateAudio(F[CX], camState.altMeters, F[CZ], activeWeatherIdx, fireStr, windLevel, activeRegionBiomeId, camState.reentryHeat || 0);
 }
 
+const lastTileCamEcef = [NaN, NaN, NaN];
+
 function render(dt) {
   updateUniforms(dt);
 
-  const nearSurface = camState.altMeters < 1960;
+  const nearSurface = camState.altMeters < 1800;
+  const doShadows = camState.altMeters < 420;
   if (nearSurface) {
     const vegScale = clamp(settings.foliageDensity || 1.0, 0.25, 1.25);
     for (let i = 0; i < vegGpu.length; i++) {
@@ -3278,8 +3347,11 @@ function render(dt) {
     const faunaScale = clamp(settings.animalDetail || 1.0, 0.25, 1.25);
     for (let i = 0; i < animalGpu.length; i++) {
       const baseCount = world.wildlifeGroups[i].instCount;
-      animalGpu[i].instCount = baseCount > 0 ? max(1, round(baseCount * min(1.0, faunaScale))) : 0;
-      Q.writeBuffer(animalGpu[i].instBuf, 0, world.wildlifeGroups[i].instData);
+      const cnt = baseCount > 0 ? max(1, round(baseCount * min(1.0, faunaScale))) : 0;
+      animalGpu[i].instCount = cnt;
+      if (cnt > 0) {
+        Q.writeBuffer(animalGpu[i].instBuf, 0, world.wildlifeGroups[i].instData.subarray(0, cnt * 12));
+      }
     }
 
     const pRanges = world.particleRanges;
@@ -3295,8 +3367,8 @@ function render(dt) {
 
   const enc = device.createCommandEncoder();
 
-  // 1. Directional Sun Shadow Pass (only near surface where crisp flora/creature shadows are visible)
-  if (nearSurface) {
+  // 1. Directional Sun Shadow Pass (only when low enough for local directional shadows to be visible)
+  if (doShadows) {
     const sp = enc.beginRenderPass({
       colorAttachments: [],
       depthStencilAttachment: {
@@ -3313,7 +3385,7 @@ function render(dt) {
     sp.setIndexBuffer(terTileIBuf, 'uint32');
     for (let i = 0; i < activeTiles.length; i++) {
       const tile = activeTiles[i];
-      if (tile.lod >= 10) {
+      if (tile.lod >= 11) {
         sp.drawIndexed(terTileIdxCount, 1, 0, tile.gpuSlot * TILE_TOTAL_VERTS, i);
       }
     }
@@ -3447,15 +3519,26 @@ function render(dt) {
   }
   mp.end();
 
-  // 3. Half-Resolution Crepuscular God-Ray / Underwater Volumetric Shaft Pass
-  const rp = enc.beginRenderPass({
-    colorAttachments: [{ view: rayView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
-  });
-  rp.setPipeline(pipeRay);
-  rp.setBindGroup(0, bgFrame);
-  rp.setBindGroup(1, bgRays);
-  rp.draw(3);
-  rp.end();
+  // 3. Crepuscular God-Ray / Underwater Volumetric Shaft Pass (skipped when sun is behind camera or in space)
+  const sunFacing = UB[52] * UB[64] + UB[53] * UB[65] + UB[54] * UB[66];
+  const doRays = settings.volumetrics !== false && camState.altMeters <= 18000 && sunFacing > 0.03;
+  if (doRays) {
+    const rp = enc.beginRenderPass({
+      colorAttachments: [{ view: rayView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
+    });
+    rp.setPipeline(pipeRay);
+    rp.setBindGroup(0, bgFrame);
+    rp.setBindGroup(1, bgRays);
+    rp.draw(3);
+    rp.end();
+    rayTexDirty = true;
+  } else if (rayTexDirty) {
+    const rp = enc.beginRenderPass({
+      colorAttachments: [{ view: rayView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
+    });
+    rp.end();
+    rayTexDirty = false;
+  }
 
   // 4. Final Composite & Tone-Mapping Pass
   const pp = enc.beginRenderPass({
@@ -3496,8 +3579,22 @@ const reentryInput = { thrustE: 0, thrustN: 0, thrustU: 0, gravityScale: 0, allo
 
 function frame(now) {
   requestAnimationFrame(frame);
+  if (document.hidden) {
+    F[LAST] = now;
+    return;
+  }
   const dtr = now - F[LAST];
   F[LAST] = now;
+
+  // ZERO-LAG HOMESCREEN: Pause 3D WebGPU engine & 120 Hz wildlife physics while welcome overlay is active
+  if (menu && typeof window.__flyOverride === 'undefined') {
+    if (menuNeedsBackdrop) {
+      menuNeedsBackdrop = false;
+      render(0.016);
+    }
+    return;
+  }
+
   const dt = clamp(dtr / 1000, 0.001, 0.05);
   const timeScale = clamp(settings.timeSpeedMult ?? 1.0, 0.0, 10.0);
   F[TIME] += dt * max(0.05, timeScale);
@@ -3505,12 +3602,12 @@ function frame(now) {
   if (!photoMode && dtr < 500 && dynT >= 0 && settings.autoQuality) {
     dynT += dtr; dynN++;
     if (gpuMs > 0) { dynG += gpuMs; dynGN++; }
-    if (dynT > 1500) {
+    if (dynT > 850) {
       const avgG = dynGN ? dynG / dynGN : 0;
       const avgF = dynT / dynN;
       let newScale = resScale;
-      if (avgG > TARGET_GPU_MS || (!avgG && avgF > 18.0)) newScale = max(RES_SCALE_MIN, resScale * 0.88);
-      else if (avgG > 0 && avgG < TARGET_GPU_MS * 0.68 && resScale < RES_SCALE_MAX) newScale = min(RES_SCALE_MAX, resScale * 1.08);
+      if (avgG > TARGET_GPU_MS || (!avgG && avgF > 18.5)) newScale = max(RES_SCALE_MIN, resScale * 0.86);
+      else if (avgG > 0 && avgG < TARGET_GPU_MS * 0.65 && avgF < 16.0 && resScale < RES_SCALE_MAX) newScale = min(RES_SCALE_MAX, resScale * 1.06);
       if (abs(newScale - resScale) > 0.03) {
         resScale = newScale;
         rebuildTargets();
@@ -3519,10 +3616,7 @@ function frame(now) {
     }
   }
 
-  if (menu && typeof window.__flyOverride === 'undefined') {
-    flyAt(F[TIME] * 0.35);
-    noteUserActivity();
-  } else if (!menu && flyActive && typeof window.__flyOverride === 'undefined') {
+  if (!menu && flyActive && typeof window.__flyOverride === 'undefined') {
     F[FLT] += dt;
     flyAt(F[FLT]);
     if (F[FLT] >= FLY_DURATION) flyActive = false;
@@ -3871,9 +3965,9 @@ function frame(now) {
   audioState.camY = camState.altMeters;
   audioState.camZ = F[CZ];
 
-  // Step 120 Hz local ecosystem & wildlife simulation only when within regional distance
-  if (camState.altMeters < 2400) {
-    simAcc = min(simAcc + dt, FIXED_DT * 4);
+  // Step local ecosystem & wildlife simulation only when within regional distance (capped to max 2 substeps)
+  if (camState.altMeters < 1600) {
+    simAcc = min(simAcc + dt, FIXED_DT * 2);
     while (simAcc >= FIXED_DT) {
       world.stepSim(FIXED_DT, F[CX], F[CY], F[CZ], rainLevel, windLevel);
       simAcc -= FIXED_DT;
@@ -3976,6 +4070,7 @@ applyBiomePose(0);
 world.updateDynamic(0, 0.016, F[CX], F[CY], F[CZ], 0, 0.45);
 device.pushErrorScope('validation');
 render(0.016);
+menuNeedsBackdrop = false;
 const firstFrameErr = await device.popErrorScope();
 if (firstFrameErr || gpuValidationErr) {
   throw new Error('WebGPU render pass error: ' + (firstFrameErr?.message || gpuValidationErr));
