@@ -11,7 +11,10 @@ import {
   geodeticToEcef, ecefToGeodetic, localENUFrame, moveAlongGeodesic,
   greatCircleDistanceMeters, cubeFaceUVToDir, dirToCubeFaceUV
 } from './math.js';
+import { sampleEarthGeoRef, upgradeEarthGeoAtlas, EARTH_GEO_ATTRIBUTION } from './earth_geo.js';
+import { ECOREGION_CATALOG, classifyEcoregionAt, biogeographicRealmAt } from './ecoregions.js';
 
+export { ECOREGION_CATALOG, classifyEcoregionAt, biogeographicRealmAt, upgradeEarthGeoAtlas, EARTH_GEO_ATTRIBUTION };
 export const WATER_LEVEL = 0.0;
 
 // Earth-Scale Planetary Constants (WGS-84 Oblate Spheroid & Geodesic Reference)
@@ -385,6 +388,8 @@ export const latLonToLocalMeters = (latDeg, lonDeg, origin = _activeOrigin, out 
 //   4. Physics, Wildlife & Collision Queries (terrainAt)
 //   5. 3D Globe & 2D Topographic Navigator Map
 // ============================================================================
+const _geoTmp = { elevM: 0, landFrac: 0, lakeFrac: 0, riverFrac: 0, glacierFrac: 0, shelfFrac: 0, aridity: 0 };
+
 export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
   const l = hypot(nx, ny, nz) || 1;
   const ux = nx / l, uy = clamp(ny / l, -1, 1), uz = nz / l;
@@ -392,95 +397,78 @@ export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
   const latDeg = Math.asin(uy) * RAD2DEG;
   const lonDeg = atan2(ux, uz) * RAD2DEG;
 
-  // 1. Domain-warped 3D spherical coordinates for organic continental outlines
-  const w1 = fbm3(ux * 2.1 + 4.3, uy * 2.1 - 1.7, uz * 2.1 + 2.9, 3) - 0.5;
-  const w2 = fbm3(ux * 2.1 - 3.1, uy * 2.1 + 5.2, uz * 2.1 - 4.4, 3) - 0.5;
-  const w3 = fbm3(ux * 2.1 + 1.8, uy * 2.1 + 2.4, uz * 2.1 + 6.1, 3) - 0.5;
-  const wx = ux + w1 * 0.24;
-  const wy = uy + w2 * 0.24;
-  const wz = uz + w3 * 0.24;
+  // 1. Real Earth Geography (Natural Earth 110m Physical Vectors + GEBCO/SRTM Reference)
+  sampleEarthGeoRef(latDeg, lonDeg, _geoTmp);
+  const geoLand = _geoTmp.landFrac;
+  const geoElev = _geoTmp.elevM;
+  const geoLake = _geoTmp.lakeFrac;
+  const geoRiver = _geoTmp.riverFrac;
+  const geoGlacier = _geoTmp.glacierFrac;
+  const geoShelf = _geoTmp.shelfFrac;
+  const geoAridity = _geoTmp.aridity;
 
-  // 2. Tectonic Continent Field (evaluates all 7 major continents & major islands)
-  let contMask = 0.0;
-  let ridgeMask = 0.0;
+  // Multi-scale 3D spherical fractal detail layered onto real Earth outlines (zero seams or grid tiling)
+  const coastFractal = (fbm3(ux * 14.0 + 11.1, uy * 14.0 - 7.3, uz * 14.0 + 3.7, 3) - 0.5) * 0.22;
+  const mtRidges = ridged3(ux * 12.5 + 2.3, uy * 12.5 - 5.1, uz * 12.5 + 8.9, 4);
+  const macroHills = fbm3(ux * 22.0 - 4.2, uy * 22.0 + 9.1, uz * 22.0 - 2.6, 4);
+
+  // Coastline mask combining real Natural Earth polygons with organic sub-degree shoreline indentation
+  const landSigned = (geoLand - 0.48) + coastFractal * smoothstep(0.0, 0.45, 0.5 - abs(geoLand - 0.5));
+  const isLand = smoothstep(-0.08, 0.08, landSigned);
+
+  // Continental ID derived from real Earth continental bounds (for legacy queries)
   let continentId = -1;
-  let bestPlate = 0.0;
-
-  for (let i = 0; i < PLATES.length; i++) {
-    const p = PLATES[i];
-    const dot = wx * p.nx + wy * p.ny + wz * p.nz;
-    if (dot <= 0.15) continue;
-    // Anisotropic elliptical angular distance on sphere
-    const ang = Math.acos(clamp(dot, -1, 1));
-    const dLat = (wy - p.ny);
-    const dLonScale = max(0.25, 1.0 - abs(p.ny) * 0.65);
-    const ellip = hypot((ang / max(0.08, p.rx)), (dLat / max(0.08, p.ry)) * 0.45 * dLonScale);
-    const contrib = smoothstep(1.18, 0.18, ellip) * p.peak;
-    if (contrib > bestPlate) {
-      bestPlate = contrib;
-      continentId = p.id;
-    }
-    contMask = max(contMask, contrib);
-    if (contrib > 0.22 && p.ridge > 0.1) {
-      // Mountain belt along tectonic spine
-      const lonDiff = abs(normAngle((lonDeg - p.ridgeLon) * DEG2RAD));
-      const spine = smoothstep(0.32, 0.02, lonDiff) * smoothstep(0.25, 0.72, contrib) * p.ridge;
-      ridgeMask = max(ridgeMask, spine);
-    }
+  if (isLand > 0.35) {
+    if (latDeg < -58) continentId = 5;
+    else if (latDeg > 66 && lonDeg > -75 && lonDeg < -10) continentId = 6;
+    else if (lonDeg < -30) continentId = latDeg > 13 ? 1 : 0;
+    else if (lonDeg >= -20 && lonDeg <= 55 && latDeg < 36) continentId = 2;
+    else if (lonDeg >= 108 && latDeg < -8) continentId = 4;
+    else continentId = 3;
   }
 
-  // Macro continental roughness, mountain chains, river valleys & deep ocean trenches
-  const contNoise = fbm3(ux * 4.2 + 11.1, uy * 4.2 - 7.3, uz * 4.2 + 3.7, 4);
-  const coastShape = contMask + (contNoise - 0.50) * 0.52;
+  // Real continental elevation enhanced with alpine mountain ridges, foothills, lakes & major rivers
+  const mountainWeight = smoothstep(450.0, 3200.0, geoElev);
+  let landElev = max(2.0, geoElev) + (macroHills - 0.45) * lerp(95.0, 420.0, mountainWeight);
+  landElev += mountainWeight * mtRidges * 1350.0;
 
-  // Calibrated sea-level threshold (~29% land, ~71% ocean)
-  const landSigned = coastShape - 0.485; // > 0 land, < 0 ocean
-  const isLand = smoothstep(-0.04, 0.04, landSigned);
+  // Major rivers & inland lakes carved smoothly into terrain
+  const riverField = abs(fbm3(ux * 16.0 + 19.4, uy * 16.0 - 12.1, uz * 16.0 + 7.8, 3) - 0.5);
+  const majorRiver = clamp(geoRiver * 0.85 + smoothstep(0.018, 0.003, riverField) * smoothstep(0.12, 0.45, geoLand) * (1.0 - mountainWeight) * 0.45, 0, 1);
+  if (majorRiver > 0.05) {
+    landElev = lerp(landElev, max(1.2, landElev * 0.32 - 3.5), majorRiver * 0.65);
+  }
+  if (geoLake > 0.25) {
+    landElev = lerp(landElev, -6.5 - geoLake * 14.0, smoothstep(0.25, 0.72, geoLake));
+  }
 
-  // Ridged alpine mountain chains (Himalayas, Andes, Rockies, East African Rift)
-  const mtRidges = ridged3(ux * 10.5 + 2.3, uy * 10.5 - 5.1, uz * 10.5 + 8.9, 4);
-  const macroHills = fbm3(ux * 18.0 - 4.2, uy * 18.0 + 9.1, uz * 18.0 - 2.6, 4);
-
-  // Continental elevation (meters)
-  let landElev = max(0, landSigned) * 860.0 + (macroHills - 0.38) * 320.0;
-  landElev += ridgeMask * mtRidges * 4400.0 + smoothstep(0.55, 0.92, mtRidges) * smoothstep(0.12, 0.45, landSigned) * 1450.0;
-
-  // Large continental river channels & inland lakes
-  const riverField = abs(fbm3(ux * 9.0 + 19.4, uy * 9.0 - 12.1, uz * 9.0 + 7.8, 3) - 0.5);
-  const majorRiver = smoothstep(0.026, 0.004, riverField) * smoothstep(0.04, 0.25, landSigned) * (1.0 - smoothstep(0.35, 0.75, ridgeMask));
-  landElev = lerp(landElev, max(2.0, landElev * 0.22 - 4.0), majorRiver * 0.75);
-
-  // Oceanic bathymetry (continental shelves -> abyssal plains -> trenches & volcanic arcs)
-  const shelf = smoothstep(-0.22, -0.01, landSigned);
-  const trenchField = abs(fbm3(ux * 6.5 - 8.4, uy * 6.5 + 14.2, uz * 6.5 - 11.7, 3) - 0.5);
-  const deepTrench = smoothstep(0.04, 0.006, trenchField) * (1.0 - shelf);
-  const seaFloor = lerp(-4200.0 + (macroHills - 0.5) * 1100.0 - deepTrench * 5200.0, -45.0 + landSigned * 950.0, shelf);
-
-  let h = lerp(seaFloor, max(0.8, landElev), isLand);
+  // Oceanic bathymetry (continental shelves -> abyssal plains -> ocean trenches)
+  const shelf = clamp(geoShelf + smoothstep(-0.18, -0.01, landSigned) * 0.45, 0, 1);
+  const seaFloor = min(-1.5, geoElev) + (macroHills - 0.5) * lerp(580.0, 18.0, shelf);
+  let h = lerp(seaFloor, landElev, isLand);
 
   // Fine regional & meter-scale micro-relief (evaluated continuously on the unit sphere!)
   let microRelief = 0;
   if (detailLevel >= 1) {
-    // Kilometer-scale valleys & foothills (wavelength ~6 km)
     const kmNoise = fbm3(ux * 1050.0, uy * 1050.0, uz * 1050.0, 3) - 0.5;
-    microRelief += kmNoise * (isLand > 0.5 ? 28.0 : 12.0);
+    microRelief += kmNoise * (isLand > 0.5 ? lerp(18.0, 48.0, mountainWeight) : 10.0);
   }
   if (detailLevel >= 2) {
-    // 100-meter & 10-meter terrain undulation (wavelength ~220 m & ~35 m)
     const hectoNoise = fbm3(ux * 28000.0, uy * 28000.0, uz * 28000.0, 3) - 0.5;
     const decaNoise = fbm3(ux * 180000.0, uy * 180000.0, uz * 180000.0, 2) - 0.5;
-    microRelief += hectoNoise * 3.8 + decaNoise * 0.65;
+    microRelief += hectoNoise * 3.4 + decaNoise * 0.55;
   }
   h += microRelief;
 
-  // 3. Global Climate Model (Latitude, Elevation, Moisture, Ocean Proximity)
-  const moistureNoise = fbm3(ux * 3.6 - 7.1, uy * 3.6 + 13.4, uz * 3.6 + 5.2, 4);
-  const equatWet = smoothstep(0.58, 0.05, absLat);
+  // 3. Global Climate Model (Latitude, Elevation, Real Aridity Belt, Moisture & Glaciers)
+  const moistureNoise = fbm3(ux * 3.8 - 7.1, uy * 3.8 + 13.4, uz * 3.8 + 5.2, 4);
+  const equatWet = smoothstep(0.55, 0.04, absLat);
   const subTropDry = smoothstep(0.18, 0.36, absLat) * smoothstep(0.62, 0.36, absLat);
-  const tempBaseC = lerp(29.5, -26.0, powAbs(absLat, 1.32)) - max(0, h) * 0.0065;
-  const rainfall = clamp(0.45 + equatWet * 0.42 - subTropDry * 0.38 + (moistureNoise - 0.5) * 0.55 + majorRiver * 0.25, 0, 1);
+  const tempBaseC = lerp(29.5, -26.5, powAbs(absLat, 1.30)) - max(0, h) * 0.0065 - geoGlacier * 8.0;
+  const rainfall = clamp(0.48 + equatWet * 0.40 - subTropDry * 0.30 - geoAridity * 0.48 + (moistureNoise - 0.5) * 0.44 + majorRiver * 0.22 + geoLake * 0.18, 0, 1);
+  const aridity = clamp(max(geoAridity * 0.92, (1.0 - rainfall) * smoothstep(6.0, 24.0, tempBaseC)), 0, 1);
 
-  // 4. Blend the 18 Curated Planetary Destinations seamlessly into their continents/oceans
+  // 4. Blend the 18 Curated Planetary Destinations seamlessly into their real continents/oceans
   let wRiver = 0, wSwamp = 0, wAmazon = 0, wMangrove = 0, wClearing = 0, wPlantation = 0;
   let wSavanna = 0, wBamboo = 0, wHighland = 0, wBeach = 0, wReef = 0, wAbyss = 0;
   let wRookery = 0, wPolar = 0, wFire = 0, wVolcano = 0, wCenote = 0, wDune = 0;
@@ -488,10 +476,10 @@ export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
   let nearestId = -1;
   let nearestAng = Infinity;
 
-  // Polar climate baseline everywhere at high latitudes (both North & South Poles!)
-  const polarClimate = smoothstep(0.84, 0.94, absLat); // ~57°..70°+
+  // Polar & glacial climate baseline (Antarctica, Greenland, Arctic & high alpine snowlines)
+  const polarClimate = max(smoothstep(0.85, 0.95, absLat), geoGlacier * 0.95);
   if (polarClimate > 0.01) {
-    wPolar = max(wPolar, polarClimate * (isLand > 0.3 ? 1.0 : 0.65));
+    wPolar = max(wPolar, polarClimate * (isLand > 0.3 ? 1.0 : 0.55));
   }
 
   for (let i = 0; i < BIOME_CATALOG.length; i++) {
@@ -691,16 +679,18 @@ export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
     }
   }
 
+  // 5. Regional Ecoregion Classification (115 distinct global terrestrial & marine profiles)
+  const eco = classifyEcoregionAt(latDeg, lonDeg, h, tempBaseC, rainfall, aridity, geoGlacier);
+
   // Natural global climate biome weights outside curated basins so ALL 510M km^2 feel rich & distinct
   if (h > 0.2) {
-    const aridity = clamp((1.0 - rainfall) * smoothstep(8.0, 26.0, tempBaseC), 0, 1);
-    const rainforest = clamp(smoothstep(0.62, 0.88, rainfall) * smoothstep(16.0, 25.0, tempBaseC), 0, 1);
-    const savannaClim = clamp(smoothstep(0.32, 0.58, rainfall) * smoothstep(18.0, 28.0, tempBaseC) * (1.0 - rainforest), 0, 1);
-    const alpine = smoothstep(1400.0, 3200.0, h);
-    wDune = max(wDune, aridity * 0.82);
+    const rainforest = clamp(smoothstep(0.60, 0.86, rainfall) * smoothstep(16.0, 25.0, tempBaseC), 0, 1);
+    const savannaClim = clamp(smoothstep(0.30, 0.56, rainfall) * smoothstep(17.0, 28.0, tempBaseC) * (1.0 - rainforest), 0, 1);
+    const alpine = smoothstep(1550.0, 3300.0, h);
+    wDune = max(wDune, aridity * 0.85);
     wAmazon = max(wAmazon, rainforest * 0.78);
     wSavanna = max(wSavanna, savannaClim * 0.72);
-    wPolar = max(wPolar, max(smoothstep(-2.0, -12.0, tempBaseC), alpine * 0.92));
+    wPolar = max(wPolar, max(smoothstep(-2.0, -12.0, tempBaseC), max(alpine * 0.88, geoGlacier * 0.95)));
     wClearing = max(wClearing, (1.0 - aridity) * (1.0 - rainforest) * (1.0 - wPolar) * 0.45);
   } else {
     const shallow = smoothstep(-28.0, -0.5, h);
@@ -711,7 +701,6 @@ export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
   // Unified Surface Albedo RGB (used by Cube-Sphere Terrain Tiles AND 3D/2D Planetary Navigator!)
   let cr = 0.20, cg = 0.36, cb = 0.16;
   if (h < -0.05) {
-    // Bathymetry ocean floor color (bright turquoise reef sand -> deep abyssal indigo basalt)
     const dFac = saturate(-h / 3500.0);
     const reefCol = [0.68, 0.62, 0.46];
     const shelfCol = [0.10, 0.30, 0.34];
@@ -721,13 +710,17 @@ export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
     cr = lerp(mid[0], reefCol[0], sh * (0.45 + wReef * 0.45));
     cg = lerp(mid[1], reefCol[1], sh * (0.45 + wReef * 0.45));
     cb = lerp(mid[2], reefCol[2], sh * (0.45 + wReef * 0.45));
+    if (eco && eco.tint) {
+      cr = lerp(cr, eco.tint[0], 0.28);
+      cg = lerp(cg, eco.tint[1], 0.28);
+      cb = lerp(cb, eco.tint[2], 0.28);
+    }
     if (wPolar > 0.55 && h > -25.0) {
       cr = lerp(cr, 0.76, (wPolar - 0.55) * 1.4);
       cg = lerp(cg, 0.85, (wPolar - 0.55) * 1.4);
       cb = lerp(cb, 0.92, (wPolar - 0.55) * 1.4);
     }
   } else {
-    // Terrestrial climate & biome palette
     const lush = [0.11, 0.30, 0.10];
     const tempForest = [0.18, 0.34, 0.14];
     const sav = [0.54, 0.47, 0.24];
@@ -742,33 +735,36 @@ export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
     cg = lerp(tempForest[1], lush[1], clamp(wAmazon + wBamboo * 0.8, 0, 1));
     cb = lerp(tempForest[2], lush[2], clamp(wAmazon + wBamboo * 0.8, 0, 1));
 
-    // Savanna grasslands
     cr = lerp(cr, sav[0], wSavanna * 0.82);
     cg = lerp(cg, sav[1], wSavanna * 0.82);
     cb = lerp(cb, sav[2], wSavanna * 0.82);
 
-    // Deserts & Red Dunes
     const duneBlend = clamp(wDune * 0.92, 0, 1);
-    const useRed = smoothstep(0.6, 0.95, wDune) * (nearestId === 17 ? 1.0 : 0.3);
+    const useRed = smoothstep(0.6, 0.95, wDune) * (nearestId === 17 ? 1.0 : 0.32);
     cr = lerp(cr, lerp(des[0], redDune[0], useRed), duneBlend);
     cg = lerp(cg, lerp(des[1], redDune[1], useRed), duneBlend);
     cb = lerp(cb, lerp(des[2], redDune[2], useRed), duneBlend);
 
-    // Beaches & riverbanks
+    // Blend regional ecoregion palette tint so adjacent regions have genuine soil/vegetation diversity
+    if (eco && eco.tint) {
+      const ecoBlend = nearestAng < 0.012 ? 0.18 : 0.48;
+      cr = lerp(cr, eco.tint[0], ecoBlend);
+      cg = lerp(cg, eco.tint[1], ecoBlend);
+      cb = lerp(cb, eco.tint[2], ecoBlend);
+    }
+
     const coastSand = smoothstep(8.0, 0.0, h) * (0.35 + wBeach * 0.65);
     cr = lerp(cr, sand[0], coastSand * 0.72);
     cg = lerp(cg, sand[1], coastSand * 0.72);
     cb = lerp(cb, sand[2], coastSand * 0.72);
 
-    // Swamp / Mangrove dark peat
     const peat = clamp(wSwamp * 0.55 + wMangrove * 0.5, 0, 0.75);
     cr = lerp(cr, 0.16, peat); cg = lerp(cg, 0.22, peat); cb = lerp(cb, 0.12, peat);
 
-    // Highland rock & volcanic basalt
-    const rockW = smoothstep(650.0, 2100.0, h);
-    cr = lerp(cr, rock[0], rockW * 0.85);
-    cg = lerp(cg, rock[1], rockW * 0.85);
-    cb = lerp(cb, rock[2], rockW * 0.85);
+    const rockW = smoothstep(750.0, 2300.0, h);
+    cr = lerp(cr, rock[0], rockW * 0.82);
+    cg = lerp(cg, rock[1], rockW * 0.82);
+    cb = lerp(cb, rock[2], rockW * 0.82);
 
     if (wVolcano > 0.1 || wFire > 0.1) {
       const charW = clamp(wVolcano * 0.88 + wFire * 0.65, 0, 0.95);
@@ -780,14 +776,13 @@ export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
       }
     }
 
-    // Polar snow & alpine glaciers
-    const snowW = clamp(wPolar * 0.95 + smoothstep(2300.0, 3800.0, h) * 0.92, 0, 1);
+    const snowW = clamp(wPolar * 0.92 + smoothstep(2600.0, 4100.0, h) * 0.90, 0, 1);
     cr = lerp(cr, snow[0], snowW);
     cg = lerp(cg, snow[1], snowW);
     cb = lerp(cb, snow[2], snowW);
   }
 
-  const wetness = clamp(smoothstep(1.8, -0.4, h - WATER_LEVEL) + wSwamp * 0.45 + wRiver * 0.4 + majorRiver * 0.4, 0, 1);
+  const wetness = clamp(smoothstep(1.8, -0.4, h - WATER_LEVEL) + wSwamp * 0.45 + wRiver * 0.4 + majorRiver * 0.4 + geoLake * 0.5, 0, 1);
   const moisture = clamp(wetness * 0.55 + rainfall * 0.55, 0, 1);
 
   out.h = h;
@@ -797,6 +792,14 @@ export const samplePlanetAtDir = (nx, ny, nz, out = {}, detailLevel = 2) => {
   out.continentId = continentId;
   out.temperatureC = tempBaseC;
   out.rainfall = rainfall;
+  out.aridity = aridity;
+  out.glacier = geoGlacier;
+  out.lakeFrac = geoLake;
+  out.riverFrac = majorRiver;
+  out.ecoregion = eco;
+  out.lithology = eco ? eco.lithology : 'granite';
+  out.floraGuild = eco ? eco.floraGuild : 'temperate_prairie';
+  out.waterType = eco ? eco.waterType : (h < -0.5 ? 'marine' : 'fresh');
   out.waterDepth = max(0, WATER_LEVEL - h);
   out.wetness = wetness;
   out.moisture = moisture;
@@ -934,18 +937,11 @@ export const biomeLabelAtGeo = (latDeg, lonDeg, altMeters) => {
   }
   const near = nearestBiomeAtGeo(latDeg, lonDeg);
   const s = samplePlanetAtLatLon(latDeg, lonDeg, {}, 0);
-  let regionLabel = near.distanceKm < 120
+  const regionLabel = near.distanceKm < 95
     ? near.biome.name
-    : s.h < -5
-      ? (abs(latDeg) > 62 ? 'Polar Ocean Basin' : 'Open Pelagic Ocean')
-      : s.continentId >= 0
-        ? `${PLATES.find((p) => p.id === s.continentId)?.name || 'Continental'} ${s.polar > 0.65 ? 'Glacial Interior' : s.dune > 0.55 ? 'Arid Basin' : s.amazon > 0.5 ? 'Rainforest' : s.h > 1400 ? 'Alpine Range' : 'Highlands'}`
-        : 'Oceanic Archipelago';
+    : (s.ecoregion ? s.ecoregion.name : (s.h < -5 ? 'Open Pelagic Ocean' : 'Continental Interior'));
   if (altMeters >= 12000) {
     return `${layer.name} (${(altMeters / 1000).toFixed(0)} km) · Over ${regionLabel}`;
-  }
-  if (near.distanceKm >= 120) {
-    return `${regionLabel} (${near.distanceKm.toFixed(0)} km to ${near.biome.name})`;
   }
   return regionLabel;
 };

@@ -87,6 +87,8 @@ export const DEFAULT_SETTINGS = {
   volumetrics: true,
   // 2. Display
   showHud: true,
+  showMiniMap: true,
+  miniMapMode: 'north-up', // 'north-up' | 'track-up'
   showTelemetry: false,
   showCoordinates: true,
   // 3. Camera
@@ -116,22 +118,39 @@ export const DEFAULT_SETTINGS = {
 
 export const STORAGE_KEY = 'realism_planet_settings_v1';
 
+export const normalizeSettings = (parsed = null) => {
+  const merged = { ...DEFAULT_SETTINGS };
+  if (parsed && typeof parsed === 'object') {
+    Object.assign(merged, parsed);
+    // Migrate legacy hudVisible -> showHud cleanly without losing user intent
+    if (typeof parsed.showHud !== 'boolean' && typeof parsed.hudVisible === 'boolean') {
+      merged.showHud = parsed.hudVisible;
+    }
+    delete merged.hudVisible;
+  }
+  if (typeof merged.showHud !== 'boolean') merged.showHud = true;
+  if (typeof merged.showMiniMap !== 'boolean') merged.showMiniMap = true;
+  if (merged.miniMapMode !== 'north-up' && merged.miniMapMode !== 'track-up') {
+    merged.miniMapMode = 'north-up';
+  }
+  return merged;
+};
+
 export const loadSettings = () => {
   try {
-    if (typeof localStorage === 'undefined') return { ...DEFAULT_SETTINGS };
+    if (typeof localStorage === 'undefined') return normalizeSettings(null);
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_SETTINGS };
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    if (!raw) return normalizeSettings(null);
+    return normalizeSettings(JSON.parse(raw));
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return normalizeSettings(null);
   }
 };
 
 export const saveSettings = (settings) => {
   try {
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeSettings(settings)));
     }
   } catch {
     // ignore storage errors in restricted iframes
@@ -139,7 +158,7 @@ export const saveSettings = (settings) => {
 };
 
 export const resetSettings = () => {
-  const fresh = { ...DEFAULT_SETTINGS };
+  const fresh = normalizeSettings(null);
   saveSettings(fresh);
   return fresh;
 };

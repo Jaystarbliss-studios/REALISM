@@ -14,8 +14,10 @@ import {
   CLEARING_POS, PLANTATION_POS, SAVANNA_POS, BAMBOO_POS, HIGHLAND_POS,
   BEACH_POS, REEF_POS, ABYSS_POS, ROOKERY_POS, POLAR_POS,
   FIRE_POS, VOLCANO_POS, FORGOTTEN_POS, DUNE_POS,
-  wrapDelta, terrainAt, evaluateHazardAt, getActiveOrigin, latLonToLocalMeters
+  wrapDelta, terrainAt, evaluateHazardAt, getActiveOrigin, latLonToLocalMeters,
+  nearestBiomeAtGeo, classifyEcoregionAt
 } from './biomes.js';
+import { isCohortEligibleInRegion } from './species_engine.js';
 import { THIN, MAX_PARTICLES_BUDGET } from './quality.js';
 
 const REGION_HALF = 540;
@@ -1184,23 +1186,252 @@ function buildSwatchBarMesh() {
 }
 
 // ============================================================================
+// Phase 5: Regional Flora Guilds & Distinct Geological Rock Formation Meshes
+// ============================================================================
+function buildBorealConiferMesh() {
+  const m = new MeshBuilder();
+  const bark = [0.24, 0.16, 0.11], barkTop = [0.30, 0.21, 0.14];
+  m.tube([[0, -0.35, 0], [0, 3.2, 0], [0.04, 7.6, -0.02], [0, 12.6, 0], [0, 16.5, 0]], [0.46, 0.34, 0.24, 0.13, 0.03], [bark, bark, barkTop, barkTop, barkTop], [[0, 0], [0, 0.2], [0, 0.5], [0, 0.8], [0, 1]], 7, true);
+  const pineDark = [0.09, 0.20, 0.12], pineMid = [0.13, 0.27, 0.16], pineTip = [0.18, 0.34, 0.20];
+  for (let tier = 0; tier < 7; tier++) {
+    const y = 3.1 + tier * 1.92;
+    const rad = 3.15 * (1.0 - tier * 0.125);
+    const col = tier < 2 ? pineDark : tier < 5 ? pineMid : pineTip;
+    const whorls = 6;
+    for (let w = 0; w < whorls; w++) {
+      const a = (w / whorls) * TAU + tier * 0.55;
+      const bx = cos(a) * rad * 0.62, bz = sin(a) * rad * 0.62;
+      m.ellipsoid(bx, y - 0.18, bz, rad * 0.52, 0.42, rad * 0.44, col, 1, 0.7 + tier * 0.04, 4, 6);
+    }
+    m.ellipsoid(0, y + 0.35, 0, rad * 0.55, 0.58, rad * 0.55, col, 1, 0.8 + tier * 0.03, 4, 6);
+  }
+  m.ellipsoid(0, 16.7, 0, 0.42, 0.95, 0.42, pineTip, 1, 0.95, 4, 6);
+  return m.build();
+}
+
+function buildBroadleafDeciduousMesh() {
+  const m = new MeshBuilder();
+  const bark = [0.28, 0.22, 0.17], barkLit = [0.35, 0.28, 0.22];
+  m.tube([[0, -0.35, 0], [0.06, 2.0, -0.05], [-0.05, 4.6, 0.06], [0, 6.8, 0]], [0.68, 0.46, 0.36, 0.24], [bark, bark, barkLit, barkLit], [[0, 0], [0, 0.2], [0, 0.5], [0, 0.75]], 7, true);
+  const leafCols = [[0.18, 0.38, 0.14], [0.24, 0.44, 0.16], [0.34, 0.46, 0.18], [0.46, 0.40, 0.16]];
+  for (let b = 0; b < 6; b++) {
+    const a = (b / 6) * TAU + 0.25;
+    const len = 3.2 + (b % 2) * 1.15;
+    const y0 = 5.4 + (b % 3) * 0.65;
+    const p1 = [cos(a) * len * 0.52, y0 + 1.4, sin(a) * len * 0.52];
+    const p2 = [cos(a) * len, y0 + 2.4, sin(a) * len];
+    m.tube([[0, y0, 0], p1, p2], [0.24, 0.15, 0.06], [bark, barkLit, barkLit], [[0, 0.4], [0, 0.7], [0, 0.9]], 5, true);
+    m.ellipsoid(p2[0], p2[1] + 0.45, p2[2], 2.35, 1.55, 2.2, leafCols[b % leafCols.length], 1, 0.85, 5, 7);
+    m.ellipsoid(p1[0], p1[1] + 0.7, p1[2], 1.85, 1.25, 1.75, leafCols[(b + 1) % leafCols.length], 1, 0.72, 4, 6);
+  }
+  m.ellipsoid(0, 9.6, 0, 2.85, 1.9, 2.75, leafCols[1], 1, 0.9, 5, 7);
+  return m.build();
+}
+
+function buildDesertSucculentMesh() {
+  const m = new MeshBuilder();
+  const sagCol = [0.24, 0.44, 0.22], sagLit = [0.30, 0.52, 0.25], ribCol = [0.18, 0.34, 0.17];
+  // Main columnar saguaro trunk
+  m.tube([[0, -0.25, 0], [0, 1.6, 0], [0.03, 3.8, 0], [0, 5.8, 0], [0, 6.2, 0]], [0.30, 0.32, 0.29, 0.24, 0.06], [ribCol, sagCol, sagCol, sagLit, sagLit], [[0, 0], [0, 0.25], [0, 0.6], [0, 0.9], [0, 1]], 8, true);
+  // Iconic curved cactus arms
+  m.tube([[0.18, 2.4, 0], [0.92, 2.52, 0.08], [1.10, 3.25, 0.10], [1.08, 4.7, 0.08], [1.06, 4.95, 0.08]], [0.22, 0.20, 0.19, 0.16, 0.05], [sagCol, sagCol, sagLit, sagLit, sagLit], [[0, 0.3], [0, 0.5], [0, 0.7], [0, 0.9], [0, 1]], 7, true);
+  m.tube([[-0.16, 3.1, -0.05], [-0.82, 3.22, -0.10], [-0.96, 3.92, -0.12], [-0.94, 5.1, -0.10], [-0.93, 5.3, -0.10]], [0.20, 0.18, 0.17, 0.14, 0.04], [sagCol, sagCol, sagLit, sagLit, sagLit], [[0, 0.3], [0, 0.5], [0, 0.7], [0, 0.9], [0, 1]], 7, true);
+  // Basal agave / desert rosette cluster
+  const agave = [0.34, 0.45, 0.32];
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU + 0.4;
+    m.tube([[cos(a) * 0.65, 0.0, sin(a) * 0.65], [cos(a) * 1.15, 0.36, sin(a) * 1.15], [cos(a) * 1.55, 0.52, sin(a) * 1.55]], [0.12, 0.08, 0.02], [ribCol, agave, agave], [[1, 0.2], [1, 0.5], [1, 0.8]], 4, true);
+  }
+  return m.build();
+}
+
+function buildAlpineTundraScrubMesh() {
+  const m = new MeshBuilder();
+  const wood = [0.34, 0.27, 0.22];
+  const heather = [0.36, 0.42, 0.22], lichen = [0.58, 0.56, 0.38], berry = [0.48, 0.28, 0.18];
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * TAU + 0.2;
+    const len = 0.95 + (i % 2) * 0.45;
+    m.tube([[0, -0.1, 0], [cos(a) * len * 0.5, 0.32, sin(a) * len * 0.5], [cos(a) * len, 0.48, sin(a) * len]], [0.10, 0.06, 0.03], [wood, wood, wood], [[0, 0.1], [0, 0.4], [0, 0.6]], 4, true);
+    m.ellipsoid(cos(a) * len * 0.85, 0.52, sin(a) * len * 0.85, 0.68, 0.30, 0.58, i % 3 === 0 ? berry : i % 2 ? heather : lichen, 1, 0.55, 4, 6);
+  }
+  m.ellipsoid(0, 0.42, 0, 0.72, 0.32, 0.68, heather, 1, 0.45, 4, 6);
+  return m.build();
+}
+
+function buildGraniteTorMesh() {
+  const m = new MeshBuilder();
+  const g1 = [0.46, 0.45, 0.43], g2 = [0.54, 0.52, 0.49], moss = [0.35, 0.42, 0.28];
+  m.ellipsoid(0, 0.85, 0, 2.3, 1.35, 1.9, g1, 0, 0.15, 5, 7);
+  m.ellipsoid(1.15, 1.65, -0.35, 1.45, 1.05, 1.25, g2, 0, 0.25, 5, 7);
+  m.ellipsoid(-1.35, 0.65, 0.75, 1.25, 0.78, 1.15, g1, 0, 0.1, 4, 6);
+  m.ellipsoid(0.25, 2.15, 0.15, 0.95, 0.42, 0.85, moss, 0, 0.3, 4, 6);
+  return m.build();
+}
+
+function buildColumnarBasaltMesh() {
+  const m = new MeshBuilder();
+  const bDark = [0.16, 0.17, 0.19], bTop = [0.24, 0.25, 0.28];
+  const cols = [
+    [0.0, 0.0, 3.6, 0.55], [0.88, 0.12, 2.8, 0.50], [-0.84, 0.22, 3.1, 0.52],
+    [0.44, -0.78, 2.2, 0.48], [-0.46, -0.76, 1.9, 0.46], [0.42, 0.84, 2.4, 0.48],
+    [-0.45, 0.88, 1.6, 0.44]
+  ];
+  for (let i = 0; i < cols.length; i++) {
+    const [cx, cz, h, r] = cols[i];
+    m.tube([[cx, -0.35, cz], [cx, h * 0.55, cz], [cx, h, cz]], [r, r * 0.98, r * 0.94], [bDark, bDark, bTop], [[0, 0], [0, 0.4], [0, 0.8]], 6, true);
+  }
+  return m.build();
+}
+
+function buildSandstoneMesaMesh() {
+  const m = new MeshBuilder();
+  const red = [0.68, 0.36, 0.21], ochre = [0.76, 0.50, 0.29], pale = [0.78, 0.60, 0.42];
+  // Horizontally stratified sandstone hoodoo / mesa stack
+  m.tube([[0, -0.3, 0], [0, 0.85, 0], [0.04, 1.65, -0.02], [0.06, 2.45, 0.02], [0.02, 3.35, 0], [0, 3.75, 0]], [2.25, 1.85, 1.35, 1.75, 1.95, 1.65], [red, ochre, pale, red, ochre, pale], [[0, 0], [0, 0.2], [0, 0.4], [0, 0.6], [0, 0.8], [0, 1]], 8, true);
+  m.ellipsoid(-1.55, 0.52, 0.85, 1.15, 0.65, 0.95, red, 0, 0.15, 4, 6);
+  return m.build();
+}
+
+function buildKarstLimestoneMesh() {
+  const m = new MeshBuilder();
+  const lime = [0.72, 0.71, 0.66], shade = [0.56, 0.56, 0.52], moss = [0.28, 0.40, 0.24];
+  m.tube([[0, -0.3, 0], [0.1, 1.1, 0.05], [-0.05, 2.4, -0.04], [0, 3.2, 0]], [1.55, 1.25, 0.85, 0.25], [shade, lime, lime, lime], [[0, 0], [0, 0.35], [0, 0.75], [0, 1]], 7, true);
+  m.tube([[1.1, -0.25, 0.4], [1.18, 0.9, 0.35], [1.12, 1.95, 0.32]], [0.95, 0.72, 0.22], [shade, lime, lime], [[0, 0], [0, 0.4], [0, 0.9]], 6, true);
+  m.ellipsoid(-0.75, 0.75, -0.45, 0.95, 0.62, 0.85, moss, 0, 0.25, 4, 6);
+  return m.build();
+}
+
+// ============================================================================
+// Phase 4: Additional Distinct Regional Wildlife Anatomical Mesh Builders
+// ============================================================================
+function buildWolfMesh() {
+  const m = new MeshBuilder();
+  const coat = [0.46, 0.45, 0.42], dark = [0.24, 0.23, 0.22], belly = [0.72, 0.70, 0.65], nose = [0.10, 0.10, 0.11];
+  m.tube([[0, 0.56, -0.52], [0, 0.58, -0.10], [0, 0.61, 0.34], [0, 0.66, 0.56]], [[0.14, 0.15], [0.16, 0.18], [0.17, 0.19], [0.12, 0.13]], [coat, dark, coat, coat], [[0, 0], [0, 0.3], [0, 0.6], [0, 0.8]], 8, true);
+  m.ellipsoid(0, 0.47, 0.04, 0.12, 0.08, 0.38, belly, 0, 0, 5, 7);
+  // Pointed canid head, narrow muzzle, erect ears
+  m.ellipsoid(0, 0.74, 0.68, 0.13, 0.12, 0.16, coat, 0, 0, 6, 8);
+  m.tube([[0, 0.72, 0.78], [0, 0.70, 0.94], [0, 0.69, 1.02]], [0.08, 0.055, 0.028], [coat, belly, nose], [[0, 0], [0, 0.5], [0, 1]], 6, true);
+  m.tube([[-0.075, 0.83, 0.64], [-0.095, 0.94, 0.62]], [0.036, 0.008], [dark, dark], [[0, 0], [0, 1]], 5, true);
+  m.tube([[0.075, 0.83, 0.64], [0.095, 0.94, 0.62]], [0.036, 0.008], [dark, dark], [[0, 0], [0, 1]], 5, true);
+  // Bushy wolf tail
+  m.tube([[0, 0.56, -0.52], [0, 0.46, -0.76], [0, 0.34, -0.98]], [0.06, 0.085, 0.03], [coat, dark, dark], [[0, 0], [0, 0.5], [0, 1]], 6, true);
+  // 4 articulated slender canid legs
+  const legPos = [[-0.13, 0.34, 0.25], [0.13, 0.34, 0.75], [-0.12, -0.38, 0.75], [0.12, -0.38, 0.25]];
+  for (let i = 0; i < 4; i++) {
+    const [lx, lz, ph] = legPos[i];
+    m.tube([[lx, 0.54, lz], [lx, 0.30, lz - 0.02], [lx, 0.04, lz + 0.01]], [0.058, 0.042, 0.032], [coat, belly, dark], [[ph, 0.95], [ph, 0.98], [ph, 1.0]], 6, true);
+  }
+  return m.build();
+}
+
+function buildBisonMesh() {
+  const m = new MeshBuilder();
+  const shaggy = [0.24, 0.16, 0.11], brown = [0.36, 0.24, 0.15], horn = [0.16, 0.15, 0.14];
+  // Massive humped forequarters tapering to leaner hindquarters
+  m.tube([[0, 1.05, -0.82], [0, 1.12, -0.22], [0, 1.32, 0.42], [0, 1.18, 0.88]], [[0.34, 0.42], [0.42, 0.48], [0.54, 0.66], [0.44, 0.52]], [brown, brown, shaggy, shaggy], [[0, 0], [0, 0.3], [0, 0.7], [0, 1]], 9, true);
+  m.ellipsoid(0, 1.56, 0.44, 0.44, 0.34, 0.46, shaggy, 0, 0, 6, 8);
+  // Low broad head with shaggy beard & curved horns
+  m.ellipsoid(0, 1.02, 1.08, 0.28, 0.30, 0.30, shaggy, 0, 0, 6, 8);
+  m.ellipsoid(0, 0.72, 1.02, 0.18, 0.22, 0.18, shaggy, 0, 0, 5, 7);
+  for (const s of [-1, 1]) {
+    m.tube([[s * 0.22, 1.18, 1.04], [s * 0.38, 1.24, 1.06], [s * 0.34, 1.42, 1.04]], [0.045, 0.032, 0.01], [horn, horn, horn], [[0, 0], [0, 0.5], [0, 1]], 5, true);
+  }
+  m.tube([[0, 1.02, -0.82], [0, 0.74, -0.96], [0, 0.54, -1.00]], [0.04, 0.03, 0.045], [brown, brown, shaggy], [[0, 0], [0, 0.5], [0, 1]], 5, true);
+  const legPos = [[-0.28, 0.52, 0.25], [0.28, 0.52, 0.75], [-0.25, -0.62, 0.75], [0.25, -0.62, 0.25]];
+  for (let i = 0; i < 4; i++) {
+    const [lx, lz, ph] = legPos[i];
+    m.tube([[lx, 0.92, lz], [lx, 0.48, lz], [lx, 0.05, lz]], [0.13, 0.09, 0.075], [shaggy, brown, horn], [[ph, 0.95], [ph, 0.98], [ph, 1.0]], 6, true);
+  }
+  return m.build();
+}
+
+function buildRhinoMesh() {
+  const m = new MeshBuilder();
+  const hide = [0.42, 0.41, 0.39], fold = [0.32, 0.31, 0.30], horn = [0.58, 0.54, 0.46];
+  // Armored barrel torso with dermal fold plates
+  m.tube([[0, 0.96, -0.98], [0, 1.04, -0.32], [0, 1.08, 0.36], [0, 1.02, 0.92]], [[0.42, 0.48], [0.54, 0.56], [0.56, 0.58], [0.42, 0.44]], [hide, hide, fold, hide], [[0, 0], [0, 0.35], [0, 0.7], [0, 1]], 9, true);
+  // Heavy low-slung horned head
+  m.tube([[0, 0.96, 0.88], [0, 0.88, 1.26], [0, 0.82, 1.56]], [0.34, 0.28, 0.20], [hide, fold, hide], [[0, 0], [0, 0.5], [0, 1]], 7, true);
+  // Dual keratin horns (large anterior + smaller posterior)
+  m.tube([[0, 0.96, 1.46], [0, 1.24, 1.56], [0, 1.48, 1.50]], [0.085, 0.052, 0.012], [horn, horn, horn], [[0, 0], [0, 0.5], [0, 1]], 6, true);
+  m.tube([[0, 0.98, 1.26], [0, 1.15, 1.28]], [0.06, 0.012], [horn, horn], [[0, 0], [0, 1]], 5, true);
+  // Pillar legs
+  const legPos = [[-0.32, 0.54, 0.25], [0.32, 0.54, 0.75], [-0.30, -0.68, 0.75], [0.30, -0.68, 0.25]];
+  for (let i = 0; i < 4; i++) {
+    const [lx, lz, ph] = legPos[i];
+    m.tube([[lx, 0.84, lz], [lx, 0.42, lz], [lx, 0.04, lz]], [0.17, 0.14, 0.13], [fold, hide, fold], [[ph, 0.95], [ph, 0.98], [ph, 1.0]], 7, true);
+  }
+  return m.build();
+}
+
+function buildHippoMesh() {
+  const m = new MeshBuilder();
+  const skin = [0.39, 0.34, 0.36], pink = [0.54, 0.42, 0.44];
+  // Rounded amphibious barrel torso
+  m.tube([[0, 0.72, -0.92], [0, 0.78, -0.25], [0, 0.78, 0.42], [0, 0.74, 0.88]], [[0.46, 0.44], [0.56, 0.52], [0.54, 0.50], [0.42, 0.40]], [skin, skin, skin, pink], [[0, 0], [0, 0.35], [0, 0.7], [0, 1]], 9, true);
+  // Broad square hippo muzzle & high-set ears/eyes
+  m.ellipsoid(0, 0.78, 1.06, 0.32, 0.28, 0.28, skin, 0, 0, 6, 8);
+  m.ellipsoid(0, 0.70, 1.34, 0.28, 0.22, 0.22, pink, 0, 0, 6, 8);
+  m.ellipsoid(-0.18, 1.00, 1.00, 0.055, 0.065, 0.04, pink, 0, 0, 4, 6);
+  m.ellipsoid(0.18, 1.00, 1.00, 0.055, 0.065, 0.04, pink, 0, 0, 4, 6);
+  // Short stout legs
+  const legPos = [[-0.32, 0.48, 0.25], [0.32, 0.48, 0.75], [-0.32, -0.60, 0.75], [0.32, -0.60, 0.25]];
+  for (let i = 0; i < 4; i++) {
+    const [lx, lz, ph] = legPos[i];
+    m.tube([[lx, 0.56, lz], [lx, 0.28, lz], [lx, 0.04, lz]], [0.16, 0.14, 0.13], [skin, pink, skin], [[ph, 0.95], [ph, 0.98], [ph, 1.0]], 7, true);
+  }
+  return m.build();
+}
+
+function buildKangarooMesh() {
+  const m = new MeshBuilder();
+  const red = [0.68, 0.38, 0.24], cream = [0.84, 0.74, 0.62], tip = [0.32, 0.20, 0.14];
+  // Upright leaning macropod torso
+  m.tube([[0, 0.56, -0.18], [0, 0.92, 0.04], [0, 1.24, 0.20], [0, 1.44, 0.28]], [[0.20, 0.22], [0.18, 0.20], [0.13, 0.14], [0.09, 0.10]], [red, red, cream, red], [[0, 0], [0, 0.35], [0, 0.7], [0, 1]], 8, true);
+  // Slender head & tall mobile ears
+  m.ellipsoid(0, 1.50, 0.36, 0.09, 0.09, 0.15, red, 0, 0, 5, 7);
+  m.tube([[0, 1.48, 0.44], [0, 1.46, 0.56]], [0.055, 0.025], [cream, tip], [[0, 0], [0, 1]], 5, true);
+  m.tube([[-0.06, 1.56, 0.32], [-0.09, 1.78, 0.30]], [0.032, 0.012], [red, cream], [[0, 0], [0, 1]], 5, true);
+  m.tube([[0.06, 1.56, 0.32], [0.09, 1.78, 0.30]], [0.032, 0.012], [red, cream], [[0, 0], [0, 1]], 5, true);
+  // Long muscular counter-balancing tail
+  m.tube([[0, 0.52, -0.22], [0, 0.34, -0.68], [0, 0.24, -1.18]], [0.11, 0.075, 0.03], [red, red, tip], [[0, 0], [0, 0.5], [0, 1]], 7, true);
+  // Powerful hind legs + short forepaws
+  for (const s of [-1, 1]) {
+    const ph = s < 0 ? 0.25 : 0.75;
+    m.tube([[s * 0.15, 0.56, -0.06], [s * 0.16, 0.28, -0.14], [s * 0.15, 0.05, 0.08], [s * 0.15, 0.03, 0.28]], [0.10, 0.065, 0.045, 0.035], [red, cream, cream, tip], [[ph, 0.95], [ph, 0.97], [ph, 0.99], [ph, 1.0]], 6, true);
+    m.tube([[s * 0.12, 1.16, 0.18], [s * 0.12, 1.02, 0.34]], [0.035, 0.024], [cream, tip], [[0, 0], [0, 1]], 4, true);
+  }
+  return m.build();
+}
+
+// ============================================================================
 // Regional Floating-Origin Flora, Collision Grid & Planetary Wildlife Cohorts
 // ============================================================================
 function buildWorld() {
   seedRng(WORLD_SEED);
 
-  // Build flora & set-piece meshes (including Noniv/abyssal-garden Sunken Galleon, Reef Kelp/Coral, Savanna Acacia)
+  // Build flora & geological set-piece meshes (18 distinct instanced archetypes!)
   const meshes = [
-    buildCypressMesh(),          // 0: Bald Cypress & Spanish Moss
-    buildKapokMesh(),            // 1: Giant Kapok & Lianas
-    buildPalmMesh(),             // 2: Royal / Sabal / Coconut Palm
-    buildMangroveMesh(),         // 3: Red Mangrove Prop Roots
-    buildUnderstoryMesh(),       // 4: Ferns, Monstera, Heliconia & Bromeliads
-    buildRockLogFungusMesh(),    // 5: Boulders, Fallen Logs & Glowing Mycena
-    buildWaterFloraMesh(),       // 6: Water Lilies, Sawgrass & Cattails
-    buildSunkenGalleonMesh(),    // 7: Noniv/abyssal-garden Sunken Wooden Galleon (meshShip)
-    buildKelpCoralReefMesh(),    // 8: Noniv/abyssal-garden Swaying Kelp, Anemones & Reef Coral
-    buildAcaciaBambooMesh()      // 9: Savanna Umbrella Acacia, Misty Bamboo & Heritage Plantation Trees
+    buildCypressMesh(),            // 0: Bald Cypress & Spanish Moss
+    buildKapokMesh(),              // 1: Giant Kapok & Lianas
+    buildPalmMesh(),               // 2: Royal / Sabal / Coconut Palm
+    buildMangroveMesh(),           // 3: Red Mangrove Prop Roots
+    buildUnderstoryMesh(),         // 4: Ferns, Monstera, Heliconia & Bromeliads
+    buildRockLogFungusMesh(),      // 5: Mossy Boulders, Fallen Logs & Glowing Mycena
+    buildWaterFloraMesh(),         // 6: Water Lilies, Sawgrass & Cattails
+    buildSunkenGalleonMesh(),      // 7: Noniv/abyssal-garden Sunken Wooden Galleon (meshShip)
+    buildKelpCoralReefMesh(),      // 8: Noniv/abyssal-garden Swaying Kelp, Anemones & Reef Coral
+    buildAcaciaBambooMesh(),       // 9: Savanna Umbrella Acacia, Misty Bamboo & Heritage Plantation Trees
+    buildBorealConiferMesh(),      // 10: Boreal / Taiga / Alpine Spruce & Pine Conifer
+    buildBroadleafDeciduousMesh(), // 11: Temperate Broadleaf Deciduous Oak / Beech
+    buildDesertSucculentMesh(),    // 12: Desert Columnar Saguaro Cactus & Agave Rosette
+    buildAlpineTundraScrubMesh(),  // 13: Arctic Tundra / Alpine Krummholz & Heather Scrub
+    buildGraniteTorMesh(),         // 14: Fractured Granite Tor & Kopje Formation
+    buildColumnarBasaltMesh(),     // 15: Hexagonal Columnar Volcanic Basalt Outcrop
+    buildSandstoneMesaMesh(),      // 16: Horizontally Stratified Sandstone Mesa / Hoodoo
+    buildKarstLimestoneMesh()      // 17: Weathered Pale Karst & Coral Limestone Pinnacle
   ];
 
   // Uniform 2D Spatial Hash Grid for O(1) solid obstacle collision within [-REGION_HALF, +REGION_HALF]
@@ -1256,7 +1487,7 @@ function buildWorld() {
   function populateRegionFlora(biomeId = 0, _seedOffset = 0) {
     activeRegionBiomeId = biomeId;
     clearColliders();
-    const instances = [[], [], [], [], [], [], [], [], [], []];
+    const instances = Array.from({ length: meshes.length }, () => []);
 
     function pushInst(mIdx, x, y, z, scale, rot, seed, charAmt, wetness, colRadius = 0, colHeight = 0) {
       instances[mIdx].push(x, y, z, scale, rot, seed, charAmt, wetness);
@@ -1266,20 +1497,22 @@ function buildWorld() {
     }
 
     const origin = getActiveOrigin();
+    const nearBiome = nearestBiomeAtGeo(origin.latDeg, origin.lonDeg);
+    const inCuratedBasin = nearBiome.distanceKm < 65;
     const CELL_M = 64.0;
     const STREAM_RAD = 515.0;
     const CELL_LAT_DEG = CELL_M / 111320.0;
 
     // Anchor iconic landmarks (Abyssal Sunken Galleon, River Lagoon & Wildlife Clearing) to their true Earth coords
-    const isMarineRegion = biomeId === 10 || biomeId === 11;
-    const isBeachRegion = biomeId === 9;
-    const isPolarRegion = biomeId === 12 || biomeId === 13;
-    const isSavannaRegion = biomeId === 6;
-    const isBambooRegion = biomeId === 7;
-    const isPlantationRegion = biomeId === 5;
-    const isHighlandRegion = biomeId === 8;
-    const isAridRegion = biomeId === 17;
-    const isVolcanicRegion = biomeId === 14 || biomeId === 15;
+    const isMarineRegion = inCuratedBasin && (biomeId === 10 || biomeId === 11);
+    const isBeachRegion = inCuratedBasin && biomeId === 9;
+    const isPolarRegion = inCuratedBasin && (biomeId === 12 || biomeId === 13);
+    const isSavannaRegion = inCuratedBasin && biomeId === 6;
+    const isBambooRegion = inCuratedBasin && biomeId === 7;
+    const isPlantationRegion = inCuratedBasin && biomeId === 5;
+    const isHighlandRegion = inCuratedBasin && biomeId === 8;
+    const isAridRegion = inCuratedBasin && biomeId === 17;
+    const isVolcanicRegion = inCuratedBasin && (biomeId === 14 || biomeId === 15);
 
     const riverCenter = latLonToLocalMeters(BIOME_CATALOG[0].latDeg, BIOME_CATALOG[0].lonDeg, origin, { x: 0, z: 0 });
     const clearingCenter = latLonToLocalMeters(BIOME_CATALOG[4].latDeg, BIOME_CATALOG[4].lonDeg, origin, { x: 0, z: 0 });
@@ -1298,9 +1531,9 @@ function buildWorld() {
     const latCellCenter = Math.floor(origin.latDeg / CELL_LAT_DEG);
     const latRadiusCells = Math.ceil(STREAM_RAD / CELL_M) + 1;
 
-    // Per-64m-cell budgets tuned for rich forests out to 515m while keeping GPU draw count lean
-    const treesPerCell = max(2, round((isMarineRegion || isPolarRegion || isAridRegion ? 2 : 9) * VEG_DENSITY_SCALE));
-    const underPerCell = max(1, round((isMarineRegion || isPolarRegion || isAridRegion ? 1 : 9) * VEG_DENSITY_SCALE));
+    // Per-64m-cell budgets tuned for rich regional ecosystems out to 515m while keeping GPU draw count lean
+    const treesPerCell = max(2, round((isMarineRegion || isPolarRegion ? 2 : 9) * VEG_DENSITY_SCALE));
+    const underPerCell = max(1, round((isMarineRegion || isPolarRegion ? 1 : 8) * VEG_DENSITY_SCALE));
     const rocksPerCell = max(1, round(3 * VEG_DENSITY_SCALE));
     const reefPerCell = max(1, round((isMarineRegion ? 7 : 2) * VEG_DENSITY_SCALE));
     const waterFloraPerCell = max(1, round(4 * VEG_DENSITY_SCALE));
@@ -1326,6 +1559,20 @@ function buildWorld() {
         const cRand = cellRng(hash);
         const cRange = (a, b) => a + (b - a) * cRand();
 
+        // Stratified Blue-Noise / Poisson-Disc sub-cell sampler (eliminates grid lines & overlapping stacks)
+        const placedTrees = [];
+        const sampleStratifiedInCell = (idx, total) => {
+          const gridN = max(2, Math.ceil(sqrt(total)));
+          const gx = idx % gridN;
+          const gy = floor(idx / gridN) % gridN;
+          const u = (gx + 0.14 + cRand() * 0.72) / gridN;
+          const v = (gy + 0.14 + cRand() * 0.72) / gridN;
+          const latD = (ciLat + v) * CELL_LAT_DEG;
+          const lonD = (ciLon + u) * cellLonDeg;
+          latLonToLocalMeters(latD, lonD, origin, _llTmp);
+          return _llTmp;
+        };
+
         const samplePosInCell = () => {
           const latD = (ciLat + cRand()) * CELL_LAT_DEG;
           const lonD = (ciLon + cRand()) * cellLonDeg;
@@ -1333,33 +1580,83 @@ function buildWorld() {
           return _llTmp;
         };
 
-        // 1. Primary Canopy Trees & Biome Groves (Streamed seamlessly out to 515 m!)
+        // 1. Regional Canopy Trees, Conifers, Broadleaf Woods, Cacti & Scrub (Streamed seamlessly out to 515 m)
         for (let i = 0; i < treesPerCell; i++) {
-          const pos = samplePosInCell();
+          const pos = sampleStratifiedInCell(i, treesPerCell);
           const x = pos.x, z = pos.z;
-          const rSeed = cRand(), rRot = cRand() * TAU, rScale = cRange(0.85, 1.42), rPick = cRand();
+          const rSeed = cRand(), rRot = cRand() * TAU, rScale = cRange(0.84, 1.40), rPick = cRand();
           if (hypot(x, z) > STREAM_RAD) continue;
           if (hypot(x - riverCenter.x, z - riverCenter.z) < 22) continue;
           if (hypot(x - clearingCenter.x, z - clearingCenter.z) < 42 && rPick < 0.84) continue;
+
+          // Poisson-disc minimum spacing check (~7.5 m between primary woody stems)
+          let tooClose = false;
+          for (let p = 0; p < placedTrees.length; p += 2) {
+            if (hypot(x - placedTrees[p], z - placedTrees[p + 1]) < 7.5) {
+              tooClose = true;
+              break;
+            }
+          }
+          if (tooClose) continue;
+
           terrainAt(x, z, t);
-          if (t.h < -0.55 || t.polar > 0.45 || t.dune > 0.55 || t.volcano > 0.55) continue;
-          if ((isSavannaRegion || t.savanna > 0.48) && rPick < 0.65) continue;
+          if (t.h < -0.55 || t.volcano > 0.55) continue;
+          const guild = t.floraGuild || 'temperate_prairie';
           const charAmt = saturate(t.fire * (0.6 + rSeed * 0.65));
 
+          // Polar ice sheets & hyper-arid sand seas stay open (only occasional wind-sculpted tundra/desert scrub)
+          if (t.polar > 0.62 || guild === 'polar_ice' || guild === 'erg_dunes' || guild === 'hyperarid_desert') {
+            if (t.polar < 0.78 && rPick < 0.20) {
+              pushInst(13, x, t.h, z, rScale * 0.85, rRot, rSeed, charAmt, t.wetness, 0.35, 1.0);
+              placedTrees.push(x, z);
+            }
+            continue;
+          }
+
+          // Desert cactus & xeric succulent regions (Sonoran, Mojave, Outback, Kalahari, Karoo)
+          if (guild === 'cactus_succulent' || guild === 'xeric_succulent' || guild === 'xeric_scrub' || guild === 'rock_desert' || isAridRegion || t.dune > 0.55) {
+            if (rPick < 0.42) {
+              pushInst(rPick < 0.28 ? 12 : 13, x, t.h, z, rScale * 0.92, rRot, rSeed, charAmt, t.wetness, 0.42, 5.2);
+              placedTrees.push(x, z);
+            }
+            continue;
+          }
+
+          // Arctic tundra, alpine tussock & cold steppe scrub
+          if (guild === 'tundra_lichen' || guild === 'alpine_tussock' || guild === 'cold_scrub' || t.polar > 0.36) {
+            if (rPick < 0.55) {
+              pushInst(13, x, t.h, z, rScale * 1.05, rRot, rSeed, charAmt, t.wetness, 0.38, 1.2);
+              placedTrees.push(x, z);
+            }
+            continue;
+          }
+
+          // Savanna, prairies & dry grasslands stay open with spaced groves
+          if ((isSavannaRegion || t.savanna > 0.48 || guild === 'temperate_prairie' || guild === 'acacia_savanna' || guild === 'neotropical_savanna') && rPick < 0.66) {
+            continue;
+          }
+
+          // Curated biome & regional flora guild selection
           if (isBeachRegion && t.h > 0.2 && t.h < 6.5 && t.polar < 0.25) {
             pushInst(2, x, t.h, z, rScale, rRot, rSeed, charAmt, t.wetness, 0.34, 9.0);
-          } else if (t.mangrove > 0.32 || biomeId === 3 || (t.h < 0.18 && t.river > 0.25)) {
+          } else if (t.mangrove > 0.32 || guild === 'stilt_mangrove' || (inCuratedBasin && biomeId === 3) || (t.h < 0.18 && t.river > 0.25)) {
             pushInst(3, x, max(-0.28, t.h), z, rScale * 0.94, rRot, rSeed, charAmt, t.wetness, 0.55, 5.2);
-          } else if (t.swamp > 0.28 || biomeId === 1 || (t.wetness > 0.52 && rPick < 0.52)) {
+          } else if (t.swamp > 0.28 || guild === 'cypress_bayou' || (inCuratedBasin && biomeId === 1) || (t.wetness > 0.58 && rPick < 0.45 && t.temperatureC > 12)) {
             pushInst(0, x, max(-0.22, t.h), z, rScale, rRot, rSeed, charAmt, t.wetness, 0.72, 13.5);
-          } else if (isSavannaRegion || isBambooRegion || isPlantationRegion || t.savanna > 0.42 || t.bamboo > 0.32) {
+          } else if (guild === 'boreal_conifer' || guild === 'giant_conifer' || guild === 'montane_conifer' || guild === 'alpine_conifer' || guild === 'boreal_alpine' || guild === 'pinyon_juniper' || (t.temperatureC < 9.5 && t.h > 0.5)) {
+            pushInst(10, x, t.h, z, rScale * (guild === 'giant_conifer' ? 1.28 : 1.0), rRot, rSeed, charAmt, t.wetness, 0.56, 15.5);
+          } else if (guild === 'deciduous_broadleaf' || guild === 'subpolar_broadleaf' || guild === 'mediterranean_oak' || guild === 'mixed_conifer_broadleaf' || guild === 'temperate_rainforest' || guild === 'eucalyptus_forest') {
+            const mIdx = (guild === 'mixed_conifer_broadleaf' || guild === 'temperate_rainforest') && rPick < 0.42 ? 10 : 11;
+            pushInst(mIdx, x, t.h, z, rScale, rRot, rSeed, charAmt, t.wetness, 0.62, 11.5);
+          } else if (isSavannaRegion || isBambooRegion || isPlantationRegion || t.savanna > 0.42 || t.bamboo > 0.32 || guild === 'acacia_savanna' || guild === 'neotropical_savanna' || guild === 'bamboo_monsoon' || guild === 'dry_thorn_forest') {
             const mIdx = isPlantationRegion && rPick < 0.32 ? 2 : 9;
             pushInst(mIdx, x, t.h, z, rScale, rRot, rSeed, charAmt, t.wetness, 0.55, 10.0);
-          } else if (isHighlandRegion || t.amazon > 0.25 || t.highland > 0.25 || rPick < 0.55) {
-            pushInst(1, x, t.h, z, rScale, rRot, rSeed, charAmt, t.wetness, 0.92, 19.5);
+          } else if (isHighlandRegion || t.amazon > 0.25 || t.highland > 0.25 || guild === 'emergent_rainforest' || guild === 'coastal_rainforest' || guild === 'cloud_forest' || guild === 'dipterocarp_rainforest') {
+            pushInst(rPick < 0.78 ? 1 : 2, x, t.h, z, rScale, rRot, rSeed, charAmt, t.wetness, 0.92, 19.5);
           } else {
-            pushInst(2, x, t.h, z, rScale * 0.96, rRot, rSeed, charAmt, t.wetness, 0.34, 9.0);
+            pushInst(t.temperatureC > 21 ? 2 : 11, x, t.h, z, rScale * 0.96, rRot, rSeed, charAmt, t.wetness, 0.48, 9.5);
           }
+          placedTrees.push(x, z);
         }
 
         // 2. Underwater Kelp Forests, Fluorescent Anemones & Reef Corals (within 340 m)
@@ -1376,21 +1673,29 @@ function buildWorld() {
           }
         }
 
-        // 3. Boulders, Kopjes, Obsidian Rocks & Polar Glacial Ice Blocks (within 420 m)
+        // 3. Lithology-Matched Geological Rock Formations (Granite Tors, Columnar Basalt, Sandstone Mesas, Karst Limestone)
         if (cellDist < 420) {
           for (let i = 0; i < rocksPerCell; i++) {
-            const pos = samplePosInCell();
+            const pos = sampleStratifiedInCell(i, rocksPerCell);
             const x = pos.x, z = pos.z;
-            const rScale = (isPolarRegion || isVolcanicRegion) ? cRange(1.1, 2.3) : cRange(0.75, 1.8);
-            const rRot = cRand() * TAU, rSeed = cRand();
+            const rScale = (isPolarRegion || isVolcanicRegion) ? cRange(1.05, 2.2) : cRange(0.75, 1.75);
+            const rRot = cRand() * TAU, rSeed = cRand(), rPick = cRand();
             if (hypot(x, z) > 410) continue;
             terrainAt(x, z, t);
             if (t.h < -1.5 && !isMarineRegion && !isPolarRegion) continue;
-            pushInst(5, x, t.h - 0.08, z, rScale, rRot, rSeed, saturate(t.fire), t.wetness, 0.78, 0.95);
+            const lith = t.lithology || 'granite';
+            let rockMesh = 5;
+            if (rPick < 0.68) {
+              if (lith === 'basalt' || lith === 'volcanic' || isVolcanicRegion) rockMesh = 15;
+              else if (lith === 'sandstone' || lith === 'desert_sandstone' || isAridRegion) rockMesh = 16;
+              else if (lith === 'karst' || lith === 'limestone' || lith === 'coral_limestone') rockMesh = 17;
+              else if (lith === 'granite' || lith === 'glacial') rockMesh = 14;
+            }
+            pushInst(rockMesh, x, t.h - 0.12, z, rScale, rRot, rSeed, saturate(t.fire), t.wetness, 1.15, 2.1);
           }
         }
 
-        // 4. Close-to-Mid Understory Ferns & Grasses (within 270 m — blends softly in shader)
+        // 4. Close-to-Mid Understory Ferns, Grasses & Alpine Scrub (within 270 m — fades seamlessly via Bayer LOD)
         if (cellDist < 275) {
           for (let i = 0; i < underPerCell; i++) {
             const pos = samplePosInCell();
@@ -1398,8 +1703,9 @@ function buildWorld() {
             const rScale = cRange(0.75, 1.55), rRot = cRand() * TAU, rSeed = cRand();
             if (hypot(x, z) > 265) continue;
             terrainAt(x, z, t);
-            if (t.h < 0.02 || t.dune > 0.55 || t.volcano > 0.55 || t.polar > 0.38) continue;
-            pushInst(4, x, t.h, z, rScale, rRot, rSeed, saturate(t.fire * 1.1), t.wetness);
+            if (t.h < 0.02 || t.dune > 0.55 || t.volcano > 0.55 || t.polar > 0.58) continue;
+            const underMesh = (t.polar > 0.25 || t.temperatureC < 6.0 || t.floraGuild === 'tundra_lichen' || t.floraGuild === 'cold_scrub') ? 13 : 4;
+            pushInst(underMesh, x, t.h, z, rScale, rRot, rSeed, saturate(t.fire * 1.1), t.wetness);
           }
         }
 
@@ -1411,7 +1717,7 @@ function buildWorld() {
             const rScale = cRange(0.75, 1.45), rRot = cRand() * TAU, rSeed = cRand();
             if (hypot(x, z) > 255) continue;
             terrainAt(x, z, t);
-            if (t.h > -1.4 && t.h < 0.28 && t.polar < 0.15) {
+            if (t.h > -1.4 && t.h < 0.28 && t.polar < 0.15 && t.waterType !== 'marine') {
               pushInst(6, x, 0.01, z, rScale, rRot, rSeed, saturate(t.fire * 0.8), 1.0);
             }
           }
@@ -1901,6 +2207,37 @@ function buildWorld() {
   }
   addCohort('beetles', buildBeetleMesh(), beetles, 19, 3, { label: 'Hercules Rhinoceros Beetle', domain: 'land', nativeBiomes: [0, 2, 5, 7], cruiseSpeed: 0.4 });
 
+  // --- Phase 4 Expanded Continental Megafauna Families (Biogeographically Gated) ---
+  const wolves = [];
+  for (let i = 0; i < 10; i++) {
+    wolves.push({ type: 'walk', cx: rr(-105, 105), cz: rr(-105, 105), rad: rr(18, 40), speed: rr(1.7, 2.8), phase: rr(0, TAU), scale: rr(0.92, 1.18), animSpeed: 1.1, mode: 3 });
+  }
+  addCohort('wolves', buildWolfMesh(), wolves, 38, 34, { label: 'Gray Wolf', domain: 'land', role: 'predator', nativeBiomes: [4, 14], eyeOffset: [0, 0.78, 0.82], followDist: 4.2, baseSpeed: 13.5, cruiseSpeed: 2.2, bodyHalfLen: 0.48, legLength: 0.40 });
+
+  const bison = [];
+  for (let i = 0; i < 12; i++) {
+    bison.push({ type: 'walk', cx: rr(-115, 115), cz: rr(-115, 115), rad: rr(20, 44), speed: rr(1.2, 2.0), phase: rr(0, TAU), scale: rr(0.95, 1.22), animSpeed: 0.85, mode: 3 });
+  }
+  addCohort('bison', buildBisonMesh(), bison, 39, 28, { label: 'American Bison', domain: 'land', role: 'herbivore', nativeBiomes: [4], eyeOffset: [0, 1.15, 1.12], followDist: 5.5, baseSpeed: 11.2, cruiseSpeed: 1.65, strideLen: 1.35, bodyHalfLen: 0.72, legLength: 0.56 });
+
+  const rhinos = [];
+  for (let i = 0; i < 6; i++) {
+    rhinos.push({ type: 'walk', cx: rr(-110, 110), cz: rr(-110, 110), rad: rr(18, 38), speed: rr(1.2, 1.9), phase: rr(0, TAU), scale: rr(0.96, 1.20), animSpeed: 0.78, mode: 3 });
+  }
+  addCohort('rhinos', buildRhinoMesh(), rhinos, 40, 24, { label: 'White Rhinoceros', domain: 'land', role: 'herbivore', nativeBiomes: [6], eyeOffset: [0, 1.05, 1.25], followDist: 6.2, baseSpeed: 10.5, cruiseSpeed: 1.55, strideLen: 1.4, bodyHalfLen: 0.78, legLength: 0.52 });
+
+  const hippos = [];
+  for (let i = 0; i < 8; i++) {
+    hippos.push({ type: 'walk', cx: rr(-95, 95), cz: rr(-95, 95), rad: rr(12, 26), speed: rr(1.0, 1.6), phase: rr(0, TAU), scale: rr(0.92, 1.18), animSpeed: 0.75, mode: 3 });
+  }
+  addCohort('hippos', buildHippoMesh(), hippos, 41, 18, { label: 'Common Hippopotamus', domain: 'land', role: 'herbivore', nativeBiomes: [6], eyeOffset: [0, 0.88, 1.18], followDist: 5.4, baseSpeed: 8.5, cruiseSpeed: 1.35, strideLen: 1.15, bodyHalfLen: 0.74, legLength: 0.42 });
+
+  const kangaroos = [];
+  for (let i = 0; i < 14; i++) {
+    kangaroos.push({ type: 'walk', cx: rr(-110, 110), cz: rr(-110, 110), rad: rr(18, 42), speed: rr(1.8, 3.0), phase: rr(0, TAU), scale: rr(0.90, 1.20), animSpeed: 1.25, mode: 3 });
+  }
+  addCohort('kangaroos', buildKangarooMesh(), kangaroos, 42, 36, { label: 'Red Kangaroo', domain: 'land', role: 'herbivore', nativeBiomes: [9], eyeOffset: [0, 1.48, 0.42], followDist: 4.5, baseSpeed: 14.2, cruiseSpeed: 2.4, strideLen: 1.45, bodyHalfLen: 0.34, legLength: 0.46 });
+
   const lookdevRig = {
     sphereMesh: buildLookdevMesh(),
     swatchMesh: buildSwatchBarMesh(),
@@ -1908,14 +2245,28 @@ function buildWorld() {
   };
 
   // Relocate native & non-native cohorts cleanly onto valid local terrain/water when changing regions
-  // When shiftMeters = { dx, dz } is supplied (continuous walking/flying rebase), preserve nearby animal positions seamlessly!
+  // Enforces strict biogeographic realm, habitat, elevation & water-salinity eligibility globally!
   function syncRegion(biomeId = 0, seedOffset = 0, shiftMeters = null) {
     populateRegionFlora(biomeId, seedOffset);
     seedRng(WORLD_SEED + biomeId * 4129 + seedOffset * 71);
     const st = {};
+    const origin = getActiveOrigin();
+    terrainAt(0, 0, st);
+    const eco = st.ecoregion || classifyEcoregionAt(origin.latDeg, origin.lonDeg, st.h, st.temperatureC, st.rainfall, st.aridity, st.glacier);
+    const nearCurated = nearestBiomeAtGeo(origin.latDeg, origin.lonDeg);
+    const nearCuratedId = nearCurated.distanceKm < 95 ? nearCurated.biome.id : -1;
+
     for (let g = 0; g < wildlifeGroups.length; g++) {
       const grp = wildlifeGroups[g];
-      const isNative = grp.nativeBiomes.includes(biomeId);
+      const isNative = isCohortEligibleInRegion(
+        grp.name,
+        origin.latDeg,
+        origin.lonDeg,
+        st.h,
+        eco,
+        nearCuratedId,
+        grp.nativeBiomes
+      );
       for (let i = 0; i < grp.items.length; i++) {
         const it = grp.items[i];
         if (it.playerControlled) continue;
@@ -2105,7 +2456,7 @@ function buildWorld() {
 
   const predatorGroups = wildlifeGroups.filter((g) => g.role === 'predator');
   const preyGroups = wildlifeGroups.filter((g) => g.role === 'herbivore' && g.items.length > 0);
-  const QUADRUPED_SPECIES = new Set([0, 1, 2, 3, 4, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 35, 36, 37, 38, 39]);
+  const QUADRUPED_SPECIES = new Set([0, 1, 2, 3, 4, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 35, 36, 37, 38, 39, 40, 41]);
 
   const EMOTION_NAMES = [
     'Calm · Grazing & Breathing',

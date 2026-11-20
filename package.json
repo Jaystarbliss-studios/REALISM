@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "node source/build.mjs && mkdir -p dist && cp index.html dist/index.html",
+    "build": "node source/build.mjs && mkdir -p dist/assets && cp index.html dist/index.html && cp -r public/assets/. dist/assets/",
     "build:dev": "node source/build.mjs --dev",
     "build:readable": "node source/build.mjs --readable",
     "preview": "vite preview",

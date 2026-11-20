@@ -26,8 +26,18 @@ import {
   BIOME_CATALOG, POSES, setActiveOrigin, getActiveOrigin,
   localMetersToLatLon, latLonToLocalMeters, samplePlanetAtLatLon, terrainAt,
   nearestBiomeAtGeo, biomeLabelAtGeo, spaceSectorAt,
+  classifyEcoregionAt, upgradeEarthGeoAtlas,
   TILE_GRID, TILE_TOTAL_VERTS, TILE_FLOATS_PER_VERT, CubeSphereQuadtree
 } from './biomes.js';
+import {
+  ensureSpeciesCatalogueLoaded, queryRegionalSpeciesRoster, getLoadedSpeciesCatalogue
+} from './species_engine.js';
+import {
+  AU_METERS, SOLAR_BODIES, SOLAR_BODY_BY_ID, EARTH_ORBIT_HANDOFF_ALT,
+  createSolarSystemState, updateSolarEphemeris, syncSolarFromEarthCam,
+  solarToEarthGeodetic, stepInterplanetaryFlight, projectSolarBodiesToENU,
+  formatDistanceSI, formatSpeedSI, formatEtaSI
+} from './solar_system.js';
 import { uploadMaterialTextureArray } from './assets.js';
 import {
   W_SKY, W_TERRAIN, W_VEG, W_ANIMAL, W_WATER, W_PARTICLE, W_RAYS, W_RAYS_MS, W_POST, W_POST_MS
@@ -107,11 +117,13 @@ const camState = {
 
 let settings = loadSettings();
 const qualityCtrl = createQualityController(settings.qualityTier);
+const solarState = createSolarSystemState();
+let solarInterplanetaryBlend = 0.0;
 
 let menu = true;
 let flyActive = false;
 let showHud = Boolean(settings.showTelemetry);
-let cleanUi = !settings.hudVisible;
+let cleanUi = settings.showHud === false;
 let photoMode = false;
 let lookdevMode = false;
 let autoExplore = false;
@@ -174,6 +186,7 @@ let wakeBrandWordmark = () => {};
 function syncBodyClasses() {
   document.body.className = menu ? 'm' : 'g';
   if (cleanUi) document.body.classList.add('clean');
+  if (settings.showMiniMap === false) document.body.classList.add('hide-minimap');
   if (photoMode) document.body.classList.add('photo');
 }
 function setMenu(open) {
@@ -618,24 +631,81 @@ function rebaseRegionalOrigin(latDeg, lonDeg, preferredBiomeId = -1, continuousS
 }
 
 // ============================================================================
-// Live 5 km Surrounding Topographic & Bathymetric Minimap (Bottom-Right HUD)
-// Samples real planetary elevation/biomes over a 5 km radius (10 km x 10 km)
-// with smart offscreen raster caching and real-time heading/FOV cone overlay.
+// Live 5 km GPS-Style Navigation Instrument (Bottom-Right HUD)
+// Samples real planetary topography/bathymetry/hydrology over a 5 km radius
+// with North-Up / Track-Up modes, distinct Camera Heading vs Velocity Ground
+// Track, breadcrumb movement trail, waypoints with bearing/distance/ETA,
+// landmarks, compass rose & dynamic scale bar. (Simulation coordinates only)
 // ============================================================================
 const miniMapWrap = $('miniMapWrap');
 const miniMapCanvas = $('miniMapCanvas');
+const mmModeBtn = $('mmModeBtn');
+const mmScaleLabelEl = $('mmScaleLabel');
+const mmWaypointRowEl = $('mmWaypointRow');
+const mmWpTargetEl = $('mmWpTarget');
+const mmWpDistEl = $('mmWpDist');
 const mmHeadingEl = $('mmHeading');
 const mmElevEl = $('mmElev');
+const mmRegionEl = $('mmRegion');
+const mmSpeedEl = $('mmSpeed');
+
+const navTrail = [];
+const NAV_TRAIL_MAX = 120;
+let activeWaypoint = null; // { latDeg, lonDeg, name }
+
+function recordNavTrailPoint(latDeg, lonDeg) {
+  if (solarState.mode === 'interplanetary' || camState.altMeters > 80000) return;
+  const last = navTrail.length > 0 ? navTrail[navTrail.length - 1] : null;
+  if (!last || greatCircleDistanceMeters(last.latDeg, last.lonDeg, latDeg, lonDeg) >= 35.0) {
+    navTrail.push({ latDeg, lonDeg });
+    if (navTrail.length > NAV_TRAIL_MAX) navTrail.shift();
+  }
+}
+
+function setWaypoint(latDeg, lonDeg, name = '') {
+  const cleanLat = clamp(latDeg, -89.8, 89.8);
+  const cleanLon = normAngle(lonDeg * DEG2RAD) * RAD2DEG;
+  const label = name || biomeLabelAtGeo(cleanLat, cleanLon, 10);
+  activeWaypoint = { latDeg: cleanLat, lonDeg: cleanLon, name: label };
+  if ($('clearWaypointBtn')) $('clearWaypointBtn').style.display = '';
+  if (mmWaypointRowEl) mmWaypointRowEl.classList.add('active');
+}
+
+function clearWaypoint() {
+  activeWaypoint = null;
+  if ($('clearWaypointBtn')) $('clearWaypointBtn').style.display = 'none';
+  if (mmWaypointRowEl) mmWaypointRowEl.classList.remove('active');
+}
+
+function computeBearingDeg(lat1Deg, lon1Deg, lat2Deg, lon2Deg) {
+  const p1 = lat1Deg * DEG2RAD, p2 = lat2Deg * DEG2RAD;
+  const dL = (lon2Deg - lon1Deg) * DEG2RAD;
+  const y = sin(dL) * cos(p2);
+  const x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dL);
+  return ((atan2(y, x) * RAD2DEG) % 360 + 360) % 360;
+}
+
+if (mmModeBtn) {
+  mmModeBtn.onclick = (e) => {
+    e.stopPropagation();
+    settings.miniMapMode = settings.miniMapMode === 'track-up' ? 'north-up' : 'track-up';
+    saveSettings(settings);
+    mmModeBtn.textContent = settings.miniMapMode === 'track-up' ? 'TRK-UP' : 'N-UP';
+    if ($('setMiniMapMode')) $('setMiniMapMode').value = settings.miniMapMode;
+  };
+}
 if (miniMapWrap) {
   miniMapWrap.onclick = () => toggleMapModal(true);
 }
+
 const MM_RADIUS_M = 5000.0; // Exact 5 km surrounding radius
-const MM_RASTER_RES = 96;
+const MM_RASTER_RES = 112;
 const mmOffCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
 if (mmOffCanvas) { mmOffCanvas.width = MM_RASTER_RES; mmOffCanvas.height = MM_RASTER_RES; }
 const mmOffCtx = mmOffCanvas ? mmOffCanvas.getContext('2d') : null;
 const mmImgData = mmOffCtx ? mmOffCtx.createImageData(MM_RASTER_RES, MM_RASTER_RES) : null;
 let mmCacheLat = 999, mmCacheLon = 999, mmLastDrawMs = 0;
+let mmSmoothTrackRad = 0;
 const _mmTmp = {};
 const _mmTmpN = {};
 const _mmPinLoc = {};
@@ -646,44 +716,44 @@ function rebuildMiniMapTerrainRaster(centerLatDeg, centerLonDeg) {
   const cosLat = max(0.14, cos(centerLatDeg * DEG2RAD));
   const degPerM_Lat = 1.0 / 111320.0;
   const degPerM_Lon = 1.0 / (111320.0 * cosLat);
-  const stepM = (MM_RADIUS_M * 2.0) / MM_RASTER_RES;
+  const spanM = MM_RADIUS_M * 1.45; // Overscan by sqrt(2) so Track-Up rotation has zero corner gaps
+  const stepM = (spanM * 2.0) / MM_RASTER_RES;
 
   for (let py = 0; py < MM_RASTER_RES; py++) {
-    const northM = MM_RADIUS_M - (py + 0.5) * stepM;
+    const northM = spanM - (py + 0.5) * stepM;
     const lat = clamp(centerLatDeg + northM * degPerM_Lat, -89.9, 89.9);
     for (let px = 0; px < MM_RASTER_RES; px++) {
-      const eastM = -MM_RADIUS_M + (px + 0.5) * stepM;
+      const eastM = -spanM + (px + 0.5) * stepM;
       const lon = normAngle((centerLonDeg + eastM * degPerM_Lon) * DEG2RAD) * RAD2DEG;
       samplePlanetAtLatLon(lat, lon, _mmTmp, 1);
 
-      // Fast directional hillshade via 1-step north-east elevation sample
       const latN = clamp(lat + stepM * 0.7 * degPerM_Lat, -89.9, 89.9);
       const lonE = normAngle((lon + stepM * 0.7 * degPerM_Lon) * DEG2RAD) * RAD2DEG;
       samplePlanetAtLatLon(latN, lonE, _mmTmpN, 1);
-      const slopeShade = clamp(0.86 + (_mmTmp.h - _mmTmpN.h) * 0.012, 0.52, 1.32);
+      const slopeShade = clamp(0.86 + (_mmTmp.h - _mmTmpN.h) * 0.012, 0.50, 1.34);
 
       let r = 0, g = 0, b = 0;
       const h = _mmTmp.h;
       if (h < 0.0) {
-        // Bathymetric ocean relief (turquoise shelf -> deep abyssal trench)
         const depthT = saturate(-h / 180.0);
         const shallowT = smoothstep(-14.0, -0.2, h);
-        r = lerp(lerp(18, 6, depthT), 52, shallowT * 0.72);
-        g = lerp(lerp(66, 22, depthT), 146, shallowT * 0.72);
-        b = lerp(lerp(96, 48, depthT), 162, shallowT * 0.72);
-        // Subtle bathymetric depth contour every 25m
+        r = lerp(lerp(16, 6, depthT), 48, shallowT * 0.72);
+        g = lerp(lerp(62, 22, depthT), 144, shallowT * 0.72);
+        b = lerp(lerp(94, 48, depthT), 164, shallowT * 0.72);
         if (abs(((h % 25) + 25) % 25) < 1.8) { r += 8; g += 14; b += 18; }
       } else {
-        r = _mmTmp.color[0] * 255 * slopeShade;
-        g = _mmTmp.color[1] * 255 * slopeShade;
-        b = _mmTmp.color[2] * 255 * slopeShade;
-        // Crisp bright coastline edge (0..2.2m elevation)
-        if (h < 2.2) {
-          r = lerp(r, 185, 0.55);
-          g = lerp(g, 212, 0.55);
-          b = lerp(b, 182, 0.55);
+        r = (_mmTmp.colR ?? 0.28) * 255 * slopeShade;
+        g = (_mmTmp.colG ?? 0.34) * 255 * slopeShade;
+        b = (_mmTmp.colB ?? 0.24) * 255 * slopeShade;
+        if ((_mmTmp.lakeFrac || 0) > 0.26 || (_mmTmp.riverFrac || 0) > 0.28) {
+          r = lerp(r, 38, 0.72);
+          g = lerp(g, 118, 0.72);
+          b = lerp(b, 152, 0.72);
+        } else if (h < 2.2) {
+          r = lerp(r, 185, 0.52);
+          g = lerp(g, 212, 0.52);
+          b = lerp(b, 182, 0.52);
         } else {
-          // Subtle topographic contour lines every 40m
           const modC = h % 40.0;
           if (modC < 2.2) { r *= 0.80; g *= 0.82; b *= 0.80; }
         }
@@ -701,8 +771,8 @@ function rebuildMiniMapTerrainRaster(centerLatDeg, centerLonDeg) {
 }
 
 function renderLiveMiniMap(nowMs) {
-  if (!miniMapCanvas || menu || cleanUi || photoMode || settings.showHud === false) return;
-  if (nowMs - mmLastDrawMs < 55) return; // Smooth ~18-20 Hz live radar refresh
+  if (!miniMapCanvas || menu || photoMode || settings.showMiniMap === false) return;
+  if (nowMs - mmLastDrawMs < 55) return; // Smooth ~18 Hz live GPS refresh
   mmLastDrawMs = nowMs;
 
   const ctx = miniMapCanvas.getContext('2d');
@@ -711,9 +781,83 @@ function renderLiveMiniMap(nowMs) {
   const h = miniMapCanvas.height;
   const cx = w * 0.5;
   const cy = h * 0.5;
-  const pxPerM = (w * 0.5) / MM_RADIUS_M;
+  const mapRadiusPx = min(w, h) * 0.48;
+  const pxPerM = mapRadiusPx / MM_RADIUS_M;
 
-  // Rebuild cached 5 km terrain raster only when player travels > 40 m
+  const isInterplanetary = solarState.mode === 'interplanetary';
+  const trackUp = settings.miniMapMode === 'track-up';
+  if (mmModeBtn) mmModeBtn.textContent = trackUp ? 'TRK-UP' : 'N-UP';
+
+  // Camera Heading (0 = North, +PI/2 = East) vs Velocity Ground Track
+  const camHdgRad = normAngle(F[YAW]);
+  const groundSpeed = isInterplanetary
+    ? solarState.speedMps
+    : hypot(camState.velE || 0, camState.velN || 0);
+  const hasVelocityTrack = !isInterplanetary && groundSpeed >= 0.35;
+  const velTrackRad = hasVelocityTrack ? atan2(camState.velE, camState.velN) : null;
+
+  // Smooth orientation rotation in Track-Up mode (falls back cleanly to camera heading when stationary)
+  const targetUpRad = trackUp ? (hasVelocityTrack ? velTrackRad : camHdgRad) : 0.0;
+  mmSmoothTrackRad = trackUp ? lerpAngle(mmSmoothTrackRad, targetUpRad, 0.22) : 0.0;
+  const rotRad = trackUp ? -mmSmoothTrackRad : 0.0;
+
+  ctx.clearRect(0, 0, w, h);
+
+  if (isInterplanetary) {
+    // Deep-space tactical radar showing nearby Solar System bodies relative to spacecraft
+    ctx.fillStyle = '#040a0e';
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(92, 200, 242, 0.22)';
+    ctx.lineWidth = 1;
+    for (const rFrac of [0.33, 0.66, 0.96]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, mapRadiusPx * rFrac, 0, TAU);
+      ctx.stroke();
+    }
+    const sunP = solarState.positions.get('sun');
+    const shipX = solarState.posM[0] - sunP[0];
+    const shipZ = solarState.posM[2] - sunP[2];
+    const maxLog = Math.log10(1 + 32 * 12);
+    const mapHelio = (mx, mz) => {
+      const au = hypot(mx, mz) / AU_METERS;
+      const rNorm = Math.log10(1 + au * 12) / maxLog;
+      const ang = atan2(mz, mx);
+      return [cx + cos(ang) * rNorm * mapRadiusPx * 0.94, cy + sin(ang) * rNorm * mapRadiusPx * 0.94];
+    };
+    for (let i = 0; i < SOLAR_BODIES.length; i++) {
+      const b = SOLAR_BODIES[i];
+      const bp = solarState.positions.get(b.id);
+      const [bx, by] = mapHelio(bp[0], bp[2]);
+      ctx.fillStyle = b.id === 'sun' ? '#fde047' : b.id === solarState.targetBodyId ? '#5cc8f2' : `rgb(${round(b.color[0] * 255)},${round(b.color[1] * 255)},${round(b.color[2] * 255)})`;
+      ctx.beginPath();
+      ctx.arc(bx, by, b.id === 'sun' ? 4.5 : b.id === solarState.targetBodyId ? 3.5 : 2.3, 0, TAU);
+      ctx.fill();
+    }
+    const [sx, sy] = mapHelio(shipX, shipZ);
+    const tgtP = solarState.positions.get(solarState.targetBodyId);
+    if (tgtP) {
+      const [tx, ty] = mapHelio(tgtP[0], tgtP[2]);
+      ctx.strokeStyle = 'rgba(92, 200, 242, 0.65)';
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(sx - 3, sy - 3, 6, 6);
+    if (mmScaleLabelEl) mmScaleLabelEl.textContent = '30 AU';
+    if (mmHeadingEl) mmHeadingEl.textContent = `SUN ${(solarState.distFromSunM / AU_METERS).toFixed(2)} AU`;
+    if (mmElevEl) mmElevEl.textContent = formatDistanceSI(solarState.distToTargetM);
+    if (mmRegionEl) mmRegionEl.textContent = `SOLAR · ${(SOLAR_BODY_BY_ID[solarState.activeBodyId]?.name || 'Deep Space').toUpperCase()}`;
+    if (mmSpeedEl) mmSpeedEl.textContent = formatSpeedSI(solarState.speedMps);
+    if (mmWaypointRowEl) {
+      mmWaypointRowEl.classList.add('active');
+      if (mmWpTargetEl) mmWpTargetEl.textContent = `TGT ${(SOLAR_BODY_BY_ID[solarState.targetBodyId]?.name || 'MARS').toUpperCase()}`;
+      if (mmWpDistEl) mmWpDistEl.textContent = `ETA ${formatEtaSI(solarState.etaSeconds)}`;
+    }
+    return;
+  }
+
+  // Earth-anchored 5 km live GPS topographic/bathymetric raster
   const movedM = mmCacheLat > 90
     ? 99999
     : greatCircleDistanceMeters(mmCacheLat, mmCacheLon, camState.latDeg, camState.lonDeg);
@@ -721,55 +865,6 @@ function renderLiveMiniMap(nowMs) {
     rebuildMiniMapTerrainRaster(camState.latDeg, camState.lonDeg);
   }
 
-  ctx.clearRect(0, 0, w, h);
-  if (mmOffCanvas) {
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(mmOffCanvas, 0, 0, w, h);
-  }
-
-  // Subtle dark architectural vignette around edges for legible ticks & rings
-  const vig = ctx.createRadialGradient(cx, cy, w * 0.34, cx, cy, w * 0.62);
-  vig.addColorStop(0, 'rgba(0,0,0,0)');
-  vig.addColorStop(1, 'rgba(4,10,8,0.46)');
-  ctx.fillStyle = vig;
-  ctx.fillRect(0, 0, w, h);
-
-  // Concentric range rings: 1 km, 2.5 km, and 5 km boundary
-  ctx.save();
-  ctx.strokeStyle = 'rgba(242, 240, 230, 0.24)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([3, 3]);
-  for (const rKm of [1.0, 2.5, 4.95]) {
-    const rPx = rKm * 1000.0 * pxPerM;
-    ctx.beginPath();
-    ctx.arc(cx, cy, rPx, 0, TAU);
-    ctx.stroke();
-  }
-  ctx.setLineDash([]);
-
-  // Subtle N-S / E-W crosshair grid
-  ctx.strokeStyle = 'rgba(242, 240, 230, 0.11)';
-  ctx.beginPath();
-  ctx.moveTo(cx, 0); ctx.lineTo(cx, h);
-  ctx.moveTo(0, cy); ctx.lineTo(w, cy);
-  ctx.stroke();
-
-  // Range ring labels (1km, 2.5km) & Cardinal markers (N, E, S, W)
-  ctx.font = '600 8.5px ui-monospace, SFMono-Regular, Menlo, monospace';
-  ctx.fillStyle = 'rgba(242, 240, 230, 0.68)';
-  ctx.textAlign = 'left';
-  ctx.fillText('1K', cx + 1000 * pxPerM + 2, cy - 3);
-  ctx.fillText('2.5K', cx + 2500 * pxPerM + 2, cy - 3);
-
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#e2b857';
-  ctx.fillText('N', cx, 11);
-  ctx.fillStyle = 'rgba(242, 240, 230, 0.55)';
-  ctx.fillText('S', cx, h - 4);
-  ctx.fillText('W', 8, cy + 3);
-  ctx.fillText('E', w - 8, cy + 3);
-
-  // Plot any curated biome landmark pins that fall inside the surrounding 5 km radius
   const curOrigin = {
     latDeg: camState.latDeg,
     lonDeg: camState.lonDeg,
@@ -777,13 +872,41 @@ function renderLiveMiniMap(nowMs) {
     lonRad: camState.lonRad,
     enu: localENUFrame(camState.latRad, camState.lonRad)
   };
+
+  // Draw rotated terrain raster, breadcrumb trail, landmarks & waypoint vector
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(rotRad);
+  if (mmOffCanvas) {
+    ctx.imageSmoothingEnabled = true;
+    const drawSpanPx = mapRadiusPx * 1.45 * 2.0;
+    ctx.drawImage(mmOffCanvas, -drawSpanPx * 0.5, -drawSpanPx * 0.5, drawSpanPx, drawSpanPx);
+  }
+
+  // Live breadcrumb movement trail
+  if (navTrail.length >= 2) {
+    ctx.strokeStyle = 'rgba(92, 200, 242, 0.85)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (let i = 0; i < navTrail.length; i++) {
+      latLonToLocalMeters(navTrail[i].latDeg, navTrail[i].lonDeg, curOrigin, _mmPinLoc);
+      const tx = _mmPinLoc.x * pxPerM;
+      const ty = _mmPinLoc.z * pxPerM;
+      if (i === 0) ctx.moveTo(tx, ty);
+      else ctx.lineTo(tx, ty);
+    }
+    ctx.lineTo(0, 0);
+    ctx.stroke();
+  }
+
+  // Curated landmark pins within surrounding 5 km radius
   for (let i = 0; i < BIOME_CATALOG.length; i++) {
     const b = BIOME_CATALOG[i];
     const dM = greatCircleDistanceMeters(camState.latDeg, camState.lonDeg, b.latDeg, b.lonDeg);
-    if (dM <= MM_RADIUS_M * 0.96) {
+    if (dM <= MM_RADIUS_M * 1.05) {
       latLonToLocalMeters(b.latDeg, b.lonDeg, curOrigin, _mmPinLoc);
-      const px = cx + _mmPinLoc.x * pxPerM;
-      const py = cy + _mmPinLoc.z * pxPerM; // +Z is South on ENU map, +Y is down on canvas
+      const px = _mmPinLoc.x * pxPerM;
+      const py = _mmPinLoc.z * pxPerM;
       ctx.fillStyle = b.forbidden ? '#f87171' : '#e2b857';
       ctx.fillRect(px - 3, py - 3, 6, 6);
       ctx.strokeStyle = '#060d0a';
@@ -792,30 +915,131 @@ function renderLiveMiniMap(nowMs) {
     }
   }
 
-  // Live Camera Heading / Field-of-View Cone (+X East, -Z North => canvas angle = yaw - PI/2)
-  const hdgRad = F[YAW];
-  const canvasDirAng = hdgRad - PI * 0.5;
-  const fovHalf = clamp((settings.fov || 54) * DEG2RAD * 0.55, 0.35, 0.85);
+  // Active Waypoint vector & pin (clipped neatly onto compass rim if beyond 5 km)
+  if (activeWaypoint) {
+    const wpDistM = greatCircleDistanceMeters(camState.latDeg, camState.lonDeg, activeWaypoint.latDeg, activeWaypoint.lonDeg);
+    const wpBrgRad = computeBearingDeg(camState.latDeg, camState.lonDeg, activeWaypoint.latDeg, activeWaypoint.lonDeg) * DEG2RAD;
+    const clampedR = min(mapRadiusPx * 0.94, wpDistM * pxPerM);
+    const wx = sin(wpBrgRad) * clampedR;
+    const wy = -cos(wpBrgRad) * clampedR;
+
+    ctx.strokeStyle = 'rgba(92, 200, 242, 0.72)';
+    ctx.lineWidth = 1.25;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(wx, wy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.save();
+    ctx.translate(wx, wy);
+    ctx.rotate(PI * 0.25);
+    ctx.fillStyle = '#5cc8f2';
+    ctx.fillRect(-3.5, -3.5, 7, 7);
+    ctx.strokeStyle = '#060d0a';
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(-3.5, -3.5, 7, 7);
+    ctx.restore();
+  }
+
+  // Camera Heading FOV Cone (gold)
+  const canvasHdgAng = camHdgRad - PI * 0.5;
+  const fovHalf = clamp((settings.fov || 54) * DEG2RAD * 0.52, 0.34, 0.84);
   const coneR = 34;
-  const coneGrad = ctx.createRadialGradient(cx, cy, 2, cx, cy, coneR);
+  const coneGrad = ctx.createRadialGradient(0, 0, 2, 0, 0, coneR);
   coneGrad.addColorStop(0, 'rgba(226, 184, 87, 0.52)');
   coneGrad.addColorStop(1, 'rgba(226, 184, 87, 0.0)');
   ctx.fillStyle = coneGrad;
   ctx.beginPath();
-  ctx.moveTo(cx, cy);
-  ctx.arc(cx, cy, coneR, canvasDirAng - fovHalf, canvasDirAng + fovHalf);
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, coneR, canvasHdgAng - fovHalf, canvasHdgAng + fovHalf);
   ctx.closePath();
   ctx.fill();
 
-  // Crisp heading ray
-  ctx.strokeStyle = 'rgba(226, 184, 87, 0.85)';
-  ctx.lineWidth = 1.25;
+  ctx.strokeStyle = 'rgba(226, 184, 87, 0.92)';
+  ctx.lineWidth = 1.3;
   ctx.beginPath();
-  ctx.moveTo(cx, cy);
-  ctx.lineTo(cx + cos(canvasDirAng) * 16, cy + sin(canvasDirAng) * 16);
+  ctx.moveTo(0, 0);
+  ctx.lineTo(cos(canvasHdgAng) * 18, sin(canvasHdgAng) * 18);
   ctx.stroke();
 
-  // Live Player Location Marker (square architectural reticle)
+  // Distinct Velocity Ground-Track Vector Arrow (cyan, shown when actually moving >= 0.35 m/s)
+  if (hasVelocityTrack && velTrackRad !== null) {
+    const trkAng = velTrackRad - PI * 0.5;
+    const trkLen = clamp(12 + Math.log10(1 + groundSpeed) * 10, 14, 28);
+    const ex = cos(trkAng) * trkLen;
+    const ey = sin(trkAng) * trkLen;
+    ctx.strokeStyle = '#5cc8f2';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    ctx.fillStyle = '#5cc8f2';
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - cos(trkAng - 0.45) * 6, ey - sin(trkAng - 0.45) * 6);
+    ctx.lineTo(ex - cos(trkAng + 0.45) * 6, ey - sin(trkAng + 0.45) * 6);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Subtle architectural vignette
+  const vig = ctx.createRadialGradient(cx, cy, mapRadiusPx * 0.65, cx, cy, max(w, h) * 0.65);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(4,10,8,0.52)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, w, h);
+
+  // Concentric range rings (1 km, 2.5 km, 5 km) + crosshair
+  ctx.save();
+  ctx.strokeStyle = 'rgba(242, 240, 230, 0.22)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  for (const rKm of [1.0, 2.5, 4.92]) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, rKm * 1000.0 * pxPerM, 0, TAU);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(242, 240, 230, 0.10)';
+  ctx.beginPath();
+  ctx.moveTo(cx, 0); ctx.lineTo(cx, h);
+  ctx.moveTo(0, cy); ctx.lineTo(w, cy);
+  ctx.stroke();
+
+  // Rotating Compass Rose Cardinals (N, E, S, W)
+  ctx.font = '700 8.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const cardDist = mapRadiusPx - 9;
+  const cardinals = [
+    { lbl: 'N', ang: -PI * 0.5 + rotRad, col: '#e2b857' },
+    { lbl: 'E', ang: rotRad, col: 'rgba(242, 240, 230, 0.62)' },
+    { lbl: 'S', ang: PI * 0.5 + rotRad, col: 'rgba(242, 240, 230, 0.62)' },
+    { lbl: 'W', ang: PI + rotRad, col: 'rgba(242, 240, 230, 0.62)' }
+  ];
+  for (const c of cardinals) {
+    ctx.fillStyle = c.col;
+    ctx.fillText(c.lbl, cx + cos(c.ang) * cardDist, cy + sin(c.ang) * cardDist);
+  }
+
+  // Dynamic Scale Bar (1 km bar bottom-left inside canvas)
+  const barPx = 1000.0 * pxPerM;
+  const bx0 = 9, by0 = h - 10;
+  ctx.strokeStyle = 'rgba(242, 240, 230, 0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(bx0, by0 - 3); ctx.lineTo(bx0, by0); ctx.lineTo(bx0 + barPx, by0); ctx.lineTo(bx0 + barPx, by0 - 3);
+  ctx.stroke();
+  ctx.font = '600 8px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(242, 240, 230, 0.78)';
+  ctx.fillText('1 KM', bx0 + barPx + 4, by0 - 1);
+
+  // Live Player Marker (square architectural reticle at center)
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(cx - 3, cy - 3, 6, 6);
   ctx.strokeStyle = '#060d0a';
@@ -823,18 +1047,39 @@ function renderLiveMiniMap(nowMs) {
   ctx.strokeRect(cx - 3, cy - 3, 6, 6);
   ctx.restore();
 
-  // Update footer heading & elevation readout
+  // Telemetry Footer Updates: Distinct Heading vs Ground Track, MSL/AGL, Ecoregion, Speed & Waypoint ETA
+  const hdgDeg = ((round(camHdgRad * RAD2DEG) % 360) + 360) % 360;
+  const trkDeg = hasVelocityTrack && velTrackRad !== null ? ((round(velTrackRad * RAD2DEG) % 360) + 360) % 360 : null;
+  if (mmScaleLabelEl) mmScaleLabelEl.textContent = '5 KM';
   if (mmHeadingEl) {
-    const hdgDeg = ((round(hdgRad * RAD2DEG) % 360) + 360) % 360;
-    const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-    const card = dirs[round(hdgDeg / 45) % 8];
-    mmHeadingEl.textContent = `HDG ${String(hdgDeg).padStart(3, '0')}° ${card}`;
+    mmHeadingEl.textContent = trkDeg !== null
+      ? `HDG ${String(hdgDeg).padStart(3, '0')}° · TRK ${String(trkDeg).padStart(3, '0')}°`
+      : `HDG ${String(hdgDeg).padStart(3, '0')}° · STAT`;
   }
   if (mmElevEl) {
-    const a = camState.altMeters;
-    mmElevEl.textContent = abs(a) >= 10000
-      ? `${(a / 1000).toFixed(1)}km`
-      : `${a >= 0 ? '+' : ''}${round(a)}m`;
+    const msl = camState.altMeters;
+    const agl = max(0, msl - max(0, camState.groundH || 0));
+    mmElevEl.textContent = abs(msl) >= 10000
+      ? `MSL ${(msl / 1000).toFixed(1)}km`
+      : `MSL ${msl >= 0 ? '+' : ''}${round(msl)}m · AGL ${round(agl)}m`;
+  }
+  if (mmRegionEl) {
+    mmRegionEl.textContent = biomeLabelAtGeo(camState.latDeg, camState.lonDeg, camState.altMeters);
+  }
+  if (mmSpeedEl) {
+    mmSpeedEl.textContent = formatSpeedSI(groundSpeed);
+  }
+  if (mmWaypointRowEl) {
+    if (activeWaypoint) {
+      mmWaypointRowEl.classList.add('active');
+      const dM = greatCircleDistanceMeters(camState.latDeg, camState.lonDeg, activeWaypoint.latDeg, activeWaypoint.lonDeg);
+      const brg = round(computeBearingDeg(camState.latDeg, camState.lonDeg, activeWaypoint.latDeg, activeWaypoint.lonDeg));
+      const eta = groundSpeed >= 0.5 ? ` · ${formatEtaSI(dM / groundSpeed)}` : '';
+      if (mmWpTargetEl) mmWpTargetEl.textContent = `WP ${String(brg).padStart(3, '0')}° ${activeWaypoint.name.slice(0, 14)}`;
+      if (mmWpDistEl) mmWpDistEl.textContent = `${formatDistanceSI(dM)}${eta}`;
+    } else {
+      mmWaypointRowEl.classList.remove('active');
+    }
   }
 }
 
@@ -972,6 +1217,7 @@ function togglePovMode() {
 
 const FEATURED_SPECIES = [
   'lions', 'tigers', 'gorillas', 'chimpanzees', 'elephants', 'giraffes', 'zebras',
+  'wolves', 'bison', 'rhinos', 'hippos', 'kangaroos',
   'whales', 'orcas', 'sharks', 'mantas', 'turtles',
   'penguins', 'polarBears', 'seals',
   'eagles', 'macaws', 'toucans',
@@ -1003,7 +1249,8 @@ if (speciesGrid) {
 // Samples samplePlanetAtLatLon(latDeg, lonDeg) directly so globe == surface.
 // ============================================================================
 let mapBaseImageData = null;
-let mapViewMode = 'globe';
+let mapViewMode = 'globe'; // 'globe' | 'flat' | 'solar'
+let mapClickMode = 'travel'; // 'travel' | 'waypoint'
 let globeYaw = 0.55;
 let globePitch = 0.22;
 let globeDragging = false;
@@ -1011,6 +1258,7 @@ let globeDragMoved = false;
 let globeLastX = 0;
 let globeLastY = 0;
 let projectedGlobePins = [];
+let projectedSolarPins = [];
 
 function ensureMapBaseImage(ctx, w, h) {
   if (mapBaseImageData && mapBaseImageData.width === w && mapBaseImageData.height === h) return;
@@ -1103,15 +1351,146 @@ function globePxToLatLon(px, py, cx, cy, rad) {
   return [latDeg, lonDeg];
 }
 
+function updateMapRegionInfo() {
+  const ecoEl = $('mapEcoSummary');
+  const spEl = $('mapSpeciesSummary');
+  if (!ecoEl || !spEl) return;
+  samplePlanetAtLatLon(camState.latDeg, camState.lonDeg, _camT, 1);
+  const eco = _camT.ecoregion || classifyEcoregionAt(camState.latDeg, camState.lonDeg, _camT.h, _camT.tempC, _camT.rainfall, _camT.aridity || 0, _camT.glacier || 0);
+  ecoEl.innerHTML = `<strong>Ecoregion:</strong> ${eco.name} · ${eco.realm} · Lithology: ${eco.lithology}`;
+  const cat = getLoadedSpeciesCatalogue();
+  if (cat) {
+    const roster = queryRegionalSpeciesRoster(camState.latDeg, camState.lonDeg, _camT.h, _camT.tempC, _camT.rainfall, _camT.aridity || 0, _camT.glacier || 0, 5);
+    const names = roster.species.map((s) => s.commonName || s.scientificName).slice(0, 3).join(', ');
+    const totalSp = cat.totalAcceptedSpecies || cat.records.length;
+    spEl.textContent = `GBIF Verified: ${totalSp.toLocaleString()} species · Regional: ${names || 'Sparse extreme habitat'}`;
+  } else {
+    spEl.textContent = 'GBIF Verified Catalogue loading…';
+  }
+}
+
+function renderSolarSystemMap(ctx, w, h) {
+  projectedSolarPins = [];
+  ctx.fillStyle = '#04080d';
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const maxR = min(w, h) * 0.44;
+  const maxLog = Math.log10(1.0 + 32.0 * 12.0);
+  const auToPx = (au) => lerp(24, maxR, Math.log10(1.0 + max(0, au) * 12.0) / maxLog);
+
+  // Subtle ecliptic coordinate crosshair & AU reference rings
+  ctx.strokeStyle = 'rgba(92, 200, 242, 0.08)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx, 12); ctx.lineTo(cx, h - 12);
+  ctx.moveTo(12, cy); ctx.lineTo(w - 12, cy);
+  ctx.stroke();
+
+  // Orbital ellipses (logarithmic radial display for simultaneous inner+outer readability)
+  for (let i = 1; i < SOLAR_BODIES.length; i++) {
+    const b = SOLAR_BODIES[i];
+    const rPx = auToPx(b.aAU);
+    ctx.strokeStyle = b.id === solarState.targetBodyId ? 'rgba(92, 200, 242, 0.55)' : 'rgba(242, 240, 230, 0.14)';
+    ctx.lineWidth = b.id === solarState.targetBodyId ? 1.5 : 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rPx, 0, TAU);
+    ctx.stroke();
+  }
+
+  // Sun core glow
+  const sunGlow = ctx.createRadialGradient(cx, cy, 2, cx, cy, 26);
+  sunGlow.addColorStop(0, 'rgba(255, 246, 204, 0.98)');
+  sunGlow.addColorStop(0.35, 'rgba(255, 192, 82, 0.48)');
+  sunGlow.addColorStop(1, 'rgba(255, 160, 48, 0.0)');
+  ctx.fillStyle = sunGlow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 26, 0, TAU);
+  ctx.fill();
+
+  const mapHelioPx = (pos) => {
+    const au = hypot(pos[0], pos[2]) / AU_METERS;
+    const r = au < 1e-4 ? 0 : auToPx(au);
+    const ang = atan2(pos[2], pos[0]);
+    return [cx + cos(ang) * r, cy + sin(ang) * r];
+  };
+
+  ctx.font = '600 10px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < SOLAR_BODIES.length; i++) {
+    const b = SOLAR_BODIES[i];
+    const bp = solarState.positions.get(b.id);
+    const [bx, by] = mapHelioPx(bp);
+    const dotR = b.id === 'sun' ? 9 : b.type === 'gas_giant' ? 6.5 : b.type === 'ice_giant' ? 5.2 : 4.2;
+    projectedSolarPins.push({ body: b, px: bx, py: by, r: max(14, dotR + 8) });
+
+    if (b.ringOuterM) {
+      ctx.strokeStyle = 'rgba(232, 212, 162, 0.75)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.ellipse(bx, by, dotR * 2.1, dotR * 0.72, -0.35, 0, TAU);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = `rgb(${round(b.color[0] * 255)},${round(b.color[1] * 255)},${round(b.color[2] * 255)})`;
+    ctx.beginPath();
+    ctx.arc(bx, by, dotR, 0, TAU);
+    ctx.fill();
+
+    if (b.id === solarState.targetBodyId) {
+      ctx.strokeStyle = '#5cc8f2';
+      ctx.lineWidth = 1.6;
+      ctx.strokeRect(bx - dotR - 4, by - dotR - 4, (dotR + 4) * 2, (dotR + 4) * 2);
+    }
+
+    ctx.fillStyle = b.id === solarState.targetBodyId ? '#5cc8f2' : 'rgba(242, 240, 230, 0.84)';
+    ctx.textAlign = 'left';
+    ctx.fillText(b.name.toUpperCase(), bx + dotR + 6, by);
+  }
+
+  // Spacecraft position + course vector line to target
+  const [sx, sy] = mapHelioPx(solarState.posM);
+  const tgtP = solarState.positions.get(solarState.targetBodyId);
+  if (tgtP) {
+    const [tx, ty] = mapHelioPx(tgtP);
+    ctx.strokeStyle = solarState.autopilotCourse ? '#5cc8f2' : 'rgba(226, 184, 87, 0.55)';
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(tx, ty);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(sx - 4, sy - 4, 8, 8);
+  ctx.strokeStyle = '#5cc8f2';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(sx - 4, sy - 4, 8, 8);
+
+  if ($('solarTelemetry')) {
+    const tgt = SOLAR_BODY_BY_ID[solarState.targetBodyId] || SOLAR_BODY_BY_ID.earth;
+    const sunAu = (solarState.distFromSunM / AU_METERS).toFixed(3);
+    const etaStr = Number.isFinite(solarState.etaSeconds) ? ` · ETA ${formatEtaSI(solarState.etaSeconds)}` : '';
+    $('solarTelemetry').textContent = `SUN ${sunAu} AU · TGT ${tgt.name.toUpperCase()} (${formatDistanceSI(solarState.distToTargetM)})${etaStr}`;
+  }
+}
+
 function renderPlanetaryMap() {
   if (!planetMapCanvas) return;
   const ctx = planetMapCanvas.getContext('2d');
   if (!ctx) return;
   const w = planetMapCanvas.width;
   const h = planetMapCanvas.height;
-  ensureMapBaseImage(ctx, w, h);
 
   projectedGlobePins = [];
+  if (mapViewMode === 'solar') {
+    renderSolarSystemMap(ctx, w, h);
+    return;
+  }
+
+  ensureMapBaseImage(ctx, w, h);
 
   if (mapViewMode === 'globe') {
     const out = ctx.createImageData(w, h);
@@ -1177,7 +1556,7 @@ function renderPlanetaryMap() {
     }
     ctx.putImageData(out, 0, 0);
 
-    // Real spherical graticule (meridians every 30°, parallels every 30°)
+    // Real spherical graticule
     ctx.strokeStyle = 'rgba(125, 211, 252, 0.16)';
     ctx.lineWidth = 1;
     for (let lonDeg = -150; lonDeg <= 180; lonDeg += 30) {
@@ -1205,6 +1584,22 @@ function renderPlanetaryMap() {
       ctx.stroke();
     }
 
+    // Breadcrumb trail on globe
+    if (navTrail.length >= 2) {
+      ctx.strokeStyle = 'rgba(92, 200, 242, 0.85)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < navTrail.length; i++) {
+        const pt = latLonToGlobePoint(navTrail[i].latDeg, navTrail[i].lonDeg, cx, cy, rad);
+        if (pt.vis) {
+          if (!started) { ctx.moveTo(pt.px, pt.py); started = true; }
+          else ctx.lineTo(pt.px, pt.py);
+        } else started = false;
+      }
+      ctx.stroke();
+    }
+
     ctx.font = '600 10px "Inter", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -1224,6 +1619,21 @@ function renderPlanetaryMap() {
       ctx.fillText(String(i + 1).padStart(2, '0'), pt.px, pt.py + 0.5);
     }
 
+    if (activeWaypoint) {
+      const wpPt = latLonToGlobePoint(activeWaypoint.latDeg, activeWaypoint.lonDeg, cx, cy, rad);
+      if (wpPt.vis) {
+        ctx.save();
+        ctx.translate(wpPt.px, wpPt.py);
+        ctx.rotate(PI * 0.25);
+        ctx.fillStyle = '#5cc8f2';
+        ctx.fillRect(-6, -6, 12, 12);
+        ctx.strokeStyle = '#060d0a';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(-6, -6, 12, 12);
+        ctx.restore();
+      }
+    }
+
     const pPt = latLonToGlobePoint(camState.latDeg, camState.lonDeg, cx, cy, rad);
     if (pPt.vis) {
       ctx.fillStyle = '#ffffff';
@@ -1240,7 +1650,6 @@ function renderPlanetaryMap() {
   // --- 2D Equirectangular Planetary Topographic & Bathymetric Map ---
   ctx.putImageData(mapBaseImageData, 0, 0);
 
-  // Graticule grid
   ctx.strokeStyle = 'rgba(125, 211, 252, 0.14)';
   ctx.lineWidth = 1;
   for (let lonDeg = -150; lonDeg <= 150; lonDeg += 30) {
@@ -1250,6 +1659,18 @@ function renderPlanetaryMap() {
   for (let latDeg = -60; latDeg <= 60; latDeg += 30) {
     const y = ((90 - latDeg) / 180) * h;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+
+  if (navTrail.length >= 2) {
+    ctx.strokeStyle = 'rgba(92, 200, 242, 0.85)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < navTrail.length; i++) {
+      const [tx, ty] = latLonToMapPx(navTrail[i].latDeg, navTrail[i].lonDeg, w, h);
+      if (i === 0) ctx.moveTo(tx, ty);
+      else ctx.lineTo(tx, ty);
+    }
+    ctx.stroke();
   }
 
   ctx.font = '600 10px "Inter", system-ui, sans-serif';
@@ -1271,6 +1692,24 @@ function renderPlanetaryMap() {
   }
 
   const [cx, cy] = latLonToMapPx(camState.latDeg, camState.lonDeg, w, h);
+  if (activeWaypoint) {
+    const [wx, wy] = latLonToMapPx(activeWaypoint.latDeg, activeWaypoint.lonDeg, w, h);
+    ctx.strokeStyle = 'rgba(92, 200, 242, 0.72)';
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(wx, wy); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.save();
+    ctx.translate(wx, wy);
+    ctx.rotate(PI * 0.25);
+    ctx.fillStyle = '#5cc8f2';
+    ctx.fillRect(-5, -5, 10, 10);
+    ctx.strokeStyle = '#060d0a';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(-5, -5, 10, 10);
+    ctx.restore();
+  }
+
   ctx.save();
   ctx.translate(cx, cy);
   ctx.rotate(camState.yaw);
@@ -1296,14 +1735,19 @@ function ascendToPlanetaryOrbit() {
   disembodyAnimal();
   flyActive = false;
   autoExplore = false;
+  if (solarState.mode === 'interplanetary') {
+    // Engage guided continuous return flight back to Earth
+    solarState.targetBodyId = 'earth';
+    solarState.autopilotCourse = true;
+    enterWilderness();
+    return;
+  }
   if (camState.altMeters < 180000) {
-    // Initiate smooth continuous ascent through Troposphere -> Stratosphere -> Mesosphere -> Thermosphere -> LEO
     camState.autopilot = 'ascent';
-    camState.velU = max(camState.velU, 140);
+    camState.velU = max(camState.velU, 85);
   } else {
-    // Already in Orbital Space -> initiate smooth continuous atmospheric re-entry right over current (lat, lon)
     camState.autopilot = 'descent';
-    camState.velU = min(camState.velU, -320);
+    camState.velU = min(camState.velU, -260);
   }
   enterWilderness();
 }
@@ -1313,6 +1757,9 @@ function teleportToLatLon(latDeg, lonDeg, poseIdx = -1) {
   flyActive = false;
   autoExplore = false;
   camState.autopilot = null;
+  solarState.mode = 'earth_geodetic';
+  solarState.autopilotCourse = false;
+  solarInterplanetaryBlend = 0.0;
   if (poseIdx >= 0 && BIOME_CATALOG[poseIdx]) {
     applyBiomePose(poseIdx);
   } else {
@@ -1338,11 +1785,11 @@ function teleportToLatLon(latDeg, lonDeg, poseIdx = -1) {
       it.y = it.prevY = grp.domain === 'water' ? min(-1.5, _camT.h + 2.2) : grp.domain === 'air' ? max(16, _camT.h + 12) : max(0.05, _camT.h);
     }
   }
+  recordNavTrailPoint(camState.latDeg, camState.lonDeg);
   if (locEl) locEl.textContent = biomeLabelAtGeo(camState.latDeg, camState.lonDeg, camState.altMeters);
   enterWilderness();
 }
 
-// Backwards-compatible alias for pose index / local meters
 function teleportToWorldCoord(xOrLat, zOrLon, poseIdx = -1) {
   if (poseIdx >= 0 && BIOME_CATALOG[poseIdx]) {
     teleportToLatLon(BIOME_CATALOG[poseIdx].latDeg, BIOME_CATALOG[poseIdx].lonDeg, poseIdx);
@@ -1352,7 +1799,6 @@ function teleportToWorldCoord(xOrLat, zOrLon, poseIdx = -1) {
   teleportToLatLon(ll.latDeg, ll.lonDeg, -1);
 }
 
-// Populate Map Pin Quick-Bar & Canvas Events
 if (mapPinBar) {
   mapPinBar.innerHTML = '';
   BIOME_CATALOG.forEach((b, idx) => {
@@ -1360,7 +1806,14 @@ if (mapPinBar) {
     btn.type = 'button';
     btn.className = 'loc-btn';
     btn.textContent = `${String(idx + 1).padStart(2, '0')} ${b.name}`;
-    btn.onclick = () => teleportToLatLon(b.latDeg, b.lonDeg, idx);
+    btn.onclick = () => {
+      if (mapClickMode === 'waypoint') {
+        setWaypoint(b.latDeg, b.lonDeg, b.name);
+        renderPlanetaryMap();
+      } else {
+        teleportToLatLon(b.latDeg, b.lonDeg, idx);
+      }
+    };
     mapPinBar.appendChild(btn);
   });
 }
@@ -1381,6 +1834,30 @@ if (planetMapCanvas) {
     const rect = planetMapCanvas.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * planetMapCanvas.width;
     const py = ((e.clientY - rect.top) / rect.height) * planetMapCanvas.height;
+
+    if (mapViewMode === 'solar') {
+      let nearBody = null;
+      for (let i = 0; i < projectedSolarPins.length; i++) {
+        const p = projectedSolarPins[i];
+        if (hypot(px - p.px, py - p.py) <= p.r) {
+          nearBody = p.body;
+          break;
+        }
+      }
+      if (mapTooltip) {
+        if (!nearBody) {
+          mapTooltip.style.display = 'none';
+          return;
+        }
+        const bp = solarState.positions.get(nearBody.id);
+        const dM = max(0, hypot(bp[0] - solarState.posM[0], bp[1] - solarState.posM[1], bp[2] - solarState.posM[2]) - nearBody.radiusM);
+        mapTooltip.style.display = 'block';
+        mapTooltip.style.left = clamp(e.clientX - rect.left + 14, 8, rect.width - 265) + 'px';
+        mapTooltip.style.top = clamp(e.clientY - rect.top + 14, 8, rect.height - 105) + 'px';
+        mapTooltip.innerHTML = `<strong style="color:#fde047">${nearBody.name}</strong><br><span>Orbit: ${nearBody.aAU.toFixed(3)} AU · Radius: ${(nearBody.radiusM / 1000).toLocaleString()} km · Dist: ${formatDistanceSI(dM)}</span><br><span style="color:#93c5fd">${nearBody.desc}</span>`;
+      }
+      return;
+    }
 
     if (mapViewMode === 'globe' && globeDragging) {
       const dx = e.clientX - globeLastX;
@@ -1419,11 +1896,12 @@ if (planetMapCanvas) {
       mapTooltip.style.display = 'block';
       mapTooltip.style.left = clamp(e.clientX - rect.left + 14, 8, rect.width - 265) + 'px';
       mapTooltip.style.top = clamp(e.clientY - rect.top + 14, 8, rect.height - 105) + 'px';
+      const actionVerb = mapClickMode === 'waypoint' ? 'Click to set GPS waypoint' : 'Click to travel';
       if (nearPin) {
         const distKm = greatCircleDistanceMeters(camState.latDeg, camState.lonDeg, nearPin.latDeg, nearPin.lonDeg) * 0.001;
         const latS = `${abs(nearPin.latDeg).toFixed(1)}°${nearPin.latDeg >= 0 ? 'N' : 'S'}`;
         const lonS = `${abs(nearPin.lonDeg).toFixed(1)}°${nearPin.lonDeg >= 0 ? 'E' : 'W'}`;
-        mapTooltip.innerHTML = `<strong style="color:#fde047">${nearPin.id + 1}. ${nearPin.name}</strong><br><span>${nearPin.continent} · ${latS} ${lonS} · ${round(distKm).toLocaleString()} km away</span><br><span style="color:#93c5fd">Fauna: ${nearPin.species}</span>`;
+        mapTooltip.innerHTML = `<strong style="color:#fde047">${nearPin.id + 1}. ${nearPin.name}</strong><br><span>${nearPin.continent} · ${latS} ${lonS} · ${round(distKm).toLocaleString()} km away</span><br><span style="color:#93c5fd">Fauna: ${nearPin.species} · ${actionVerb}</span>`;
       } else if (geoCoord) {
         const [latDeg, lonDeg] = geoCoord;
         samplePlanetAtLatLon(latDeg, lonDeg, _camT, 1);
@@ -1432,7 +1910,7 @@ if (planetMapCanvas) {
         const bName = biomeLabelAtGeo(latDeg, lonDeg, _camT.h < -0.5 ? _camT.h * 0.5 : _camT.h + 2.0);
         const latS = `${abs(latDeg).toFixed(1)}°${latDeg >= 0 ? 'N' : 'S'}`;
         const lonS = `${abs(lonDeg).toFixed(1)}°${lonDeg >= 0 ? 'E' : 'W'}`;
-        mapTooltip.innerHTML = `<strong style="color:#fde047">${bName}</strong><br><span>${latS} ${lonS} · Elev ${elStr} · ${round(distKm).toLocaleString()} km away</span><br><span style="color:#86efac">Click to travel · Drag to rotate Earth</span>`;
+        mapTooltip.innerHTML = `<strong style="color:#fde047">${bName}</strong><br><span>${latS} ${lonS} · Elev ${elStr} · ${round(distKm).toLocaleString()} km away</span><br><span style="color:#86efac">${actionVerb} · Drag globe to rotate</span>`;
       }
     }
   });
@@ -1447,32 +1925,126 @@ if (planetMapCanvas) {
     const rect = planetMapCanvas.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * planetMapCanvas.width;
     const py = ((e.clientY - rect.top) / rect.height) * planetMapCanvas.height;
+
+    if (mapViewMode === 'solar') {
+      for (let i = 0; i < projectedSolarPins.length; i++) {
+        const p = projectedSolarPins[i];
+        if (hypot(px - p.px, py - p.py) <= p.r) {
+          solarState.targetBodyId = p.body.id;
+          if ($('solarTargetSel')) $('solarTargetSel').value = p.body.id;
+          renderPlanetaryMap();
+          return;
+        }
+      }
+      return;
+    }
+
     for (let i = 0; i < projectedGlobePins.length; i++) {
       const p = projectedGlobePins[i];
       if (p.vis && hypot(px - p.px, py - p.py) < 16) {
-        teleportToLatLon(p.biome.latDeg, p.biome.lonDeg, p.idx);
+        if (mapClickMode === 'waypoint') {
+          setWaypoint(p.biome.latDeg, p.biome.lonDeg, p.biome.name);
+          renderPlanetaryMap();
+        } else {
+          teleportToLatLon(p.biome.latDeg, p.biome.lonDeg, p.idx);
+        }
         return;
       }
     }
+    let gc = null;
     if (mapViewMode === 'globe') {
       const w = planetMapCanvas.width, h = planetMapCanvas.height;
-      const gc = globePxToLatLon(px, py, w * 0.5, h * 0.5, min(w, h) * 0.43);
-      if (gc) teleportToLatLon(gc[0], gc[1], -1);
+      gc = globePxToLatLon(px, py, w * 0.5, h * 0.5, min(w, h) * 0.43);
     } else {
-      const [latDeg, lonDeg] = mapPxToLatLon(px, py, planetMapCanvas.width, planetMapCanvas.height);
-      teleportToLatLon(latDeg, lonDeg, -1);
+      gc = mapPxToLatLon(px, py, planetMapCanvas.width, planetMapCanvas.height);
+    }
+    if (gc) {
+      if (mapClickMode === 'waypoint') {
+        setWaypoint(gc[0], gc[1]);
+        renderPlanetaryMap();
+      } else {
+        teleportToLatLon(gc[0], gc[1], -1);
+      }
     }
   });
 }
 
 function setMapViewMode(mode) {
   mapViewMode = mode;
-  if ($('mapModeGlobeBtn')) $('mapModeGlobeBtn').style.borderColor = mode === 'globe' ? 'rgba(56, 189, 248, 0.85)' : '';
-  if ($('mapModeFlatBtn')) $('mapModeFlatBtn').style.borderColor = mode === 'flat' ? 'rgba(56, 189, 248, 0.85)' : '';
+  if ($('mapModeGlobeBtn')) $('mapModeGlobeBtn').classList.toggle('active', mode === 'globe');
+  if ($('mapModeFlatBtn')) $('mapModeFlatBtn').classList.toggle('active', mode === 'flat');
+  if ($('mapModeSolarBtn')) $('mapModeSolarBtn').classList.toggle('active', mode === 'solar');
+  if ($('solarControlsBar')) $('solarControlsBar').classList.toggle('open', mode === 'solar');
+  if ($('mapPinBar')) $('mapPinBar').style.display = mode === 'solar' ? 'none' : '';
   renderPlanetaryMap();
 }
 if ($('mapModeGlobeBtn')) $('mapModeGlobeBtn').onclick = () => setMapViewMode('globe');
 if ($('mapModeFlatBtn')) $('mapModeFlatBtn').onclick = () => setMapViewMode('flat');
+if ($('mapModeSolarBtn')) $('mapModeSolarBtn').onclick = () => setMapViewMode('solar');
+if ($('mapClickModeBtn')) {
+  $('mapClickModeBtn').onclick = () => {
+    mapClickMode = mapClickMode === 'travel' ? 'waypoint' : 'travel';
+    $('mapClickModeBtn').textContent = mapClickMode === 'waypoint' ? 'Click: Waypoint' : 'Click: Travel';
+    $('mapClickModeBtn').classList.toggle('active', mapClickMode === 'waypoint');
+  };
+}
+if ($('clearWaypointBtn')) {
+  $('clearWaypointBtn').onclick = () => {
+    clearWaypoint();
+    renderPlanetaryMap();
+  };
+}
+if ($('solarTargetSel')) {
+  $('solarTargetSel').onchange = (e) => {
+    solarState.targetBodyId = e.target.value;
+    renderPlanetaryMap();
+  };
+}
+if ($('solarGuideBtn')) {
+  $('solarGuideBtn').onclick = () => {
+    if (solarState.autopilotCourse) {
+      solarState.autopilotCourse = false;
+      $('solarGuideBtn').textContent = 'Engage Course Guidance';
+      $('solarGuideBtn').classList.remove('active');
+    } else {
+      disembodyAnimal();
+      flyActive = false;
+      autoExplore = false;
+      camState.autopilot = null;
+      if (solarState.mode !== 'interplanetary') {
+        // Begin continuous outward heliocentric flight from current Earth position (NO teleport!)
+        const launchAlt = max(camState.altMeters, EARTH_ORBIT_HANDOFF_ALT + 5000.0);
+        if (camState.altMeters < EARTH_ORBIT_HANDOFF_ALT) {
+          camState.altMeters = launchAlt;
+        }
+        syncSolarFromEarthCam(solarState, camState.latRad, camState.lonRad, camState.altMeters);
+        solarState.mode = 'interplanetary';
+      }
+      solarState.autopilotCourse = true;
+      $('solarGuideBtn').textContent = 'Disengage Guidance';
+      $('solarGuideBtn').classList.add('active');
+      enterWilderness();
+    }
+  };
+}
+if ($('solarThrustRange')) {
+  $('solarThrustRange').oninput = (e) => {
+    const v = parseFloat(e.target.value) || 4.0;
+    solarState.propulsionScale = v;
+    speedMult = v;
+    if ($('solarThrustVal')) $('solarThrustVal').textContent = v.toFixed(1);
+  };
+}
+if ($('solarTimeWarpRange')) {
+  $('solarTimeWarpRange').oninput = (e) => {
+    const expVal = parseFloat(e.target.value) || 0;
+    const warp = expVal <= 0.05 ? 1.0 : pow(10, expVal);
+    solarState.timeAccel = warp;
+    if ($('solarTimeWarpVal')) {
+      $('solarTimeWarpVal').textContent = warp >= 1e6 ? `${(warp / 1e6).toFixed(1)}Mx` : warp >= 1e3 ? `${(warp / 1e3).toFixed(0)}kx` : `${round(warp)}x`;
+    }
+  };
+}
 if ($('mapOrbitBtn')) $('mapOrbitBtn').onclick = () => ascendToPlanetaryOrbit();
 if ($('orbitBtn')) $('orbitBtn').onclick = () => ascendToPlanetaryOrbit();
 
@@ -1483,6 +2055,7 @@ function toggleMapModal(forceState) {
     if (embodimentModal) embodimentModal.classList.remove('open');
     if (settingsModal) settingsModal.classList.remove('open');
     document.exitPointerLock?.();
+    updateMapRegionInfo();
     renderPlanetaryMap();
     mapModal.classList.add('open');
   } else {
@@ -1564,6 +2137,8 @@ function syncSettingsUI() {
   setTxt('setWaterQualityVal', `${round(settings.waterQuality * 100)}%`);
 
   setChk('setShowHud', settings.showHud);
+  setChk('setShowMiniMap', settings.showMiniMap !== false);
+  setVal('setMiniMapMode', settings.miniMapMode || 'north-up');
   setChk('setShowCoords', settings.showCoordinates);
   setChk('setShowTelemetry', settings.showTelemetry);
   setVal('setFov', settings.fov);
@@ -1659,12 +2234,20 @@ const bindSettingCheck = (id, key) => {
 };
 bindSettingCheck('setAutoQuality', 'autoQuality');
 bindSettingCheck('setShowHud', 'showHud');
+bindSettingCheck('setShowMiniMap', 'showMiniMap');
 bindSettingCheck('setShowCoords', 'showCoordinates');
 bindSettingCheck('setShowTelemetry', 'showTelemetry');
 bindSettingCheck('setInvertY', 'invertY');
 bindSettingCheck('setAutoRecenter', 'autoRecenter');
 bindSettingCheck('setHazardAvoid', 'hazardAvoidance');
 
+if ($('setMiniMapMode')) {
+  $('setMiniMapMode').onchange = (e) => {
+    settings.miniMapMode = e.target.value === 'track-up' ? 'track-up' : 'north-up';
+    if (mmModeBtn) mmModeBtn.textContent = settings.miniMapMode === 'track-up' ? 'TRK-UP' : 'N-UP';
+    applySettings();
+  };
+}
 if ($('setDefaultPov')) {
   $('setDefaultPov').onchange = (e) => {
     settings.defaultPov = parseInt(e.target.value, 10) === 1 ? 1 : 0;
@@ -1722,6 +2305,8 @@ window.__terraPrimordia = {
   world,
   planetQuadtree,
   camState,
+  solarState,
+  navTrail,
   settings,
   BIOME_CATALOG,
   POSES,
@@ -1729,6 +2314,8 @@ window.__terraPrimordia = {
   inhabitAnimal,
   disembodyAnimal,
   togglePovMode,
+  setWaypoint,
+  clearWaypoint,
   teleportToLatLon,
   teleportToWorldCoord,
   ascendToPlanetaryOrbit,
@@ -1737,7 +2324,7 @@ window.__terraPrimordia = {
   toggleEmbodimentModal,
   toggleSettingsModal,
   getCameraPos: () => [F[CX], F[CY], F[CZ]],
-  getGeoPos: () => ({ latDeg: camState.latDeg, lonDeg: camState.lonDeg, altMeters: camState.altMeters, layer: camState.layer, stage: camState.stage })
+  getGeoPos: () => ({ latDeg: camState.latDeg, lonDeg: camState.lonDeg, altMeters: camState.altMeters, layer: camState.layer, stage: camState.stage, solarMode: solarState.mode })
 };
 window.__realism = window.__terraPrimordia;
 
@@ -2045,6 +2632,13 @@ const pBuf = device.createBuffer({
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
 });
 
+const SB_FLOATS = 112;
+const SB = new Float32Array(SB_FLOATS);
+const sBuf = device.createBuffer({
+  size: SB.byteLength,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+});
+
 // Genuine 6-Face Cube-Sphere Quadtree GPU Pool (bounded VRAM, deterministic slot reuse)
 const TILE_VERT_STRIDE_BYTES = TILE_FLOATS_PER_VERT * 4; // 48 bytes
 const TILE_BYTES = TILE_TOTAL_VERTS * TILE_VERT_STRIDE_BYTES; // 357 * 48 = 17,136 bytes
@@ -2133,14 +2727,16 @@ await say('Compiling WGSL Cube-Sphere planetary, ocean caustic & IK wildlife sha
 const bglFrame = device.createBindGroupLayout({
   entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-    { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
+    { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+    { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
   ]
 });
 const bgFrame = device.createBindGroup({
   layout: bglFrame,
   entries: [
     { binding: 0, resource: { buffer: uBuf } },
-    { binding: 1, resource: { buffer: pBuf } }
+    { binding: 1, resource: { buffer: pBuf } },
+    { binding: 2, resource: { buffer: sBuf } }
   ]
 });
 
@@ -2581,13 +3177,58 @@ function updateUniforms(dt) {
   geodeticToEcef(camState.latRad, camState.lonRad, camState.altMeters, camEcef);
   localENUFrame(camState.latRad, camState.lonRad, enuFrame);
   const planetR = oblateRadiusAtSinLat(sin(camState.latRad));
-  const atmoRho = atmosphericDensityAt(camState.altMeters);
+  const atmoRho = solarState.mode === 'interplanetary' ? 0.0 : atmosphericDensityAt(camState.altMeters);
 
   PB[0]  = enuFrame.east[0];  PB[1]  = enuFrame.east[1];  PB[2]  = enuFrame.east[2];  PB[3]  = camState.altMeters;
   PB[4]  = enuFrame.up[0];    PB[5]  = enuFrame.up[1];    PB[6]  = enuFrame.up[2];    PB[7]  = planetR;
   PB[8]  = enuFrame.south[0]; PB[9]  = enuFrame.south[1]; PB[10] = enuFrame.south[2]; PB[11] = camState.reentryHeat || 0.0;
   PB[12] = camState.latRad;   PB[13] = camState.lonRad;   PB[14] = atmoRho;           PB[15] = activeRegionBiomeId;
   Q.writeBuffer(pBuf, 0, PB);
+
+  // SolarU (112 floats): Real physical-scale heliocentric Solar System projected to ENU
+  if (solarState.mode !== 'interplanetary') {
+    updateSolarEphemeris(solarState, dt);
+    syncSolarFromEarthCam(solarState, camState.latRad, camState.lonRad, camState.altMeters);
+    solarInterplanetaryBlend = 0.0;
+  } else {
+    const earthCenter = solarState.positions.get('earth');
+    const distEarthSurf = max(0, hypot(
+      solarState.posM[0] - earthCenter[0],
+      solarState.posM[1] - earthCenter[1],
+      solarState.posM[2] - earthCenter[2]
+    ) - PLANET_RADIUS);
+    solarInterplanetaryBlend = smoothstep(8.0e6, 2.2e7, distEarthSurf);
+  }
+  const projBodies = projectSolarBodiesToENU(solarState, enuFrame);
+  const sunDirENU = projBodies[0]?.dirENU || [sx, sy, sz];
+  for (let i = 0; i < 9; i++) {
+    const pb = projBodies[i];
+    if (!pb) continue;
+    const b = pb.body;
+    const o4 = i * 4;
+    SB[o4]     = pb.dirENU[0];
+    SB[o4 + 1] = pb.dirENU[1];
+    SB[o4 + 2] = pb.dirENU[2];
+    SB[o4 + 3] = pb.angRad;
+
+    const visMag = b.id === 'sun' ? -26.7 : clamp(5.0 * Math.log10(max(1e6, pb.distM) / max(1e5, b.radiusM)) - 12.0, -4.5, 6.0);
+    const ringScale = b.ringOuterM ? (b.ringOuterM / b.radiusM) : 0.0;
+    SB[36 + o4]     = i;
+    SB[36 + o4 + 1] = visMag;
+    SB[36 + o4 + 2] = ringScale;
+    SB[36 + o4 + 3] = (b.axialTiltDeg || 0) * DEG2RAD;
+
+    const atmoW = b.atmoHeightM > 0 ? clamp(b.atmoHeightM / max(1e5, b.radiusM * 0.08), 0.15, 1.0) : 0.0;
+    SB[72 + o4]     = b.color[0];
+    SB[72 + o4 + 1] = b.color[1];
+    SB[72 + o4 + 2] = b.color[2];
+    SB[72 + o4 + 3] = atmoW;
+  }
+  SB[108] = sunDirENU[0];
+  SB[109] = sunDirENU[1];
+  SB[110] = sunDirENU[2];
+  SB[111] = solarInterplanetaryBlend;
+  Q.writeBuffer(sBuf, 0, SB);
 
   // Genuine 6-Face Cube-Sphere Quadtree Tile Selection & Bounded GPU Pool Upload
   const sseThreshold = 15.5 / clamp(settings.viewDistance || 1.0, 0.5, 2.0);
@@ -2679,7 +3320,7 @@ function render(dt) {
 
     sp.setPipeline(pipeVegShadow);
     sp.setBindGroup(0, bgFrame);
-    for (const idx of [0, 1, 2, 3, 7, 9]) {
+    for (const idx of [0, 1, 2, 3, 7, 9, 10, 11, 12, 14, 15, 16, 17]) {
       const vg = vegGpu[idx];
       if (vg && vg.instCount > 0) {
         sp.setVertexBuffer(0, vg.vBuf);
@@ -2725,15 +3366,18 @@ function render(dt) {
   mp.setBindGroup(0, bgFrame);
   mp.draw(3);
 
-  // Unified Cube-Sphere Quadtree Planet Terrain
-  mp.setPipeline(pipeTer);
-  mp.setBindGroup(0, bgFrame);
-  mp.setBindGroup(1, bgEnv);
-  mp.setVertexBuffer(0, terTilePoolBuf);
-  mp.setVertexBuffer(1, terTileInstBuf);
-  mp.setIndexBuffer(terTileIBuf, 'uint32');
-  for (let i = 0; i < activeTiles.length; i++) {
-    mp.drawIndexed(terTileIdxCount, 1, 0, activeTiles[i].gpuSlot * TILE_TOTAL_VERTS, i);
+  // Unified Cube-Sphere Quadtree Planet Terrain (handed off smoothly to SolarU Earth sphere > 22,000 km)
+  const renderCubeSphereEarth = solarInterplanetaryBlend < 0.96;
+  if (renderCubeSphereEarth) {
+    mp.setPipeline(pipeTer);
+    mp.setBindGroup(0, bgFrame);
+    mp.setBindGroup(1, bgEnv);
+    mp.setVertexBuffer(0, terTilePoolBuf);
+    mp.setVertexBuffer(1, terTileInstBuf);
+    mp.setIndexBuffer(terTileIBuf, 'uint32');
+    for (let i = 0; i < activeTiles.length; i++) {
+      mp.drawIndexed(terTileIdxCount, 1, 0, activeTiles[i].gpuSlot * TILE_TOTAL_VERTS, i);
+    }
   }
 
   if (nearSurface) {
@@ -2776,14 +3420,16 @@ function render(dt) {
   }
 
   // Unified Spherical Planetary Ocean (Same Cube-Sphere Tiles, Surface Triangles Only, All Altitudes!)
-  mp.setPipeline(pipeWat);
-  mp.setBindGroup(0, bgFrame);
-  mp.setVertexBuffer(0, terTilePoolBuf);
-  mp.setVertexBuffer(1, terTileInstBuf);
-  mp.setIndexBuffer(terTileIBuf, 'uint32');
-  for (let i = 0; i < activeTiles.length; i++) {
-    if (activeTiles[i].hasOcean) {
-      mp.drawIndexed(terTileSurfIdxCount, 1, 0, activeTiles[i].gpuSlot * TILE_TOTAL_VERTS, i);
+  if (renderCubeSphereEarth) {
+    mp.setPipeline(pipeWat);
+    mp.setBindGroup(0, bgFrame);
+    mp.setVertexBuffer(0, terTilePoolBuf);
+    mp.setVertexBuffer(1, terTileInstBuf);
+    mp.setIndexBuffer(terTileIBuf, 'uint32');
+    for (let i = 0; i < activeTiles.length; i++) {
+      if (activeTiles[i].hasOcean) {
+        mp.drawIndexed(terTileSurfIdxCount, 1, 0, activeTiles[i].gpuSlot * TILE_TOTAL_VERTS, i);
+      }
     }
   }
 
@@ -3070,87 +3716,154 @@ function frame(now) {
       camState.yaw = normAngle(camState.yaw + dyw + (kr - kl) * 0.35 * (settings.turnSensitivity || 1.0) * dt);
       camState.pitch = clamp(camState.pitch - dpt, -1.52, 1.52);
 
-      // Continuous Autopilot Ascent / Re-Entry (press [G] or click Orbit button)
-      if (camState.autopilot === 'ascent') {
-        const targetAlt = 450000; // 450 km LEO
-        const remain = targetAlt - camState.altMeters;
-        if (remain <= 800) {
-          camState.autopilot = null;
-          camState.velU *= 0.25;
-        } else {
-          const wantClimb = clamp(max(160, camState.altMeters * 1.15), 160, 140000);
-          reentryInput.thrustE = 0;
-          reentryInput.thrustN = 0;
-          reentryInput.thrustU = (wantClimb - camState.velU) * 3.8;
-          reentryInput.gravityScale = 0.0;
-          reentryInput.allowUnderwater = true;
-          // Gently tilt view down toward the curving planet as we ascend
-          camState.pitch = lerp(camState.pitch, -0.58, dt * 0.65);
-        }
-      } else if (camState.autopilot === 'descent') {
-        const agl = camState.altMeters - (camState.groundH || 0);
-        if (agl <= 42) {
-          camState.autopilot = null;
-          camState.velU = 0;
-        } else {
-          const wantDesc = -clamp(max(18, agl * 0.42), 18, 95000);
-          reentryInput.thrustE = 0;
-          reentryInput.thrustN = 0;
-          reentryInput.thrustU = (wantDesc - camState.velU) * 2.8;
-          reentryInput.gravityScale = 1.0;
-          reentryInput.allowUnderwater = false;
-          camState.pitch = lerp(camState.pitch, agl > 8000 ? -0.72 : -0.18, dt * 0.85);
-        }
-      } else {
-        // Manual real-meter altitude-adaptive flight control (1x..10x planetary warp)
-        const alt = max(0, camState.altMeters);
-        const altScale = 1.0 + max(0, alt - 35) * 0.018 + pow(max(0, alt - 500), 1.08) * 0.024;
-        const warpMult = speedMult <= 3.0 ? speedMult : 3.0 * pow(speedMult / 3.0, 2.45);
-        const targetSpd = (kShift ? 42.0 : kCtrl ? 3.5 : 14.0) * altScale * warpMult;
-
-        const mf = kf - kb;
-        const mr = kr - kl;
-        const mu = ku - kd;
+      // Continuous Heliocentric Interplanetary Space Flight (unified SI meters)
+      if (solarState.mode === 'interplanetary') {
         const cp = cos(camState.pitch), sp = sin(camState.pitch);
         const sy = sin(camState.yaw), cy = cos(camState.yaw);
-        // ENU horizontal basis: East = +X, North = -Z
-        const fwdE = sy * cp, fwdN = cy * cp, fwdU = sp;
-        const rgtE = cy, rgtN = -sy;
+        localENUFrame(camState.latRad, camState.lonRad, enuFrame);
+        const E = enuFrame.east, Uv = enuFrame.up, S = enuFrame.south;
+        // Camera forward in ENU is (sy*cp, sp, -cy*cp) -> convert to world ECEF/Helio
+        const fwdE = sy * cp, fwdU = sp, fwdS = -cy * cp;
+        const rgtE = cy, rgtU = 0, rgtS = sy;
+        const camFwdW = [
+          E[0] * fwdE + Uv[0] * fwdU + S[0] * fwdS,
+          E[1] * fwdE + Uv[1] * fwdU + S[1] * fwdS,
+          E[2] * fwdE + Uv[2] * fwdU + S[2] * fwdS
+        ];
+        const camRgtW = [
+          E[0] * rgtE + Uv[0] * rgtU + S[0] * rgtS,
+          E[1] * rgtE + Uv[1] * rgtU + S[1] * rgtS,
+          E[2] * rgtE + Uv[2] * rgtU + S[2] * rgtS
+        ];
+        stepInterplanetaryFlight(solarState, camFwdW, camRgtW, {
+          fwd: kf - kb,
+          right: kr - kl,
+          up: ku - kd,
+          speedMult: max(speedMult, solarState.propulsionScale || 1.0),
+          boost: Boolean(kShift),
+          slow: Boolean(kCtrl)
+        }, dt);
 
-        const wantE = (fwdE * mf + rgtE * mr) * targetSpd;
-        const wantN = (fwdN * mf + rgtN * mr) * targetSpd;
-        const wantU = (fwdU * mf + mu) * targetSpd;
+        // Update Earth-relative geodetic preview continuously; seamlessly hand back to Earth re-entry below 400 km!
+        const earthGeo = solarToEarthGeodetic(solarState, {});
+        camState.latDeg = earthGeo.latDeg;
+        camState.lonDeg = earthGeo.lonDeg;
+        camState.latRad = earthGeo.latRad;
+        camState.lonRad = earthGeo.lonRad;
+        camState.altMeters = max(1000.0, earthGeo.altMeters);
+        camState.layer = atmosphericLayerAt(camState.altMeters);
+        camState.stage = reentryStageAt(camState.altMeters, solarState.speedMps, 0);
+        F[YAW] = camState.yaw;
+        F[PIT] = camState.pitch;
+        F[CY] = camState.altMeters;
 
-        const resp = 5.4;
-        reentryInput.thrustE = (wantE - camState.velE) * resp;
-        reentryInput.thrustN = (wantN - camState.velN) * resp;
-        reentryInput.thrustU = (wantU - camState.velU) * resp;
-        // Engage gentle natural gravity during high-altitude freefall when not pressing vertical thrust
-        reentryInput.gravityScale = (alt > 4000 && abs(mu) < 0.01 && abs(mf) < 0.01 && camState.velU < -25) ? 0.5 : 0.0;
-        reentryInput.allowUnderwater = true;
-      }
+        if (earthGeo.altMeters < EARTH_ORBIT_HANDOFF_ALT - 20000.0) {
+          solarState.mode = 'earth_geodetic';
+          solarState.autopilotCourse = false;
+          solarInterplanetaryBlend = 0.0;
+          camState.velE = 0; camState.velN = 0; camState.velU = -180;
+          rebaseRegionalOrigin(camState.latDeg, camState.lonDeg, -1);
+          forceSyncTiles = true;
+          if ($('solarGuideBtn')) {
+            $('solarGuideBtn').textContent = 'Engage Course Guidance';
+            $('solarGuideBtn').classList.remove('active');
+          }
+        }
+      } else {
+        // Continuous Autopilot Ascent / Re-Entry (press [G] or click Orbit button)
+        if (camState.autopilot === 'ascent') {
+          const targetAlt = 450000; // 450 km LEO
+          const remain = targetAlt - camState.altMeters;
+          if (remain <= 800) {
+            camState.autopilot = null;
+            camState.velU *= 0.25;
+          } else {
+            // Smooth multi-stage atmospheric ascent pacing so cloud decks, stratosphere & curvature unfold gradually
+            const alt = max(0, camState.altMeters);
+            const wantClimb = alt < 12000
+              ? lerp(65, 320, smoothstep(0, 12000, alt))
+              : alt < 50000
+                ? lerp(320, 1800, smoothstep(12000, 50000, alt))
+                : alt < 110000
+                  ? lerp(1800, 6800, smoothstep(50000, 110000, alt))
+                  : lerp(6800, 38000, smoothstep(110000, 420000, alt));
+            reentryInput.thrustE = 0;
+            reentryInput.thrustN = 0;
+            reentryInput.thrustU = (wantClimb - camState.velU) * 3.2;
+            reentryInput.gravityScale = 0.0;
+            reentryInput.allowUnderwater = true;
+            camState.pitch = lerp(camState.pitch, -0.52, dt * 0.45);
+          }
+        } else if (camState.autopilot === 'descent') {
+          const agl = camState.altMeters - (camState.groundH || 0);
+          if (agl <= 42) {
+            camState.autopilot = null;
+            camState.velU = 0;
+          } else {
+            const wantDesc = -clamp(max(18, agl * 0.36), 18, 65000);
+            reentryInput.thrustE = 0;
+            reentryInput.thrustN = 0;
+            reentryInput.thrustU = (wantDesc - camState.velU) * 2.8;
+            reentryInput.gravityScale = 1.0;
+            reentryInput.allowUnderwater = false;
+            camState.pitch = lerp(camState.pitch, agl > 8000 ? -0.68 : -0.18, dt * 0.85);
+          }
+        } else {
+          // Manual real-meter altitude-adaptive flight control (1x..10x planetary warp)
+          const alt = max(0, camState.altMeters);
+          const altScale = 1.0 + max(0, alt - 35) * 0.018 + pow(max(0, alt - 500), 1.08) * 0.024;
+          const warpMult = speedMult <= 3.0 ? speedMult : 3.0 * pow(speedMult / 3.0, 2.45);
+          const targetSpd = (kShift ? 42.0 : kCtrl ? 3.5 : 14.0) * altScale * warpMult;
 
-      reentryInput.clearance = camState.altMeters < 0.2 ? 0.45 : 0.72;
-      stepAtmosphericReentry(camState, reentryInput, dt);
-      camState.altMeters = clamp(camState.altMeters, -11000, 2.5e7);
-      syncLocalFromCamState();
+          const mf = kf - kb;
+          const mr = kr - kl;
+          const mu = ku - kd;
+          const cp = cos(camState.pitch), sp = sin(camState.pitch);
+          const sy = sin(camState.yaw), cy = cos(camState.yaw);
+          const fwdE = sy * cp, fwdN = cy * cp, fwdU = sp;
+          const rgtE = cy, rgtN = -sy;
 
-      // Solid flora/tree/rock collision ONLY when near surface (< 160m AGL)
-      if (camState.altMeters < (camState.groundH || 0) + 160) {
-        world.resolveWorldCollision(F[CX], F[CY], F[CZ], 0.65, camState.velE, -camState.velN, _camCol, reentryInput.clearance);
-        if (_camCol.hit) {
-          F[CX] = _camCol.x;
-          F[CZ] = _camCol.z;
-          camState.velE = _camCol.vx;
-          camState.velN = -_camCol.vz;
-          syncCamStateFromLocal();
+          const wantE = (fwdE * mf + rgtE * mr) * targetSpd;
+          const wantN = (fwdN * mf + rgtN * mr) * targetSpd;
+          const wantU = (fwdU * mf + mu) * targetSpd;
+
+          const resp = 5.4;
+          reentryInput.thrustE = (wantE - camState.velE) * resp;
+          reentryInput.thrustN = (wantN - camState.velN) * resp;
+          reentryInput.thrustU = (wantU - camState.velU) * resp;
+          reentryInput.gravityScale = (alt > 4000 && abs(mu) < 0.01 && abs(mf) < 0.01 && camState.velU < -25) ? 0.5 : 0.0;
+          reentryInput.allowUnderwater = true;
+        }
+
+        reentryInput.clearance = camState.altMeters < 0.2 ? 0.45 : 0.72;
+        stepAtmosphericReentry(camState, reentryInput, dt);
+        camState.altMeters = clamp(camState.altMeters, -11000, 2.5e7);
+        syncLocalFromCamState();
+
+        // Continuous seamless handoff into heliocentric interplanetary space when ascending beyond 460 km
+        if (!camState.autopilot && camState.altMeters > 460000 && camState.velU > 200) {
+          syncSolarFromEarthCam(solarState, camState.latRad, camState.lonRad, camState.altMeters);
+          solarState.mode = 'interplanetary';
+        }
+
+        // Solid flora/tree/rock collision ONLY when near surface (< 160m AGL)
+        if (camState.altMeters < (camState.groundH || 0) + 160) {
+          world.resolveWorldCollision(F[CX], F[CY], F[CZ], 0.65, camState.velE, -camState.velN, _camCol, reentryInput.clearance);
+          if (_camCol.hit) {
+            F[CX] = _camCol.x;
+            F[CZ] = _camCol.z;
+            camState.velE = _camCol.vx;
+            camState.velN = -_camCol.vz;
+            syncCamStateFromLocal();
+          }
+        }
+
+        // Floating-origin rebasing: seamlessly stream Earth-anchored flora/wildlife with ZERO pop-in
+        if (camState.altMeters < 2200 && hypot(F[CX], F[CZ]) > 155) {
+          rebaseRegionalOrigin(camState.latDeg, camState.lonDeg, -1, true);
         }
       }
-
-      // Floating-origin rebasing: seamlessly stream Earth-anchored flora/wildlife with ZERO pop-in
-      if (camState.altMeters < 2200 && hypot(F[CX], F[CZ]) > 155) {
-        rebaseRegionalOrigin(camState.latDeg, camState.lonDeg, -1, true);
-      }
+      recordNavTrailPoint(camState.latDeg, camState.lonDeg);
     }
   }
 
@@ -3180,28 +3893,43 @@ function frame(now) {
   if (dtr > hudMax) hudMax = dtr;
   hudTextTimer += dtr;
   if (hudTextTimer > 360) {
-    if (locEl) locEl.textContent = biomeLabelAtGeo(camState.latDeg, camState.lonDeg, camState.altMeters);
+    if (locEl) {
+      locEl.textContent = solarState.mode === 'interplanetary'
+        ? `Solar System · Near ${(SOLAR_BODY_BY_ID[solarState.activeBodyId]?.name || 'Deep Space')}`
+        : biomeLabelAtGeo(camState.latDeg, camState.lonDeg, camState.altMeters);
+    }
     if (weatherEl) {
       const exploreTag = autoExplore ? ' · Auto' : camState.autopilot ? ` · ${camState.autopilot === 'ascent' ? 'Ascending' : 'Re-Entry'}` : '';
-      weatherEl.textContent = `${WEATHER_NAMES[activeWeatherIdx]} · ${TOD_NAMES[todIdx]} · ${focalMm}mm${exploreTag}`;
+      weatherEl.textContent = solarState.mode === 'interplanetary'
+        ? `Heliocentric Space · ${formatSpeedSI(solarState.speedMps)} · Sun ${(solarState.distFromSunM / AU_METERS).toFixed(3)} AU`
+        : `${WEATHER_NAMES[activeWeatherIdx]} · ${TOD_NAMES[todIdx]} · ${focalMm}mm${exploreTag}`;
     }
     if (settings.showCoordinates && layerLabelEl && coordLabelEl) {
-      const layer = camState.layer || atmosphericLayerAt(camState.altMeters);
-      const latDir = camState.latDeg >= 0 ? 'N' : 'S';
-      const lonDir = camState.lonDeg >= 0 ? 'E' : 'W';
-      const altM = camState.altMeters;
-      const altTxt = abs(altM) >= 10000
-        ? `${(altM / 1000).toFixed(0)} km`
-        : abs(altM) >= 1000
-          ? `${(altM / 1000).toFixed(2)} km`
-          : `${altM >= 0 ? '+' : ''}${altM.toFixed(1)} m`;
-      layerLabelEl.textContent = layer.code;
-      coordLabelEl.textContent = `${abs(camState.latDeg).toFixed(2)}°${latDir} ${abs(camState.lonDeg).toFixed(2)}°${lonDir} · ${altTxt}`;
+      if (solarState.mode === 'interplanetary') {
+        const tgt = SOLAR_BODY_BY_ID[solarState.targetBodyId] || SOLAR_BODY_BY_ID.earth;
+        layerLabelEl.textContent = 'SOL';
+        coordLabelEl.textContent = `SUN ${(solarState.distFromSunM / AU_METERS).toFixed(3)} AU · ${tgt.name.toUpperCase()} ${formatDistanceSI(solarState.distToTargetM)}`;
+      } else {
+        const layer = camState.layer || atmosphericLayerAt(camState.altMeters);
+        const latDir = camState.latDeg >= 0 ? 'N' : 'S';
+        const lonDir = camState.lonDeg >= 0 ? 'E' : 'W';
+        const altM = camState.altMeters;
+        const altTxt = abs(altM) >= 10000
+          ? `${(altM / 1000).toFixed(0)} km`
+          : abs(altM) >= 1000
+            ? `${(altM / 1000).toFixed(2)} km`
+            : `${altM >= 0 ? '+' : ''}${altM.toFixed(1)} m`;
+        layerLabelEl.textContent = layer.code;
+        coordLabelEl.textContent = `${abs(camState.latDeg).toFixed(2)}°${latDir} ${abs(camState.lonDeg).toFixed(2)}°${lonDir} · ${altTxt}`;
+      }
     }
     if (embodiedState.active && embodiedState.groupIdx >= 0) {
       updateEmbodimentUI();
     } else if (embodyLabelEl) {
-      if (camState.altMeters >= 12000) {
+      if (solarState.mode === 'interplanetary') {
+        const tgt = SOLAR_BODY_BY_ID[solarState.targetBodyId] || SOLAR_BODY_BY_ID.earth;
+        embodyLabelEl.textContent = solarState.approachWarning || `Interplanetary Flight · Target ${tgt.name} (${formatEtaSI(solarState.etaSeconds)})`;
+      } else if (camState.altMeters >= 12000) {
         const stg = camState.stage?.label || camState.layer?.name || 'Orbital Flight';
         const sec = spaceSectorAt(camState.latDeg, camState.lonDeg, camState.altMeters);
         embodyLabelEl.textContent = `${stg} · ${sec.name}`;
@@ -3219,9 +3947,11 @@ function frame(now) {
       }
     }
     if (survivalLabelEl && world.getActiveSurvivalEvent) {
-      survivalLabelEl.textContent = camState.reentryHeat > 0.08
-        ? `Atmospheric Re-Entry Plasma · Heat ${round(camState.reentryHeat * 100)}% · ${camState.stage?.label || ''}`
-        : world.getActiveSurvivalEvent();
+      survivalLabelEl.textContent = solarState.approachWarning
+        ? solarState.approachWarning
+        : camState.reentryHeat > 0.08
+          ? `Atmospheric Re-Entry Plasma · Heat ${round(camState.reentryHeat * 100)}% · ${camState.stage?.label || ''}`
+          : world.getActiveSurvivalEvent();
     }
     if (showHud && infoEl) {
       const fps = round((hudFrames * 1000) / max(1, hudT));
@@ -3255,6 +3985,22 @@ setTimeout(() => keep('verdantLoad', ''), 12000);
 
 const autoStart = new URLSearchParams(location.search).get('autostart') === '1';
 setMenu(!autoStart);
+
+// Non-blocking background loaders for verified GBIF species dataset & high-res Natural Earth atlas
+ensureSpeciesCatalogueLoaded('assets/species-catalogue.json').then(() => {
+  if (mapModal?.classList.contains('open')) updateMapRegionInfo();
+});
+if (typeof fetch === 'function') {
+  fetch('assets/earth-geo.bin')
+    .then((r) => (r.ok ? r.arrayBuffer() : null))
+    .then((buf) => {
+      if (buf && upgradeEarthGeoAtlas(buf)) {
+        mapBaseImageData = null;
+        mmCacheLat = 999;
+      }
+    })
+    .catch(() => {});
+}
 
 requestAnimationFrame((t) => {
   F[LAST] = t;

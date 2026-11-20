@@ -1,0 +1,968 @@
+# REALISM — GLOBAL WORLD REALISM, NAVIGATION, BIODIVERSITY, ATMOSPHERIC TRANSITIONS, SOLAR-SYSTEM EXPLORATION & BRANDING
+
+## PROJECT
+
+Repository: `https://github.com/Jaystarbliss-studios/REALISM`
+
+You are working on the existing REALISM project. This is an advanced WebGPU-based planetary exploration and wildlife simulation.
+
+Your task is to substantially improve the realism, geographical diversity, ecological accuracy, navigation experience, atmospheric transitions and interplanetary exploration capabilities of the existing application.
+
+**This is an extension and refinement of the existing engine, not a rebuild.**
+
+Before changing anything, inspect the existing implementation and understand how its systems connect. Preserve the existing architecture wherever practical.
+
+Do not remove working functionality, replace sophisticated systems with simplified approximations, or create a separate disconnected demonstration that does not integrate with the actual application.
+
+Do not commit, push, deploy or modify production infrastructure. Work within the existing repository and report the completed changes.
+
+---
+
+# PHASE 1 — UNDERSTAND AND PRESERVE THE EXISTING ENGINE
+
+Start by auditing these important files:
+
+- `source/src/main.js`
+- `source/src/biomes.js`
+- `source/src/world.js`
+- `source/src/math.js`
+- `source/src/shaders.js`
+- `source/src/quality.js`
+- `source/template.html`
+- `source/build.mjs`
+- `package.json`
+- `source/tests/world.test.mjs`
+
+The current project already contains important functionality that must be preserved:
+
+- WGS-84 Earth geometry and oblate spheroid calculations.
+- Six-face cube-sphere quadtree terrain streaming.
+- Geographic coordinate transformations and floating-origin rebasing.
+- Procedural terrain, oceans and bathymetry.
+- Eighteen curated biome destinations.
+- Regional wildlife cohorts and procedural vegetation.
+- Atmospheric layers and re-entry state management.
+- WebGPU terrain, vegetation, wildlife, atmosphere and post-processing shaders.
+- Interactive REALISM welcome wordmark.
+- Settings, quality tiers, wildlife embodiment and existing navigation features.
+
+Do not discard these systems when introducing the improvements below.
+
+The objective is to make the existing systems substantially more geographically and scientifically convincing.
+
+# PHASE 2 — FIX AND UPGRADE THE GPS-STYLE NAVIGATION INSTRUMENT
+
+## A. Fix the existing minimap visibility bug first
+
+There is a confirmed inconsistency between the settings and main engine.
+
+In `main.js`, the application currently initialises:
+
+`let cleanUi = !settings.hudVisible;`
+
+However, `quality.js` defines `showHud` in `DEFAULT_SETTINGS`, not `hudVisible`.
+
+This can make the application start in clean-UI mode even when the user has never enabled it. The clean-UI CSS rules and `renderLiveMiniMap()` visibility conditions then hide the minimap.
+
+Fix this properly.
+
+Requirements:
+
+1. Establish one consistent settings model.
+2. Ensure the default navigation map is visible when gameplay begins.
+3. Preserve compatibility with previously saved settings.
+4. Do not allow an undefined legacy setting to hide the interface.
+5. Make navigation-map visibility independently configurable.
+6. Ensure the minimap is not accidentally hidden by unrelated settings.
+7. Preserve intentional photo mode and menu behaviour.
+
+Do not merely remove the CSS visibility rule without fixing the underlying settings logic.
+
+## B. Turn the existing map into a proper navigation instrument
+
+The existing 5 km topographic/bathymetric minimap is a useful starting point. Improve it rather than replacing it unnecessarily.
+
+It should feel like a proper aircraft, exploration vehicle or GPS navigation display.
+
+It must show:
+
+- The player's exact simulated latitude and longitude.
+- Current geographic region or biome.
+- Current altitude.
+- Ground elevation and, where useful, altitude above ground.
+- Camera heading.
+- Actual direction of travel.
+- Ground speed.
+- A clearly visible player-position marker.
+- A compass indicator.
+- A readable map scale.
+- Terrain and bathymetric contours.
+- Nearby geographic landmarks.
+- The player's recent movement trail.
+
+Distinguish camera heading from actual direction of movement. When moving, calculate the ground-track direction from the player's velocity; when stationary, use the camera heading.
+
+Provide:
+
+- North-up and track-up viewing modes.
+- Clearly marked range rings.
+- A coordinate readout that updates as the player moves.
+- A waypoint capability.
+- Destination distance and bearing.
+- Estimated arrival time when there is sufficient movement to calculate a meaningful estimate.
+
+The existing 5 km map should remain useful, but the user should be able to expand it into a larger interactive map.
+
+Clicking or tapping the map should open the expanded navigation view.
+
+The expanded view should make it easy to understand the player's position relative to the surrounding region and any selected destination.
+
+Design the interface carefully. Avoid overcrowding it with unnecessary numbers, cards and decorations.
+
+**Important:** This is an in-game geographic navigation instrument. Do not request the user's actual device GPS location or describe the game coordinates as real-world device positioning.
+
+## C. Interface and responsiveness
+
+Ensure the navigation instrument:
+
+- Is visible by default during normal gameplay.
+- Is not obscured by other HUD components.
+- Remains readable on desktop and mobile.
+- Scales appropriately with viewport size and device pixel ratio.
+- Does not consume excessive GPU or CPU resources.
+- Works when switching between first-person and third-person viewpoints.
+- Works during flight and after atmospheric ascent.
+- Works when the player changes biome or geographic region.
+
+Test it with fresh settings, previously saved settings, HUD visibility changes, clean UI mode, photo mode and browser resizing.
+
+# PHASE 3 — MAKE EARTH'S GEOGRAPHY AND LANDSCAPES MUCH MORE REALISTIC
+
+The present Earth model has proper planetary geometry, but its continental and regional geography is still largely procedural.
+
+I want REALISM to feel like an exploration of a genuinely diverse planet, not a collection of a few repeatedly generated environments.
+
+## A. Use actual geographical reference data
+
+Research and use reputable geographical data sources.
+
+Investigate:
+
+- Natural Earth geographical datasets.
+- GEBCO global elevation and bathymetry.
+- Copernicus or other appropriately licensed digital elevation data.
+- Recognised biome and ecoregion classifications.
+- Reliable regional climate and habitat information.
+
+Use appropriate source data to improve:
+
+- Continental outlines.
+- Coastlines.
+- Major islands.
+- Mountain systems.
+- River systems.
+- Lakes.
+- Deserts.
+- Wetlands.
+- Forest distributions.
+- Savannas and grasslands.
+- Tundra.
+- Polar environments.
+- Ocean shelves.
+- Abyssal plains and trenches.
+
+Do not assume that WGS-84 geometry alone makes the terrain geographically accurate.
+
+The existing procedural approach may remain useful for detail and areas without suitable source data, but it should complement real geographical reference data rather than substitute for it.
+
+Respect all dataset licensing, attribution and redistribution requirements.
+
+Do not bundle unnecessarily enormous raw datasets into the application. Preprocess them into appropriately compressed, tiled and streamed assets compatible with the current terrain engine.
+
+## B. Build a genuine regional landscape system
+
+Create a comprehensive landscape and ecosystem catalogue.
+
+The catalogue should represent at least 100 distinct geographically grounded regional landscape and ecosystem profiles, with additional procedural combinations producing substantial variation.
+
+Each profile should contain relevant information such as:
+
+- Geographic distribution.
+- Climate.
+- Elevation range.
+- Terrain characteristics.
+- Soil or surface characteristics.
+- Vegetation types.
+- Water availability.
+- Typical animal communities.
+- Seasonal variation where supported by the data.
+
+Examples of environments to represent include:
+
+- Equatorial rainforest.
+- Tropical dry forest.
+- Mangrove forest.
+- Temperate rainforest.
+- Boreal forest and taiga.
+- Mediterranean woodland.
+- Tropical savanna.
+- Temperate grassland.
+- Prairie and steppe.
+- Hot desert.
+- Cold desert.
+- Alpine terrain.
+- Mountain forests.
+- Marshes and freshwater wetlands.
+- Arctic tundra.
+- Antarctic ice environments.
+- Coral reefs.
+- Seagrass meadows.
+- Kelp forests.
+- Continental shelves.
+- Deep ocean.
+- Abyssal trenches.
+
+These are examples, not the complete list.
+
+Two regions should not look identical simply because they have been assigned the same broad biome label.
+
+Use regional climate, terrain, vegetation and geological context to determine what the environment actually looks like.
+
+Keep the existing curated destinations as special destinations, but allow the broader geographic world to become much more diverse.
+
+# PHASE 4 — BUILD A VERIFIED CATALOGUE OF AT LEAST 5,000 ANIMAL SPECIES
+
+This is one of the most important changes.
+
+The current wildlife system has a limited collection of animal groups, and some visually similar animals share generic mesh generators. This contributes to repetitive wildlife encounters.
+
+I want a much broader and more geographically authentic wildlife ecosystem.
+
+## A. Research actual animal biodiversity
+
+Use credible biodiversity sources, particularly:
+
+- Catalogue of Life.
+- GBIF taxonomic data.
+- GBIF occurrence and distribution records.
+- Other reputable biodiversity datasets where their licensing allows integration.
+
+Create a local, versioned dataset containing **at least 5,000 distinct accepted animal species records**.
+
+The catalogue must not be filled by inventing animal names, duplicating species, multiplying synonyms or adding meaningless placeholder entries.
+
+Each record should contain as much reliable information as available, including:
+
+- Accepted scientific name.
+- Common or vernacular name where available.
+- Taxonomic identifier.
+- Kingdom, phylum, class, order and family.
+- Genus and species.
+- Synonyms stored separately from accepted names.
+- Native geographic distribution.
+- Known occurrence regions.
+- Suitable habitat.
+- Terrestrial, freshwater, marine, aerial or amphibious classification.
+- Elevation or depth range where available.
+- Diet or trophic classification where available.
+- Size information where available.
+- Behavioural or social information where available.
+- Source dataset and record provenance.
+- Applicable data licence and attribution.
+
+Do not invent missing ecological information.
+
+Where distribution or habitat information is unavailable, explicitly mark it as unknown.
+
+A species whose geographic range cannot be established must not automatically be spawned throughout the world.
+
+## B. Geographic accuracy is essential
+
+Species must appear in environments where they naturally occur.
+
+For example:
+
+- African lions should not randomly appear in Amazonian rainforest environments.
+- Jaguars should not be treated as generic African savanna animals.
+- Polar bears should not appear in tropical wetlands.
+- African elephants and Asian elephants should be represented as different species with appropriate geographic ranges.
+- Marine species must have suitable water conditions.
+- Freshwater species must not be spawned in deep saltwater environments.
+- Mountain species must respect suitable elevation and climate ranges.
+- Migratory animals should have appropriate geographic and seasonal behaviour.
+
+Use actual occurrence evidence and geographic range information to establish regional spawning eligibility.
+
+Replace or substantially extend the current simple `nativeBiomes`-only selection with a geographically aware habitat and distribution system.
+
+The system should consider:
+
+- Latitude and longitude.
+- Ecoregion.
+- Elevation.
+- Temperature and climate.
+- Terrain type.
+- Water type.
+- Water depth.
+- Seasonal conditions.
+- Time of day.
+- Species-specific geographic range.
+
+## C. Do not spawn all 5,000 species simultaneously
+
+The 5,000-plus records form the comprehensive species database.
+
+The runtime should select only the appropriate species for the player's current geographic location and surrounding environment.
+
+Use efficient regional streaming, spatial partitioning, instancing and LOD.
+
+Do not reduce performance by loading thousands of active high-detail animal models simultaneously.
+
+However, a species must be genuinely integrated into the simulation, not merely present as an unused name in a JSON file.
+
+Integration means:
+
+1. It exists in the verified species catalogue.
+2. It has geographic and habitat eligibility information where evidence exists.
+3. It can be selected for appropriate regional encounters.
+4. It has appropriate visual characteristics.
+5. It has suitable movement and behavioural attributes.
+6. It respects the simulation's spawning and performance limits.
+
+## D. Improve animal visual diversity
+
+Do not solve this by simply recolouring the same animal mesh.
+
+Create a better species-specific modelling system.
+
+Use differentiated anatomical families and model generators.
+
+For example:
+
+- Felines.
+- Canids.
+- Primates.
+- Bovids.
+- Cervids.
+- Elephants.
+- Rhinoceroses.
+- Hippopotamuses.
+- Mustelids.
+- Bears.
+- Reptiles.
+- Amphibians.
+- Crocodilians.
+- Rodents.
+- Bats.
+- Birds of prey.
+- Water birds.
+- Songbirds.
+- Wading birds.
+- Marine mammals.
+- Fish.
+- Sharks.
+- Rays.
+- Crustaceans.
+- Insects.
+- Arachnids.
+- Molluscs.
+
+These are broad examples. Expand the system as needed.
+
+Species should differ in:
+
+- Body proportions.
+- Head and skull shape.
+- Limb proportions.
+- Tail structure.
+- Fur, skin, feathers or scales.
+- Colour patterns.
+- Horns, antlers, tusks, beaks and other anatomical features.
+- Size.
+- Gait.
+- Movement style.
+- Behaviour.
+
+Prioritise high-quality, distinctive models for a substantial group of flagship species. Use taxonomy-aware procedural anatomy for additional species rather than relying on identical generic models.
+
+Aim for meaningful anatomical variation, not cosmetic recolouring.
+
+## E. Improve animal behaviour
+
+Animals should not behave like randomly moving decorations.
+
+Implement appropriate behavioural differences:
+
+- Herding.
+- Flocking.
+- Pack movement.
+- Territorial behaviour.
+- Grazing.
+- Browsing.
+- Hunting.
+- Hiding.
+- Nesting.
+- Resting.
+- Swimming.
+- Diving.
+- Flying.
+- Perching.
+- Migration.
+- Predator avoidance.
+- Social interaction.
+
+Use appropriate group sizes, movement speeds and behavioural patterns.
+
+Population density should vary by habitat and species. Avoid placing the same number of animals in every region.
+
+# PHASE 5 — ELIMINATE REPETITIVE VEGETATION, ROCKS AND ENVIRONMENTAL PROPS
+
+The current vegetation and environmental model collection is too limited to support the level of realism expected.
+
+Improve the vegetation and geological generation systems.
+
+## A. Vegetation
+
+Introduce a broader region-aware vegetation catalogue.
+
+Represent distinct forms such as:
+
+- Tropical canopy trees.
+- Emergent rainforest trees.
+- Palm species.
+- Mangroves.
+- Conifers.
+- Broadleaf deciduous trees.
+- Needleleaf trees.
+- Acacia species.
+- Bamboo.
+- Shrubs.
+- Grasses.
+- Ferns.
+- Mosses.
+- Vines.
+- Ground cover.
+- Desert succulents.
+- Alpine plants.
+- Wetland plants.
+- Aquatic vegetation.
+- Coral formations.
+- Kelp and seagrass.
+
+Vegetation selection must depend on the regional ecosystem.
+
+Do not generate the same trees with only random rotation and scale differences.
+
+Introduce meaningful variations in branching, canopy shape, trunk form, foliage density, colour, height, growth patterns and species proportions.
+
+## B. Rocks and geological formations
+
+The same few rock arrangements must not keep appearing in different locations.
+
+Create a more varied geological generation system.
+
+Represent different geological types, including:
+
+- Granite.
+- Basalt.
+- Sandstone.
+- Limestone.
+- Shale.
+- Volcanic rock.
+- Karst formations.
+- Glacial erratics.
+- Coastal rock formations.
+- Coral limestone.
+- Desert weathered formations.
+
+Generate different sizes, orientations, fractures, erosion patterns, strata, clusters and formations.
+
+Rock types should be appropriate to the geological and environmental context.
+
+Do not create the illusion of variety merely by scaling and rotating one identical boulder.
+
+## C. Natural distribution
+
+Avoid obvious procedural grids and repeated arrangements.
+
+Use spatially distributed placement methods such as Poisson-disc or blue-noise sampling where appropriate.
+
+Use deterministic location-based seeds so that:
+
+- A location remains visually consistent when revisited.
+- Different locations produce different arrangements.
+- Adjacent regions do not repeat the same arrangements.
+- Terrain, vegetation and wildlife respond to geographic context.
+
+Introduce ecological succession and density variation.
+
+Preserve the existing vegetation LOD and performance architecture, improving it rather than removing it.
+
+# PHASE 6 — IMPROVE ATMOSPHERIC ASCENT AND SPACE TRANSITIONS
+
+The current ascent sequence moves from the atmosphere into a star-filled space environment too quickly.
+
+I want the journey from the Earth's surface into space to feel gradual, physically convincing and visually beautiful.
+
+## A. Atmospheric layers
+
+Respect the existing atmospheric layer definitions and improve the visual transitions across them.
+
+The transition should communicate:
+
+- Troposphere.
+- Stratosphere.
+- Mesosphere.
+- Thermosphere.
+- Exosphere.
+- Deep space.
+
+Clouds should not immediately give way to a fully visible starfield.
+
+The sky should gradually change as atmospheric density and scattering decrease.
+
+Cloud layers should remain visually coherent during ascent and should not disappear in an abrupt transition.
+
+Improve atmospheric haze, horizon curvature, blue scattering, cloud depth, sunlight and the changing colour of the sky.
+
+## B. Slow down the visual transition
+
+The current ascent experience feels too fast.
+
+Improve the experience by making the visual changes occur progressively.
+
+Do not merely slow down the player's movement while leaving the same abrupt shader transitions.
+
+The player should clearly experience the changing atmosphere.
+
+The lower atmosphere should retain its appropriate sky brightness and cloud appearance.
+
+The upper atmosphere should gradually reveal the darkness of space.
+
+## C. Stars must be subtle and believable
+
+There are currently too many visible stars.
+
+Reduce the density and brightness considerably.
+
+Avoid large numbers of bright, equally prominent points.
+
+Use a more realistic distribution:
+
+- A sparse field of visible stars.
+- A small number of brighter stars.
+- Very subtle distant stars.
+- Extremely restrained twinkling.
+- No exaggerated glow or oversized star effects.
+- No artificial galaxy or nebula overpowering the view.
+
+Star visibility must transition gradually with altitude and atmospheric conditions.
+
+Stars should not appear clearly through dense clouds or dominate a bright daytime sky.
+
+In orbital daylight, account for sunlight, atmospheric glare and the brightness of the Earth.
+
+The final space background should feel vast, dark, restrained and believable.
+
+Review the existing starfield and cosmic rendering logic in `source/src/shaders.js`.
+
+# PHASE 7 — IMPLEMENT ACTUAL SOLAR-SYSTEM EXPLORATION
+
+This is a major expansion.
+
+At present, the shader can display decorative cosmic bodies, but this is not an actual solar-system simulation.
+
+I want the player to be able to travel from Earth to the other planets and to approach the Sun.
+
+Do not implement this as a decorative sky background or a series of disconnected planet images.
+
+Create a real heliocentric exploration system integrated with the existing engine.
+
+## A. Real planetary bodies
+
+Implement:
+
+1. The Sun.
+2. Mercury.
+3. Venus.
+4. Earth.
+5. Mars.
+6. Jupiter.
+7. Saturn.
+8. Uranus.
+9. Neptune.
+
+Dwarf planets and important moons may be added as further expansion, but complete the primary solar-system experience first.
+
+Use reputable NASA/JPL reference data for:
+
+- Planetary radii and diameters.
+- Average orbital distances.
+- Orbital periods.
+- Orbital eccentricities.
+- Orbital inclinations.
+- Rotation.
+- Appropriate atmospheric and surface properties.
+
+Use a consistent unit system.
+
+The 1 astronomical unit reference should be based on approximately 149.6 million kilometres.
+
+Do not arbitrarily make planets larger or bring them closer merely to make the scene visually attractive.
+
+## B. Maintain actual physical scale
+
+This requirement is critical.
+
+Planet diameters and distances between planetary bodies must be represented using the same underlying scale.
+
+For example, Jupiter must genuinely be much larger than Earth, while Neptune must be extremely far from the Sun.
+
+Do not use an inconsistent scale where planetary diameters are realistic but their orbital distances are compressed without disclosure.
+
+Because the actual solar system has enormous distances and extreme differences in object sizes, implement:
+
+- Camera-relative rendering.
+- Floating-origin rebasing.
+- Double-precision CPU coordinate calculations.
+- High/low precision GPU coordinate handling where necessary.
+- Hierarchical LOD.
+- Efficient planetary surface streaming.
+- Precision-safe orbital and flight calculations.
+
+The planets may be difficult to see at their true physical scale from a distant viewpoint. Solve this through camera zoom, navigational markers and viewing controls, not by secretly changing their dimensions.
+
+## C. Actual travel between planets
+
+The player should be able to leave Earth and travel through interplanetary space.
+
+Preserve the transition from the existing Earth atmosphere into orbit.
+
+When the player leaves Earth, the local geodetic position must transition into the heliocentric coordinate system continuously.
+
+The player should be able to:
+
+- Ascend from Earth.
+- Reach orbit.
+- Depart Earth.
+- Travel toward another planetary body.
+- View the distance to the destination.
+- View current travel speed.
+- View estimated journey time.
+- Adjust propulsion or travel acceleration.
+- Use assisted navigation and course guidance.
+- Approach and enter the destination's orbital region.
+- Explore the destination's environment.
+
+Do not use instant teleportation as the only way to reach other planets.
+
+Implement continuous travel and meaningful distance calculations.
+
+Because realistic interplanetary distances make ordinary travel extremely long, provide an optional time-acceleration or warp mechanism.
+
+Clearly distinguish travel speed from simulated time acceleration.
+
+Warp must not silently change planetary sizes or the underlying physical distances.
+
+## D. Planet-specific environments
+
+Each planetary body should have appropriate visual and environmental characteristics.
+
+Examples:
+
+**Mercury:** heavily cratered rocky surface, extreme solar proximity and high-temperature conditions.
+
+**Venus:** dense atmosphere, thick cloud systems, high temperatures and pressure.
+
+**Earth:** preserve and transition into the existing detailed Earth simulation.
+
+**Mars:** red rocky landscapes, craters, mountains, dust and a thin atmosphere.
+
+**Jupiter:** enormous gas giant, atmospheric bands, storms and the Great Red Spot.
+
+**Saturn:** gas giant atmosphere and physically scaled ring system.
+
+**Uranus:** pale cyan atmosphere and distinctive axial orientation.
+
+**Neptune:** deep blue atmosphere, storms and distant cold environment.
+
+**Sun:** a proper luminous star with an appropriate physical size and intense radiative environment.
+
+Allow the player to approach the Sun, but do not create a fictional solid surface to land on.
+
+Likewise, do not pretend that Jupiter, Saturn, Uranus and Neptune have ordinary solid planetary surfaces. Provide orbital exploration and appropriate atmospheric entry boundaries instead.
+
+## E. Solar-system navigation interface
+
+Add a clean navigation interface that allows the player to understand:
+
+- Current planetary body.
+- Current coordinates.
+- Distance from the Sun.
+- Distance to the selected destination.
+- Current speed.
+- Estimated travel duration.
+- Destination direction.
+- Orbital path.
+- Nearby planetary bodies.
+
+The solar-system view should be connected to the existing navigation experience.
+
+Keep the interface readable and consistent with the existing REALISM design language.
+
+# PHASE 8 — SOCIAL PREVIEW IMAGE, FAVICON AND SITE METADATA
+
+Improve the website's presentation when its URL is shared.
+
+## A. Open Graph preview image
+
+Create a proper social-sharing preview image for REALISM.
+
+Requirements:
+
+- 1200 × 630 pixels.
+- High-quality, realistic planetary presentation.
+- A visually compelling view of Earth from low orbit or space.
+- Clear atmospheric limb and authentic planetary appearance.
+- Carefully restrained starfield.
+- Professional cinematic composition.
+- Appropriate REALISM branding.
+- Readable text if text is included.
+- Good contrast and visual clarity at small preview sizes.
+
+Prefer a genuine project screenshot or a carefully composed visual based on the actual project. Do not create a preview that promises visual features that are not present in the application.
+
+The image must be an actual file in the repository, not merely a reference to an asset that does not exist.
+
+A suitable location would be:
+
+`public/assets/realism-social-preview.png`
+
+Adjust the path if the existing asset organisation makes another location more appropriate.
+
+## B. Open Graph and social metadata
+
+Update `source/template.html`.
+
+Provide:
+
+- Page title.
+- Meta description.
+- Canonical URL.
+- `og:title`.
+- `og:description`.
+- `og:type`.
+- `og:url`.
+- `og:image`.
+- `og:image:secure_url`.
+- `og:image:type`.
+- `og:image:width`.
+- `og:image:height`.
+- `og:image:alt`.
+- Twitter/X `summary_large_image` metadata.
+
+The image URL must be an absolute HTTPS URL accessible to social-sharing crawlers.
+
+First inspect the repository and deployment configuration for the actual public site URL.
+
+Do not invent a production domain.
+
+If no stable domain can be established, introduce a clearly documented `REALISM_PUBLIC_URL` configuration value and report that it must be configured before production link previews can be verified.
+
+## C. Favicon
+
+Create a very simple pixelated uppercase **R** as the REALISM favicon.
+
+It should be:
+
+- Minimal.
+- Recognisable at small sizes.
+- Pixel-art inspired.
+- Consistent with the existing REALISM visual identity.
+- Clean and legible against its background.
+
+Create an SVG favicon and, where appropriate, raster sizes for browser and mobile icon support.
+
+Use the correct favicon metadata in the HTML template.
+
+Do not use an unrelated emoji or a complicated miniature version of the full REALISM wordmark.
+
+## D. Build pipeline
+
+The existing custom build process concatenates the source JavaScript and HTML into a standalone `index.html`.
+
+The current package build process copies the generated HTML into `dist`.
+
+Ensure all new public assets are included in both relevant deployment outputs.
+
+Update `source/build.mjs` and the build process as necessary so the favicon and social preview image are not left behind in the source directory.
+
+Verify the final output actually contains the required assets and that their public paths resolve correctly.
+
+# PHASE 9 — WELCOME SCREEN FOOTER AND PROJECT ATTRIBUTION
+
+The existing welcome screen already contains the interactive pixel-matrix REALISM wordmark and Enter Planet button.
+
+Preserve their appearance and behaviour.
+
+Add a refined footer at the bottom of the welcome screen.
+
+The footer should contain the following information:
+
+**Line 1:**
+
+A project challenge for the BuildBuds community by Jaystarbliss Studios
+
+Make `BuildBuds` a clickable link to:
+
+`https://buildbuds.vercel.app`
+
+Make `Jaystarbliss Studios` a clickable link to:
+
+`https://jaystarblissstudios.com`
+
+**Line 2:**
+
+Copyright Jaystarbliss Studios © 2026
+
+Make `Jaystarbliss Studios` a clickable link to:
+
+`https://jaystarblissstudios.com`
+
+Requirements:
+
+- Keep the footer at the bottom of the welcome screen.
+- Do not allow it to overlap the REALISM wordmark or Enter Planet button.
+- Use refined, restrained typography.
+- Maintain the current dark visual identity.
+- Make the footer readable without distracting from the main welcome screen.
+- Ensure it adapts properly to desktop, tablet and mobile.
+- Use accessible link contrast and visible keyboard focus states.
+- Keep the footer outside the active gameplay HUD unless there is an existing design reason to reuse it.
+
+The links should open appropriately and safely.
+
+# PHASE 10 — PERFORMANCE, TESTING AND QUALITY CONTROL
+
+These changes introduce substantial additional data and rendering work. Performance must remain a first-class concern.
+
+Preserve and improve:
+
+- GPU instancing.
+- Regional streaming.
+- Spatial culling.
+- Terrain LOD.
+- Vegetation LOD.
+- Wildlife LOD.
+- Texture and geometry caching.
+- Floating-origin precision.
+- Adaptive quality settings.
+- Mobile compatibility.
+
+The species catalogue must not make the initial application load excessively large.
+
+Load regional ecological data only when required.
+
+Preprocess large geographical datasets into appropriate tiles and compressed formats.
+
+Do not place 5,000 active animated animal models in the scene.
+
+## Automated testing
+
+Extend the existing test suite.
+
+At minimum, test:
+
+1. Fresh settings initialise the navigation map correctly.
+2. Existing saved settings remain compatible.
+3. The navigation map remains visible when enabled.
+4. The expanded map displays the correct player coordinates.
+5. Camera heading and direction of travel are distinct and calculated correctly.
+6. The species catalogue contains at least 5,000 distinct accepted species records.
+7. Synonyms are not counted as additional accepted species.
+8. Species are not spawned in geographically unsuitable habitats.
+9. Terrestrial, freshwater and marine habitat classifications are respected.
+10. Regional flora and fauna differ meaningfully.
+11. Location-based generation is deterministic.
+12. Nearby regions do not repeatedly produce identical arrangements.
+13. Atmospheric star visibility transitions gradually.
+14. Solar-system bodies use consistent physical units.
+15. Planetary diameters and orbital distances are internally consistent.
+16. Heliocentric calculations remain finite and numerically stable.
+17. Interplanetary travel maintains coordinate continuity.
+18. All new static assets are included in the production build.
+
+Run the existing test suite, including:
+
+`node --test source/tests/world.test.mjs`
+
+Also run:
+
+- `npm run build`
+- `npm run build:dev`
+- `npm run lint`
+
+Add further test files where appropriate and ensure the tests are actually executed.
+
+## Visual testing
+
+Perform browser-based visual checks.
+
+Test at least:
+
+- Desktop widescreen.
+- Standard laptop resolution.
+- Mobile portrait.
+- Mobile landscape.
+
+Check the welcome screen, minimap, expanded map, different geographic regions, wildlife encounters, atmospheric ascent, orbital view and interplanetary travel.
+
+Check all quality settings and confirm that the simulation remains usable on lower-powered hardware.
+
+# IMPLEMENTATION RULES
+
+1. Inspect before modifying.
+2. Preserve the current engine and existing features.
+3. Do not rewrite working systems unnecessarily.
+4. Do not use fabricated biodiversity records.
+5. Do not treat a species name in a database as proof that the species has been implemented.
+6. Do not make all regions look alike.
+7. Do not use identical animal meshes with different colours as the principal biodiversity solution.
+8. Do not use decorative sky objects as a substitute for real planetary simulation.
+9. Do not compromise real planetary distances or diameters to make the solar system visually convenient.
+10. Do not introduce large datasets without considering compression, streaming and performance.
+11. Do not add images or icons that are not actually present in the production build.
+12. Do not invent the public website URL.
+13. Do not remove existing controls or functionality without a clear technical reason.
+14. Do not commit, push or deploy without explicit approval.
+15. Do not claim that a feature works unless it has been implemented and tested.
+
+# EXPECTED DELIVERY
+
+Implement the changes in logical phases.
+
+Prioritise the confirmed minimap visibility bug and functional navigation improvements, then geographical and ecological diversity, atmospheric refinement, solar-system exploration and branding.
+
+Do not stop after producing a plan. Carry out the implementation and test the work.
+
+At the end, provide a clear report containing:
+
+- What was changed.
+- Which files were modified or added.
+- How the minimap bug was fixed.
+- How the navigation system works.
+- Which geographical datasets were integrated.
+- The actual number of unique accepted animal species in the final catalogue.
+- How geographic distribution and habitat eligibility are determined.
+- What was done to improve vegetation, rocks and landscape variety.
+- How atmospheric and starfield transitions were improved.
+- Which solar-system bodies are implemented.
+- How true planetary scale and interplanetary travel are handled.
+- Where the social preview image and favicon are stored.
+- How the welcome-screen attribution links were implemented.
+- Which tests were run and their results.
+- Any remaining limitations or data that still require external configuration.
+
+Be specific and honest about what has been completed versus what remains outstanding.
+
+**The final objective is for REALISM to feel like a genuinely diverse, geographically grounded Earth exploration simulation that can transition into a convincing, physically scaled solar-system exploration experience—not simply a procedural landscape with a few repeated animals and decorative planets.**

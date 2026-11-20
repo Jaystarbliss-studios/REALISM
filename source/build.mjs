@@ -12,7 +12,20 @@ import { transformSync } from 'esbuild';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
-const FILES = ['quality.js', 'math.js', 'biomes.js', 'assets.js', 'shaders.js', 'world.js', 'audio.js', 'main.js'];
+const FILES = [
+  'quality.js',
+  'math.js',
+  'earth_geo.js',
+  'ecoregions.js',
+  'species_engine.js',
+  'solar_system.js',
+  'biomes.js',
+  'assets.js',
+  'shaders.js',
+  'world.js',
+  'audio.js',
+  'main.js'
+];
 
 const dev = process.argv.includes('--dev');
 const readable = dev || process.argv.includes('--readable');
@@ -27,7 +40,14 @@ const stripModuleSyntax = (src) =>
     .replace(/^\s*export\s+(const|let|var|function|class)\s+/gm, '$1 ');
 
 let js = FILES.map((f) => stripModuleSyntax(readFileSync(path.join(here, 'src', f), 'utf8'))).join('\n');
-const tpl = readFileSync(path.join(here, 'template.html'), 'utf8');
+const publicUrl = (process.env.REALISM_PUBLIC_URL || process.env.APP_URL || '').trim().replace(/\/+$/, '');
+const ogImageUrl = publicUrl ? `${publicUrl}/assets/realism-social-preview.png` : 'assets/realism-social-preview.png';
+const canonicalTag = publicUrl ? `<link rel="canonical" href="${publicUrl}/">` : '';
+const ogUrlTag = publicUrl ? `<meta property="og:url" content="${publicUrl}/">` : '';
+const tpl = readFileSync(path.join(here, 'template.html'), 'utf8')
+  .replace(/__REALISM_OG_IMAGE__/g, ogImageUrl)
+  .replace('<!--__REALISM_CANONICAL__-->', canonicalTag)
+  .replace('<!--__REALISM_OG_URL__-->', ogUrlTag);
 
 const wrap = (body) =>
   `(async()=>{\n${body}\n})().catch(e=>{console.error(e);document.body.className='l e';document.body.dataset.state='error';document.getElementById('s').textContent=(e.cause?'':'Failed to start: ')+e.message;});`;

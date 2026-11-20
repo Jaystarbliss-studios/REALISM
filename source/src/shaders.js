@@ -31,8 +31,17 @@ struct PlanetU {
   geo: vec4f,         // x = camLatRad, y = camLonRad, z = atmoDensity (0..1), w = activeBiomeId
 };
 
+// 112 floats (448 bytes): Real physical-scale heliocentric Solar System ephemeris projected to ENU
+struct SolarU {
+  bodyDirAng: array<vec4f, 9>, // xyz = unit dir in camera ENU, w = angular radius (rad)
+  bodyInfo: array<vec4f, 9>,   // x = bodyIdx (0..8), y = visualMag, z = ringOuterScale, w = axialTiltRad
+  bodyTint: array<vec4f, 9>,   // rgb = base albedo/emission, w = atmoWeight
+  helios: vec4f,               // xyz = true sun dir ENU, w = interplanetaryBlend (0=Earth-locked, 1=interplanetary)
+};
+
 @group(0) @binding(0) var<uniform> U: FrameU;
 @group(0) @binding(1) var<uniform> P: PlanetU;
+@group(0) @binding(2) var<uniform> S: SolarU;
 
 const PI: f32 = 3.14159265;
 
@@ -183,121 +192,164 @@ fn evalMeteorites(dir: vec3f, t: f32) -> vec3f {
   return mCol;
 }
 
-// Distant 3D Planets (Ringed Saturn, Red Mars, Cratered Moon) & Inclined Spiral Galaxy
-fn evalCosmicBodies(dir: vec3f, t: f32, spaceVis: f32) -> vec3f {
-  if (spaceVis <= 0.01) { return vec3f(0.0); }
-  var c = vec3f(0.0);
-  let sunL = normalize(U.sunDir.xyz);
+// Physically-Driven Real-Scale Solar System Bodies (Sun + 8 Planets via SolarU Ephemeris)
+// Renders distant planets as crisp astronomical points and approached planets as full 3D phase-lit spheres + rings
+fn evalSolarSystem(dir: vec3f, t: f32, bodyVis: f32) -> vec3f {
+  if (bodyVis <= 0.005) { return vec3f(0.0); }
+  var accum = vec3f(0.0);
+  let sunLen = length(S.helios.xyz);
+  let sunL = select(normalize(U.sunDir.xyz), S.helios.xyz / max(1e-5, sunLen), sunLen > 0.1);
+  let interplanetary = S.helios.w;
 
-  // 1. Inclined Spiral Galaxy & Glowing Core
-  let galCenter = normalize(vec3f(0.48, 0.58, 0.65));
-  let gRight = normalize(cross(galCenter, vec3f(0.0, 1.0, 0.0)));
-  let gUp = cross(gRight, galCenter);
-  let gDot = dot(dir, galCenter);
-  if (gDot > 0.88) {
-    let gx = dot(dir, gRight) * 11.5;
-    let gy = dot(dir, gUp) * 21.0;
-    let gr = sqrt(gx * gx + gy * gy);
-    let gTheta = atan2(gy, gx);
-    let spiral = cos(2.0 * gTheta - log(max(0.04, gr)) * 4.2 + t * 0.02);
-    let armMask = smoothstep(-0.2, 0.75, spiral) * exp(-gr * 1.85) * smoothstep(0.08, 0.35, gr);
-    let coreGlow = exp(-gr * 5.2) * 1.45;
-    let dustNoise = 0.65 + 0.35 * fbm(vec2f(gx * 2.5, gy * 2.5));
-    let galCol = vec3f(1.0, 0.86, 0.62) * coreGlow +
-                 mix(vec3f(0.32, 0.58, 1.0), vec3f(0.82, 0.34, 0.88), smoothstep(0.2, 1.2, gr)) * armMask * dustNoise;
-    c += galCol * spaceVis * 0.95;
-  }
+  for (var idx: u32 = 0u; idx < 9u; idx = idx + 1u) {
+    let bData = S.bodyDirAng[idx];
+    let bDirLen = length(bData.xyz);
+    if (bDirLen < 0.1) { continue; }
+    let bDir = bData.xyz / bDirLen;
+    let angRad = bData.w;
+    let bInfo = S.bodyInfo[idx];
+    let bTint = S.bodyTint[idx].rgb;
+    let atmoW = S.bodyTint[idx].w;
+    let ringScale = bInfo.z;
+    let tiltRad = bInfo.w;
 
-  // 2. Ringed Gas Giant (Saturn)
-  let satDir = normalize(vec3f(-0.62, 0.34, -0.70));
-  let satRight = normalize(cross(satDir, vec3f(0.18, 1.0, 0.08)));
-  let satUp = normalize(cross(satRight, satDir));
-  let satDot = dot(dir, satDir);
-  if (satDot > 0.975) {
-    let sx = dot(dir, satRight);
-    let sy = dot(dir, satUp);
-    let sRad = 0.032;
-    let sr2 = sx * sx + sy * sy;
-    let ringNorm = normalize(satUp * 0.82 - satDir * 0.57);
-    let denom = dot(dir, ringNorm);
+    // When Earth-bound (interplanetary < 0.05), the real Cube-Sphere Quadtree renders Earth directly
+    if (idx == 3u && interplanetary < 0.05) { continue; }
+
+    let bDot = dot(dir, bDir);
+    if (bDot < 0.0) { continue; }
+
+    // Perpendicular angular offset in tangent plane
+    let perpVec = dir - bDir * bDot;
+    let sep = length(perpVec);
+
+    // 0: THE SUN (True angular photosphere disc + natural tapered corona in space/interplanetary flight)
+    if (idx == 0u) {
+      let sunSpaceGate = clamp(interplanetary + smoothstep(32000.0, 95000.0, P.enuEast.w), 0.0, 1.0);
+      if (sunSpaceGate > 0.01 && sep < max(angRad * 9.0, 0.12)) {
+        let rN = sep / max(angRad, 0.0042);
+        let disc = 1.0 - smoothstep(0.92, 1.06, rN);
+        let limbDark = mix(0.62, 1.0, sqrt(clamp(1.0 - rN * rN, 0.0, 1.0)));
+        let corona = exp(-max(0.0, rN - 0.95) * 3.4) * 1.15 + exp(-max(0.0, rN - 0.95) * 0.9) * 0.18;
+        let sunC = vec3f(1.0, 0.96, 0.86) * disc * limbDark * 12.0 + vec3f(1.0, 0.82, 0.56) * corona * 1.4;
+        accum += sunC * sunSpaceGate;
+      }
+      continue;
+    }
+
+    // Distant planetary point beacon when angular radius is sub-pixel (< 0.0028 rad)
+    let boundAng = max(angRad * max(1.35, ringScale + 0.25), 0.012);
+    if (sep > boundAng) { continue; }
+
+    if (angRad < 0.0028) {
+      let ptVis = clamp(1.0 - smoothstep(0.0005, 0.0036, sep), 0.0, 1.0);
+      let magBoost = clamp((3.2 - bInfo.y) * 0.24, 0.16, 1.35);
+      let corePt = exp(-sep * sep / (0.0000018)) * magBoost;
+      let haloPt = ptVis * 0.14 * magBoost;
+      accum += bTint * (corePt * 1.85 + haloPt) * bodyVis;
+      continue;
+    }
+
+    // Close / Approached 3D Phase-Lit Planet + Physical Ring System
+    let refAxis = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(bDir.y) > 0.94);
+    let bRight0 = normalize(cross(bDir, refAxis));
+    let bUp0 = normalize(cross(bRight0, bDir));
+    let ct = cos(tiltRad);
+    let st = sin(tiltRad);
+    let bRight = bRight0 * ct + bUp0 * st;
+    let bUp = -bRight0 * st + bUp0 * ct;
+
+    let px = dot(perpVec, bRight);
+    let py = dot(perpVec, bUp);
+    let sRad = min(angRad, 0.72);
+    let r2 = px * px + py * py;
+
+    // Optional physical planetary ring intersection (Saturn & Uranus)
     var ringCol = vec3f(0.0);
     var ringAlpha = 0.0;
     var ringBehind = false;
-    if (abs(denom) > 0.01) {
-      let tRing = dot(satDir, ringNorm) / denom;
-      let rHit = dir * tRing - satDir;
-      let rDist = length(rHit);
-      if (rDist > sRad * 1.38 && rDist < sRad * 2.55) {
-        let rU = (rDist - sRad * 1.38) / (sRad * 1.17);
-        let cassini = smoothstep(0.03, 0.08, abs(rU - 0.62));
-        let bands = 0.65 + 0.35 * sin(rU * 48.0) * cos(rU * 19.0);
-        ringAlpha = cassini * bands * smoothstep(0.0, 0.08, rU) * (1.0 - smoothstep(0.90, 1.0, rU)) * 0.85;
-        ringCol = mix(vec3f(0.68, 0.56, 0.40), vec3f(0.92, 0.82, 0.64), bands) * max(0.25, dot(ringNorm, sunL) * 0.6 + 0.55);
-        ringBehind = tRing > 1.0;
+    if (ringScale > 1.05) {
+      let ringNorm = normalize(bUp * 0.86 - bDir * 0.50);
+      let denom = dot(dir, ringNorm);
+      if (abs(denom) > 0.008) {
+        let tRing = dot(bDir, ringNorm) / denom;
+        let rHit = dir * tRing - bDir;
+        let rDist = length(rHit);
+        let rInner = sRad * 1.24;
+        let rOuter = sRad * ringScale;
+        if (rDist > rInner && rDist < rOuter) {
+          let rU = clamp((rDist - rInner) / max(1e-5, rOuter - rInner), 0.0, 1.0);
+          let cassini = select(1.0, smoothstep(0.025, 0.075, abs(rU - 0.62)), idx == 6u);
+          let bands = 0.62 + 0.38 * sin(rU * 52.0) * cos(rU * 19.0);
+          let edgeFade = smoothstep(0.0, 0.06, rU) * (1.0 - smoothstep(0.92, 1.0, rU));
+          let ringOpacity = select(0.28, 0.84, idx == 6u);
+          ringAlpha = cassini * bands * edgeFade * ringOpacity;
+          let ringSun = max(0.18, abs(dot(ringNorm, sunL)) * 0.55 + 0.45);
+          ringCol = mix(bTint * 0.78, vec3f(0.92, 0.85, 0.72), bands * 0.5) * ringSun;
+          ringBehind = tRing > 1.0;
+        }
       }
     }
-    if (sr2 < sRad * sRad) {
-      let sz = sqrt(max(0.0, sRad * sRad - sr2));
-      let sNorm = normalize(satRight * sx + satUp * sy - satDir * sz);
-      let bandLat = dot(sNorm, satUp);
-      let storm = fbm(vec2f(atan2(sx, sz) * 3.0 + t * 0.03, bandLat * 12.0));
-      let bandWave = sin(bandLat * 26.0 + storm * 2.2) * 0.5 + 0.5;
-      let satAlb = mix(vec3f(0.76, 0.60, 0.38), vec3f(0.94, 0.82, 0.58), bandWave);
-      let sLit = max(0.06, dot(sNorm, sunL));
-      var bodyCol = satAlb * sLit;
+
+    if (r2 < sRad * sRad) {
+      let pz = sqrt(max(0.0, sRad * sRad - r2));
+      let pNorm = normalize(bRight * px + bUp * py - bDir * pz);
+      let lonAng = atan2(px, pz) + t * 0.012;
+      let latV = clamp(py / max(1e-5, sRad), -1.0, 1.0);
+      var pAlb = bTint;
+
+      if (idx == 1u) { // Mercury: silicate craters
+        let cr = voronoi(vec2f(lonAng * 4.5, latV * 4.5)).x;
+        let mr = fbm(vec2f(lonAng * 2.4, latV * 2.4));
+        pAlb = mix(vec3f(0.36, 0.35, 0.34), vec3f(0.64, 0.61, 0.58), smoothstep(0.25, 0.75, mr) + smoothstep(0.12, 0.28, cr) * 0.22);
+      } else if (idx == 2u) { // Venus: dense cream-gold sulfuric cloud bands
+        let vCloud = fbm(vec2f(lonAng * 2.2 + t * 0.02, latV * 6.5));
+        pAlb = mix(vec3f(0.76, 0.64, 0.40), vec3f(0.96, 0.88, 0.68), smoothstep(0.32, 0.74, vCloud));
+      } else if (idx == 3u) { // Distant Earth marble (only in far interplanetary flight)
+        let cont = fbm(vec2f(lonAng * 2.2, latV * 2.8));
+        let clouds = fbm(vec2f(lonAng * 3.8 + t * 0.015, latV * 4.2));
+        let landCol = mix(vec3f(0.14, 0.36, 0.16), vec3f(0.62, 0.50, 0.30), smoothstep(0.54, 0.76, cont));
+        let seaCol = vec3f(0.05, 0.22, 0.48);
+        pAlb = mix(seaCol, landCol, smoothstep(0.49, 0.56, cont));
+        pAlb = mix(pAlb, vec3f(0.92, 0.94, 0.96), smoothstep(0.76, 0.92, abs(latV)));
+        pAlb = mix(pAlb, vec3f(0.94, 0.96, 0.98), smoothstep(0.55, 0.78, clouds) * 0.65);
+      } else if (idx == 4u) { // Mars: iron-oxide plains, dark basalt maria & polar ice caps
+        let mN = fbm(vec2f(lonAng * 2.6, latV * 3.8));
+        pAlb = mix(vec3f(0.78, 0.34, 0.18), vec3f(0.42, 0.18, 0.11), smoothstep(0.44, 0.72, mN));
+        pAlb = mix(pAlb, vec3f(0.94, 0.95, 0.97), smoothstep(0.80, 0.93, abs(latV)));
+      } else if (idx == 5u) { // Jupiter: turbulent equatorial belts & Great Red Spot
+        let turb = fbm(vec2f(lonAng * 3.5, latV * 11.0));
+        let band = sin(latV * 24.0 + turb * 2.4) * 0.5 + 0.5;
+        pAlb = mix(vec3f(0.58, 0.38, 0.24), vec3f(0.90, 0.82, 0.68), band);
+        let spotD = length(vec2f((lonAng - 0.6) * 0.8, (latV + 0.32) * 2.4));
+        pAlb = mix(pAlb, vec3f(0.80, 0.30, 0.18), 1.0 - smoothstep(0.14, 0.28, spotD));
+      } else if (idx == 6u) { // Saturn: pale golden banded atmosphere
+        let sTurb = fbm(vec2f(lonAng * 2.4, latV * 10.0));
+        let sBand = sin(latV * 22.0 + sTurb * 1.4) * 0.5 + 0.5;
+        pAlb = mix(vec3f(0.72, 0.60, 0.40), vec3f(0.94, 0.86, 0.66), sBand);
+      } else if (idx == 7u) { // Uranus: serene cyan-aquamarine ice giant
+        let uBand = sin(latV * 12.0) * 0.5 + 0.5;
+        pAlb = mix(vec3f(0.54, 0.78, 0.84), vec3f(0.68, 0.88, 0.92), uBand * 0.45);
+      } else { // Neptune: deep cobalt with high-altitude methane streaks
+        let nCloud = fbm(vec2f(lonAng * 4.0, latV * 9.0));
+        pAlb = mix(vec3f(0.14, 0.30, 0.72), vec3f(0.32, 0.54, 0.92), smoothstep(0.45, 0.80, nCloud));
+        pAlb = mix(pAlb, vec3f(0.82, 0.90, 0.98), smoothstep(0.72, 0.88, nCloud) * 0.45);
+      }
+
+      let pLit = smoothstep(-0.14, 0.22, dot(pNorm, sunL)) * max(0.03, dot(pNorm, sunL)) + 0.015;
+      let rimF = pow(1.0 - clamp(dot(pNorm, -dir), 0.0, 1.0), 3.6) * atmoW * max(0.12, dot(pNorm, sunL) + 0.25);
+      let rimTint = mix(bTint, vec3f(0.45, 0.76, 1.0), 0.55);
+      var pCol = pAlb * pLit + rimTint * rimF * 0.75;
       if (!ringBehind && ringAlpha > 0.01) {
-        bodyCol = mix(bodyCol, ringCol, ringAlpha);
+        pCol = mix(pCol, ringCol, ringAlpha);
       }
-      c = mix(c, bodyCol, spaceVis);
+      accum = mix(accum, pCol, bodyVis);
     } else if (ringAlpha > 0.01) {
-      c += ringCol * ringAlpha * spaceVis;
+      accum += ringCol * ringAlpha * bodyVis;
     }
   }
 
-  // 3. Red Planet (Mars)
-  let marsDir = normalize(vec3f(0.74, 0.42, -0.52));
-  let mRight = normalize(cross(marsDir, vec3f(0.0, 1.0, 0.0)));
-  let mUp = cross(mRight, marsDir);
-  if (dot(dir, marsDir) > 0.996) {
-    let mx = dot(dir, mRight);
-    let my = dot(dir, mUp);
-    let mRad = 0.018;
-    let mr2 = mx * mx + my * my;
-    if (mr2 < mRad * mRad) {
-      let mz = sqrt(max(0.0, mRad * mRad - mr2));
-      let mNorm = normalize(mRight * mx + mUp * my - marsDir * mz);
-      let mNoise = fbm(vec2f(atan2(mx, mz) * 2.5 + t * 0.015, (my / mRad) * 4.0));
-      var mAlb = mix(vec3f(0.78, 0.30, 0.14), vec3f(0.38, 0.16, 0.10), smoothstep(0.45, 0.72, mNoise));
-      let mPole = smoothstep(0.78, 0.92, abs(my / mRad));
-      mAlb = mix(mAlb, vec3f(0.95, 0.96, 0.98), mPole);
-      let mLit = max(0.05, dot(mNorm, sunL));
-      c = mix(c, mAlb * mLit, spaceVis);
-    }
-  }
-
-  // 4. Cratered Moon
-  let moonDir = normalize(vec3f(-0.36, 0.56, 0.74));
-  let lRight = normalize(cross(moonDir, vec3f(0.0, 1.0, 0.0)));
-  let lUp = cross(lRight, moonDir);
-  if (dot(dir, moonDir) > 0.994) {
-    let lx = dot(dir, lRight);
-    let ly = dot(dir, lUp);
-    let lRad = 0.026;
-    let lr2 = lx * lx + ly * ly;
-    if (lr2 < lRad * lRad) {
-      let lz = sqrt(max(0.0, lRad * lRad - lr2));
-      let lNorm = normalize(lRight * lx + lUp * ly - moonDir * lz);
-      let lUv = vec2f(atan2(lx, lz) * 3.2, (ly / lRad) * 3.2);
-      let maria = fbm(lUv * 1.8);
-      let crater = voronoi(lUv * 7.5).x;
-      let craterRim = smoothstep(0.12, 0.24, crater) - smoothstep(0.24, 0.36, crater) * 0.3;
-      let lAlb = mix(vec3f(0.38, 0.40, 0.44), vec3f(0.74, 0.76, 0.78), smoothstep(0.38, 0.65, maria) + craterRim * 0.25);
-      let lLit = max(0.04, dot(lNorm, sunL));
-      c = mix(c, lAlb * lLit, spaceVis);
-    }
-  }
-
-  return c;
+  return accum;
 }
 
 fn distributionGGX(NdotH: f32, rough: f32) -> f32 {
@@ -340,102 +392,145 @@ fn evalSky(dir: vec3f) -> vec3f {
   }
 
   let atmoDensity = clamp(P.geo.z, 0.0, 1.0);
-  let spaceFactor = 1.0 - atmoDensity;
+  let spaceFactor = clamp(1.0 - atmoDensity, 0.0, 1.0);
+  let interplanetary = S.helios.w;
 
-  // Tropospheric -> Stratospheric Rayleigh sky darkening with true meter altitude
-  let stratoShift = smoothstep(8000.0, 48000.0, camAlt);
-  let y = clamp(dir.y, 0., 1.);
-  var baseHoriz = mix(U.skyHorizon.rgb, vec3f(0.28, 0.58, 0.94), stratoShift * 0.72);
-  var baseZen   = mix(U.skyZenith.rgb,  vec3f(0.02, 0.08, 0.24), stratoShift * 0.85);
-  var col = mix(baseHoriz, baseZen, pow(y, 0.48)) * atmoDensity;
+  // Smooth multi-layer atmospheric scattering transition:
+  // Troposphere (0-12km) -> Stratosphere (12-50km) -> Mesosphere (50-85km) -> Thermosphere -> Space
+  let stratoShift = smoothstep(8500.0, 48000.0, camAlt);
+  let mesoShift = smoothstep(42000.0, 92000.0, camAlt);
+  let y = clamp(dir.y, 0.0, 1.0);
+  let horizTight = mix(0.48, 0.22, stratoShift);
+  var baseHoriz = mix(U.skyHorizon.rgb, vec3f(0.24, 0.54, 0.90), stratoShift * 0.78);
+  baseHoriz = mix(baseHoriz, vec3f(0.06, 0.18, 0.42), mesoShift * 0.82);
+  var baseZen = mix(U.skyZenith.rgb, vec3f(0.015, 0.055, 0.17), stratoShift * 0.88);
+  baseZen = mix(baseZen, vec3f(0.002, 0.004, 0.012), mesoShift * 0.95);
+  let skyAtten = atmoDensity * (1.0 - interplanetary);
+  var col = mix(baseHoriz, baseZen, pow(y, horizTight)) * skyAtten;
 
-  // Blazing Sun Disc, Solar Corona & Mie Scattering
-  let sd = max(dot(dir, U.sunDir.xyz), 0.);
-  let mie = pow(sd, 10.) * 0.38 * atmoDensity + pow(sd, 72.) * (1.25 + spaceFactor * 1.4) + smoothstep(0.9980, 0.9997, sd) * (9.5 + spaceFactor * 6.0);
-  col += mix(U.sunCol.rgb, vec3f(1.0, 0.96, 0.86), spaceFactor * 0.7) * mie * max(U.sunDir.w, spaceFactor * 1.15);
+  // Atmospheric Sun Disc & Mie Scattering (handed smoothly over to real solar photosphere in space)
+  let sd = max(dot(dir, U.sunDir.xyz), 0.0);
+  let atmoSunGate = clamp(1.0 - interplanetary - smoothstep(48000.0, 105000.0, camAlt) * 0.85, 0.0, 1.0);
+  let mie = pow(sd, 10.0) * 0.34 * skyAtten + pow(sd, 64.0) * 1.05 * atmoSunGate + smoothstep(0.9982, 0.9997, sd) * 8.5 * atmoSunGate;
+  col += U.sunCol.rgb * mie * max(U.sunDir.w, 0.05);
 
-  // Real-Meter Tropospheric Cumulus (2,200 m) & Cirrus Ice-Crystal (9,500 m) Cloud Decks
-  if (atmoDensity > 0.03 && camAlt < 42000.0) {
+  // Coherent Tropospheric Cumulus (2.2 km) & Cirrus (9.5 km) Cloud Decks with smooth high-altitude fade
+  if (skyAtten > 0.025 && camAlt < 48000.0) {
     let lonDeg = P.geo.y * 57.29578;
     let latDeg = P.geo.x * 57.29578;
     let dCumulus = 2200.0 - camAlt;
-    if ((dCumulus > 0.0 && dir.y > 0.015) || (dCumulus < 0.0 && dir.y < -0.015 && camAlt < 28000.0)) {
+    if ((dCumulus > 0.0 && dir.y > 0.015) || (dCumulus < 0.0 && dir.y < -0.015 && camAlt < 34000.0)) {
       let tCloud = clamp(abs(dCumulus) / max(0.05, abs(dir.y)), 0.0, 95000.0);
-      let cPos = vec2f(lonDeg * 18.0, latDeg * 18.0) + dir.xz * (tCloud * 0.00055) + U.wind.xy * (t * 0.04);
-      let c1 = fbm(cPos * 0.65);
-      let c2 = fbm(cPos * 1.85 - vec2f(t * 0.02, 0.0));
+      let cPos = vec2f(lonDeg * 18.0, latDeg * 18.0) + dir.xz * (tCloud * 0.00055) + U.wind.xy * (t * 0.032);
+      let c1 = fbm(cPos * 0.62);
+      let c2 = fbm(cPos * 1.75 - vec2f(t * 0.015, 0.0));
       let cMask = smoothstep(0.46 - U.skyZenith.w * 0.14, 0.78, c1 * 0.68 + c2 * 0.32) *
                   smoothstep(0.015, 0.16, abs(dir.y)) *
-                  (1.0 - smoothstep(14000.0, 28000.0, camAlt));
+                  (1.0 - smoothstep(16000.0, 34000.0, camAlt));
       let topSun = select(0.55, 0.95, dCumulus < 0.0);
-      let cLit = mix(vec3f(0.24, 0.30, 0.38), U.sunCol.rgb * 1.16 + vec3f(0.36, 0.38, 0.42) * topSun, pow(sd, 3.0) * 0.5 + 0.45 * U.sunDir.w);
-      col = mix(col, cLit, cMask * 0.78 * atmoDensity);
+      let cLit = mix(vec3f(0.24, 0.30, 0.38), U.sunCol.rgb * 1.12 + vec3f(0.34, 0.36, 0.40) * topSun, pow(sd, 3.0) * 0.45 + 0.45 * U.sunDir.w);
+      col = mix(col, cLit, cMask * 0.74 * skyAtten);
     }
 
     let dCirrus = 9500.0 - camAlt;
-    if ((dCirrus > 0.0 && dir.y > 0.015) || (dCirrus < 0.0 && dir.y < -0.015 && camAlt < 38000.0)) {
+    if ((dCirrus > 0.0 && dir.y > 0.015) || (dCirrus < 0.0 && dir.y < -0.015 && camAlt < 46000.0)) {
       let tCir = clamp(abs(dCirrus) / max(0.05, abs(dir.y)), 0.0, 140000.0);
-      let cirPos = vec2f(lonDeg * 11.0, latDeg * 11.0) + dir.xz * (tCir * 0.00035) - U.wind.xy * (t * 0.03);
+      let cirPos = vec2f(lonDeg * 11.0, latDeg * 11.0) + dir.xz * (tCir * 0.00035) - U.wind.xy * (t * 0.025);
       let warp = fbm(cirPos * 0.5);
       let streak = fbm(vec2f(cirPos.x * 1.2 + warp * 2.0, cirPos.y * 0.38));
-      let cirMask = smoothstep(0.54, 0.82, streak) * smoothstep(0.015, 0.14, abs(dir.y)) * (1.0 - smoothstep(22000.0, 38000.0, camAlt));
-      let cirCol = mix(vec3f(0.64, 0.78, 0.94), U.sunCol.rgb * 1.22 + vec3f(0.45), 0.65 * U.sunDir.w);
-      col = mix(col, cirCol, cirMask * 0.48 * atmoDensity);
+      let cirMask = smoothstep(0.54, 0.82, streak) * smoothstep(0.015, 0.14, abs(dir.y)) * (1.0 - smoothstep(22000.0, 46000.0, camAlt));
+      let cirCol = mix(vec3f(0.64, 0.78, 0.94), U.sunCol.rgb * 1.18 + vec3f(0.42), 0.62 * U.sunDir.w);
+      col = mix(col, cirCol, cirMask * 0.44 * skyAtten);
     }
 
-    // Physical cloud-layer passage whiteout mist when crossing 2.2 km or 9.5 km
-    let inCumulus = 1.0 - smoothstep(0.0, 480.0, abs(camAlt - 2200.0));
-    let inCirrus  = (1.0 - smoothstep(0.0, 650.0, abs(camAlt - 9500.0))) * 0.45;
-    let inCloudMist = clamp(inCumulus * 0.62 + inCirrus * 0.35, 0.0, 0.78);
+    // Gentle cloud-deck mist when passing directly through 2.2 km or 9.5 km
+    let inCumulus = 1.0 - smoothstep(0.0, 520.0, abs(camAlt - 2200.0));
+    let inCirrus  = (1.0 - smoothstep(0.0, 720.0, abs(camAlt - 9500.0))) * 0.38;
+    let inCloudMist = clamp(inCumulus * 0.52 + inCirrus * 0.28, 0.0, 0.68);
     if (inCloudMist > 0.01) {
-      let cloudVapor = mix(vec3f(0.76, 0.85, 0.95), U.sunCol.rgb * 0.62 + vec3f(0.50, 0.56, 0.64), U.sunDir.w * 0.7);
+      let cloudVapor = mix(vec3f(0.76, 0.84, 0.94), U.sunCol.rgb * 0.58 + vec3f(0.48, 0.54, 0.62), U.sunDir.w * 0.65);
       col = mix(col, cloudVapor, inCloudMist);
     }
   }
 
-  // Stars, Deep-Space Nebulae, Distant Planets, Spiral Galaxy, Meteorites & Under-Atmosphere Aurora
-  let trueNightFactor = 1.0 - smoothstep(0.15, 0.55, U.sunDir.w);
-  let cosmosVis = clamp(trueNightFactor + spaceFactor, 0.0, 1.0);
+  // Restrained, Realistic Sparse Starfield + Daylight/Solar Glare Adaptation + Real Solar System
+  let trueNightFactor = 1.0 - smoothstep(0.14, 0.52, U.sunDir.w);
+  let sunGlare = smoothstep(0.84, 0.992, sd);
+  // In sunlit low-Earth orbit, bright Earth/sun glare naturally reduces faint star visibility
+  let orbitDayDim = mix(1.0, 0.28, smoothstep(0.25, 0.85, U.sunDir.w) * (1.0 - interplanetary) * (1.0 - smoothstep(350000.0, 4500000.0, camAlt)));
+  let eyeDarkAdapt = clamp(max(trueNightFactor, spaceFactor * orbitDayDim) * (1.0 - sunGlare * 0.88), 0.0, 1.0);
+  let cosmosVis = clamp(max(trueNightFactor, spaceFactor), 0.0, 1.0);
+
   let weatherIdx = round(U.misc.x);
-  let polarProx = smoothstep(0.72, 1.18, abs(P.geo.x)); // Latitudes > ~41 deg -> polar aurora belt
-  let underAtmoMask = 1.0 - smoothstep(65000.0, 150000.0, camAlt);
+  let polarProx = smoothstep(0.72, 1.18, abs(P.geo.x));
+  let underAtmoMask = (1.0 - smoothstep(65000.0, 145000.0, camAlt)) * (1.0 - interplanetary);
   let auroraNightGate = clamp(trueNightFactor * 0.92 + select(0.0, 0.95, abs(weatherIdx - 6.0) < 0.4), 0.0, 1.0);
   let auroraWeight = underAtmoMask * auroraNightGate * clamp(0.32 + polarProx * 0.78, 0.0, 1.0);
 
-  if (cosmosVis > 0.02 && (dir.y > -0.05 || spaceFactor > 0.15)) {
+  if (cosmosVis > 0.02 && (dir.y > -0.05 || spaceFactor > 0.12 || interplanetary > 0.01)) {
     let starAz = atan2(dir.x, dir.z);
     let starEl = asin(clamp(dir.y, -0.999, 0.999));
-    let sProj = vec2f(starAz * 3.2, starEl * 6.4);
-    let starCell = floor(sProj * 115.0);
-    let starH = h21(starCell);
-    if (starH > 0.989) {
-      let twinkle = 0.58 + 0.42 * sin(t * 3.2 + starH * 64.0);
-      let starVis = select(smoothstep(0.02, 0.28, dir.y), 1.0, spaceFactor > 0.25);
-      let starTint = mix(vec3f(0.78, 0.88, 1.0), vec3f(1.0, 0.88, 0.72), fract(starH * 31.7));
-      col += starTint * (starH - 0.989) * 135.0 * twinkle * cosmosVis * starVis;
+    let sProj = vec2f(starAz * 3.0, starEl * 6.0);
+    let horizonMask = select(smoothstep(0.03, 0.28, dir.y), 1.0, spaceFactor > 0.22 || interplanetary > 0.05);
+
+    // Primary bright stars (sparse, sub-pixel pinpoint core, realistic spectral temperature)
+    let pGrid = sProj * 140.0;
+    let pCell = floor(pGrid);
+    let pFrac = fract(pGrid) - 0.5;
+    let starH = h21(pCell);
+    if (starH > 0.9964) {
+      let jOff = (h22(pCell + vec2f(7.1, 3.3)) - 0.5) * 0.58;
+      let dStar = length(pFrac - jOff);
+      let pinCore = exp(-dStar * dStar * 42.0);
+      // Atmospheric scintillation only when looking through real air; steady in vacuum
+      let scint = 1.0 - atmoDensity * 0.24 * (0.5 + 0.5 * sin(t * 4.1 + starH * 90.0));
+      let magPow = pow((starH - 0.9964) / 0.0036, 1.85);
+      let tempT = fract(starH * 53.7);
+      let starTint = mix(vec3f(0.76, 0.86, 1.0), vec3f(1.0, 0.87, 0.72), tempT);
+      col += starTint * (0.28 + magPow * 1.45) * pinCore * scint * eyeDarkAdapt * horizonMask;
     }
-    if (spaceFactor > 0.10) {
-      let neb = fbm(sProj * 1.15 + vec2f(2.4, -1.7));
-      let nebMask = smoothstep(0.50, 0.82, neb) * spaceFactor;
-      let nebCol = mix(vec3f(0.05, 0.20, 0.36), vec3f(0.34, 0.09, 0.32), sin(sProj.x * 1.4 + sProj.y) * 0.5 + 0.5);
-      col += nebCol * nebMask * 0.52;
+
+    // Faint secondary background stars (only visible in dark night skies or deep space)
+    if (eyeDarkAdapt > 0.35) {
+      let fGrid = sProj * 240.0 + vec2f(17.3, 9.1);
+      let fCell = floor(fGrid);
+      let fFrac = fract(fGrid) - 0.5;
+      let fH = h21(fCell);
+      if (fH > 0.9942) {
+        let dF = length(fFrac);
+        let fCore = exp(-dF * dF * 34.0);
+        col += vec3f(0.84, 0.88, 0.96) * ((fH - 0.9942) * 32.0) * fCore * (eyeDarkAdapt - 0.35) * horizonMask;
+      }
     }
-    let spaceBodyVis = clamp(spaceFactor + trueNightFactor * smoothstep(0.05, 0.35, dir.y) * 0.75, 0.0, 1.0);
-    col += evalCosmicBodies(dir, t, spaceBodyVis);
-    col += evalMeteorites(dir, t) * clamp(spaceFactor + trueNightFactor * 0.85, 0.0, 1.0);
+
+    // Subtle natural Milky Way pale dust band (strictly restrained, only in dark space)
+    if (spaceFactor > 0.45 && eyeDarkAdapt > 0.40) {
+      let galAxis = normalize(vec3f(0.42, 0.58, 0.70));
+      let bandDist = abs(dot(dir, galAxis));
+      let bandMask = exp(-bandDist * bandDist * 26.0);
+      let dust = fbm(sProj * 1.6 + vec2f(2.1, -1.4));
+      let milkyCol = vec3f(0.42, 0.48, 0.58) * smoothstep(0.36, 0.78, dust) * bandMask;
+      col += milkyCol * (spaceFactor - 0.45) * eyeDarkAdapt * 0.11;
+    }
+
+    // Real Solar System bodies (Sun + 8 physical-scale planets from SolarU)
+    let bodyVis = clamp(spaceFactor + interplanetary + trueNightFactor * smoothstep(0.05, 0.32, dir.y) * 0.80, 0.0, 1.0);
+    col += evalSolarSystem(dir, t, bodyVis);
+
+    // Occasional meteors in upper mesosphere / dark sky
+    col += evalMeteorites(dir, t) * clamp(trueNightFactor * 0.75 + spaceFactor * 0.35, 0.0, 0.85) * (1.0 - interplanetary);
 
     if (dir.y > 0.01 && auroraWeight > 0.01) {
       col += evalAurora(dir, t) * auroraWeight;
     }
   }
 
-  // Real Physical Atmospheric Limb Halo around the ACTUAL Cube-Sphere Earth (NO fake raymarched globe!)
-  if (camAlt > 6000.0) {
+  // Real Physical Atmospheric Limb Halo around the ACTUAL Cube-Sphere Earth (fades cleanly when leaving Earth for interplanetary space)
+  if (camAlt > 6000.0 && interplanetary < 0.95) {
     let pRad = P.enuUp.w;
     let atmoTop = pRad + 115000.0;
     let camR = pRad + camAlt;
-    // Ray from camera (0,0,0) toward planet center (0, -camR, 0): closest approach distance to planet center
-    let b = camR * dir.y; // dot(oc, dir) where oc = (0, camR, 0)
+    let b = camR * dir.y;
     if (b < 0.0) {
       let perp2 = camR * camR - b * b;
       let perp = sqrt(max(0.0, perp2));
@@ -444,7 +539,7 @@ fn evalSky(dir: vec3f) -> vec3f {
         let limb = exp(-hNorm * 4.2) * (1.0 - hNorm);
         let sunSide = max(0.14, dot(normalize(dir * (-b) + vec3f(0.0, camR, 0.0)), U.sunDir.xyz) * 0.85 + 0.25);
         let limbCol = mix(vec3f(0.16, 0.52, 0.98), vec3f(0.65, 0.86, 1.0), 1.0 - hNorm);
-        col += limbCol * limb * sunSide * smoothstep(6000.0, 55000.0, camAlt) * 1.45;
+        col += limbCol * limb * sunSide * smoothstep(6000.0, 55000.0, camAlt) * (1.0 - interplanetary) * 1.45;
       }
     }
   }
