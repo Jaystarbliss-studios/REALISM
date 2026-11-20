@@ -169,6 +169,8 @@ const WEATHER_PRESETS = [
   { fogD: 0.0044, mist: 0.68, cloud: 0.74, fire: 1.38, wind: 0.78, rain: 0.0,  sunScale: 0.82, skyTint: [1.15, 0.72, 0.52] }
 ];
 
+let wakeBrandWordmark = () => {};
+
 function syncBodyClasses() {
   document.body.className = menu ? 'm' : 'g';
   if (cleanUi) document.body.classList.add('clean');
@@ -177,11 +179,359 @@ function syncBodyClasses() {
 function setMenu(open) {
   menu = open;
   syncBodyClasses();
+  if (open) wakeBrandWordmark();
 }
 function noteUserActivity() {
   lastActivityAt = performance.now();
   if (autoExplore) autoExplore = false;
 }
+
+// ============================================================================
+// Interactive Pixel-by-Pixel Wavy "REALISM" Welcome Wordmark
+// Bespoke architectural bitmap pixel mosaic with spring-damped wave physics,
+// live mouse/touch wake ripples, and zero CPU cost once in-game.
+// ============================================================================
+(function initInteractiveBrandWordmark() {
+  const bc = $('brandCanvas');
+  if (!bc) return;
+  const ctx = bc.getContext('2d');
+  if (!ctx) return;
+
+  const GLYPHS = {
+    R: [
+      '########.',
+      '#########',
+      '##.....##',
+      '##.....##',
+      '##....###',
+      '########.',
+      '#######..',
+      '##...##..',
+      '##....##.',
+      '##.....##',
+      '##.....##'
+    ],
+    E: [
+      '########',
+      '########',
+      '##......',
+      '##......',
+      '#######.',
+      '#######.',
+      '##......',
+      '##......',
+      '##......',
+      '########',
+      '########'
+    ],
+    A: [
+      '..#####..',
+      '.#######.',
+      '##.....##',
+      '##.....##',
+      '##.....##',
+      '#########',
+      '#########',
+      '##.....##',
+      '##.....##',
+      '##.....##',
+      '##.....##'
+    ],
+    L: [
+      '##......',
+      '##......',
+      '##......',
+      '##......',
+      '##......',
+      '##......',
+      '##......',
+      '##......',
+      '##......',
+      '########',
+      '########'
+    ],
+    I: [
+      '######',
+      '######',
+      '..##..',
+      '..##..',
+      '..##..',
+      '..##..',
+      '..##..',
+      '..##..',
+      '..##..',
+      '######',
+      '######'
+    ],
+    S: [
+      '.#######.',
+      '#########',
+      '##.....##',
+      '##.......',
+      '.######..',
+      '..######.',
+      '.......##',
+      '.......##',
+      '##.....##',
+      '#########',
+      '.#######.'
+    ],
+    M: [
+      '###.....###',
+      '####...####',
+      '#####.#####',
+      '###########',
+      '##.#####.##',
+      '##..###..##',
+      '##...#...##',
+      '##.......##',
+      '##.......##',
+      '##.......##',
+      '##.......##'
+    ]
+  };
+
+  const WORD = 'REALISM';
+  const LOGICAL_W = 920;
+  const LOGICAL_H = 250;
+  const LETTER_GAP = 3;
+  const SUB = 2; // 2x2 micro-pixel mosaic per glyph cell for fluid pixel-by-pixel waves
+
+  // Compute total macro grid width
+  let totalCols = 0;
+  for (let i = 0; i < WORD.length; i++) {
+    totalCols += GLYPHS[WORD[i]][0].length;
+    if (i < WORD.length - 1) totalCols += LETTER_GAP;
+  }
+  const totalRows = 11;
+  const macroStep = 10;
+  const subPitch = macroStep / SUB; // 5px per individual pixel tile
+  const pixelDrawSize = 4.1;        // Crisp 0.9px architectural hairline gap between pixels
+  const wordW = totalCols * macroStep;
+  const wordH = totalRows * macroStep;
+  const startX = (LOGICAL_W - wordW) * 0.5;
+  const startY = (LOGICAL_H - wordH) * 0.5;
+
+  const pixels = [];
+  let colCursor = 0;
+  for (let li = 0; li < WORD.length; li++) {
+    const ch = WORD[li];
+    const rows = GLYPHS[ch];
+    const cols = rows[0].length;
+    for (let r = 0; r < rows.length; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (rows[r][c] !== '#') continue;
+        for (let sy = 0; sy < SUB; sy++) {
+          for (let sx = 0; sx < SUB; sx++) {
+            const hx = startX + (colCursor + c) * macroStep + sx * subPitch + subPitch * 0.5;
+            const hy = startY + r * macroStep + sy * subPitch + subPitch * 0.5;
+            const normX = (hx - startX) / wordW;
+            const normY = (hy - startY) / wordH;
+            pixels.push({
+              hx, hy,
+              x: hx, y: hy,
+              vx: 0, vy: 0,
+              z: 0,
+              normX, normY,
+              phase: normX * 9.5 + normY * 2.8 + (sx + sy) * 0.35
+            });
+          }
+        }
+      }
+    }
+    colCursor += cols + LETTER_GAP;
+  }
+
+  let dpr = 1;
+  function resizeCanvas() {
+    dpr = clamp(window.devicePixelRatio || 1, 1, 2);
+    bc.width = Math.round(LOGICAL_W * dpr);
+    bc.height = Math.round(LOGICAL_H * dpr);
+  }
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const pointer = { x: -9999, y: -9999, vx: 0, vy: 0, active: false, lastRippleAt: 0 };
+  const ripples = []; // { x, y, born, strength, speed }
+
+  function mapClientToCanvas(clientX, clientY) {
+    const rect = bc.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return {
+      x: ((clientX - rect.left) / rect.width) * LOGICAL_W,
+      y: ((clientY - rect.top) / rect.height) * LOGICAL_H
+    };
+  }
+
+  function pushRipple(x, y, strength = 1.0, speed = 260) {
+    if (reducedMotion) return;
+    ripples.push({ x, y, born: performance.now() * 0.001, strength, speed });
+    if (ripples.length > 10) ripples.shift();
+  }
+
+  const menuEl = $('m');
+  if (menuEl) {
+    menuEl.addEventListener('pointermove', (e) => {
+      if (document.body.classList.contains('g')) return;
+      const pt = mapClientToCanvas(e.clientX, e.clientY);
+      if (!pt) return;
+      const dx = pointer.active ? pt.x - pointer.x : 0;
+      const dy = pointer.active ? pt.y - pointer.y : 0;
+      pointer.vx = lerp(pointer.vx, clamp(dx, -48, 48), 0.45);
+      pointer.vy = lerp(pointer.vy, clamp(dy, -48, 48), 0.45);
+      pointer.x = pt.x;
+      pointer.y = pt.y;
+      pointer.active = true;
+
+      const now = performance.now();
+      const speed = hypot(dx, dy);
+      if (speed > 3.5 && now - pointer.lastRippleAt > 65 && pt.y > -40 && pt.y < LOGICAL_H + 40) {
+        pushRipple(pt.x, pt.y, clamp(0.45 + speed * 0.035, 0.5, 1.35), 255);
+        pointer.lastRippleAt = now;
+      }
+    });
+    menuEl.addEventListener('pointerleave', () => {
+      pointer.active = false;
+    });
+  }
+
+  bc.addEventListener('pointerdown', (e) => {
+    const pt = mapClientToCanvas(e.clientX, e.clientY);
+    if (!pt) return;
+    pointer.x = pt.x;
+    pointer.y = pt.y;
+    pointer.active = true;
+    pushRipple(pt.x, pt.y, 1.95, 340);
+  });
+
+  let rafId = 0;
+  let lastT = performance.now() * 0.001;
+
+  function renderFrame() {
+    rafId = 0;
+    if (document.body.classList.contains('g')) return; // 0% overhead while playing
+
+    const now = performance.now() * 0.001;
+    const dt = clamp(now - lastT, 0.004, 0.033);
+    lastT = now;
+    const stepScale = dt * 60;
+
+    pointer.vx *= Math.pow(0.86, stepScale);
+    pointer.vy *= Math.pow(0.86, stepScale);
+
+    // Prune expired ripples
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      if (now - ripples[i].born > 1.85) ripples.splice(i, 1);
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, LOGICAL_W, LOGICAL_H);
+
+    const springK = 0.145 * stepScale;
+    const damp = Math.pow(0.79, stepScale);
+    const hoverRad = 128;
+    const hoverRadSq = hoverRad * hoverRad;
+
+    for (let i = 0; i < pixels.length; i++) {
+      const p = pixels[i];
+      let targetWaveY = 0;
+      let targetWaveX = 0;
+      let waveEnergy = 0;
+
+      if (!reducedMotion) {
+        // Gentle oceanic ambient breathing wave along the pixel grid
+        const idleWave = sin(p.normX * 7.2 - now * 1.95 + p.normY * 1.6) * 1.65;
+        targetWaveY += idleWave;
+
+        // Live tactile cursor wave field when mouse approaches or touches REALISM
+        if (pointer.active) {
+          const dx = p.hx - pointer.x;
+          const dy = p.hy - pointer.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < hoverRadSq) {
+            const dist = sqrt(d2) + 0.001;
+            const falloff = 1.0 - dist / hoverRad;
+            const f2 = falloff * falloff;
+            // Traveling sine wave radiating through touched pixels
+            const crest = sin(dist * 0.095 - now * 11.5);
+            const lift = crest * 18.0 * f2;
+            targetWaveY += lift + pointer.vy * 0.55 * f2;
+            targetWaveX += (dx / dist) * (crest * 7.5 + 8.5) * f2 + pointer.vx * 0.45 * f2;
+            waveEnergy = max(waveEnergy, f2 * (0.65 + abs(crest) * 0.55));
+          }
+        }
+
+        // Expanding ring shockwaves emitted along mouse trail and clicks
+        for (let r = 0; r < ripples.length; r++) {
+          const rp = ripples[r];
+          const age = now - rp.born;
+          const radius = age * rp.speed;
+          const dx = p.hx - rp.x;
+          const dy = p.hy - rp.y;
+          const dist = hypot(dx, dy) + 0.001;
+          const delta = dist - radius;
+          if (abs(delta) < 76) {
+            const env = exp(-(delta * delta) / 920) * (1.0 - age / 1.85) * rp.strength;
+            const osc = sin(delta * 0.14);
+            targetWaveY += osc * 16.5 * env;
+            targetWaveX += (dx / dist) * osc * 9.0 * env;
+            waveEnergy = max(waveEnergy, abs(osc) * env * 1.15);
+          }
+        }
+
+        // Spring-damper integration back to exact home pixel coordinates
+        const tx = p.hx + targetWaveX;
+        const ty = p.hy + targetWaveY;
+        p.vx = (p.vx + (tx - p.x) * springK) * damp;
+        p.vy = (p.vy + (ty - p.y) * springK) * damp;
+        p.x += p.vx * stepScale;
+        p.y += p.vy * stepScale;
+        p.z = lerp(p.z, waveEnergy, clamp(dt * 14, 0, 1));
+      } else {
+        p.x = p.hx;
+        p.y = p.hy;
+        p.z = 0;
+      }
+
+      const disp = hypot(p.x - p.hx, p.y - p.hy);
+      const glow = clamp(p.z + disp * 0.032, 0, 1);
+
+      // Architectural ivory base -> champagne-gold & atmospheric cyan wave crest illumination
+      const cyanPhase = 0.5 + 0.5 * sin(p.phase - now * 4.2 + (p.y - p.hy) * 0.12);
+      const crestR = lerp(226, 92, cyanPhase * 0.45);
+      const crestG = lerp(184, 200, cyanPhase * 0.45);
+      const crestB = lerp(87, 242, cyanPhase * 0.45);
+
+      const baseShade = 1.0 - p.normY * 0.12;
+      const rCol = round(lerp(242 * baseShade, crestR, glow * 0.88));
+      const gCol = round(lerp(240 * baseShade, crestG, glow * 0.88));
+      const bCol = round(lerp(230 * baseShade, crestB, glow * 0.88));
+
+      const sz = pixelDrawSize * (1.0 + glow * 0.16);
+      const half = sz * 0.5;
+
+      // Subtle trailing pixel echo on active wave crests
+      if (glow > 0.22) {
+        ctx.fillStyle = `rgba(${rCol},${gCol},${bCol},${(glow * 0.24).toFixed(3)})`;
+        ctx.fillRect(p.hx - half * 0.85, p.hy - half * 0.85, sz * 0.85, sz * 0.85);
+      }
+
+      ctx.fillStyle = `rgb(${rCol},${gCol},${bCol})`;
+      ctx.fillRect(p.x - half, p.y - half, sz, sz);
+    }
+
+    rafId = requestAnimationFrame(renderFrame);
+  }
+
+  wakeBrandWordmark = () => {
+    if (!rafId && !document.body.classList.contains('g')) {
+      lastT = performance.now() * 0.001;
+      rafId = requestAnimationFrame(renderFrame);
+    }
+  };
+  wakeBrandWordmark();
+})();
 
 const _locTmp = {};
 const _camT = {};
@@ -1023,6 +1373,9 @@ function syncSettingsUI() {
   setChk('setHazardAvoid', settings.hazardAvoidance);
   setVal('setTimeSpeed', settings.timeSpeedMult);
   setTxt('setTimeSpeedVal', `${Number(settings.timeSpeedMult).toFixed(1)}x`);
+  setVal('weatherSel', weatherMode);
+  const nearB = nearestBiomeAtGeo(camState.latDeg, camState.lonDeg);
+  if (nearB) setVal('setBiomeJump', nearB.id);
 }
 
 if ($('setQualityTier')) {
@@ -1363,7 +1716,22 @@ if (speedSlider) {
 }
 const weatherSel = $('weatherSel');
 if (weatherSel) {
-  weatherSel.onchange = () => { weatherMode = parseInt(weatherSel.value, 10); };
+  weatherSel.onchange = () => {
+    weatherMode = parseInt(weatherSel.value, 10);
+    settings.weatherMode = weatherMode;
+    saveSettings(settings);
+  };
+}
+const setBiomeJump = $('setBiomeJump');
+if (setBiomeJump) {
+  setBiomeJump.onchange = () => {
+    const idx = parseInt(setBiomeJump.value, 10);
+    if (BIOME_CATALOG[idx]) {
+      toggleSettingsModal(false);
+      applyBiomePose(idx);
+      enterWilderness();
+    }
+  };
 }
 const muteBtn = $('muteBtn');
 if (muteBtn) {
